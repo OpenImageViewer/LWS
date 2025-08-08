@@ -1,25 +1,35 @@
 #pragma once
-#ifdef LWS_PLATFORM_WIN32
-
-#include <Windows.h>
-
-#include <map>
+#include <utility>
+#include <vector>
 
 #include <LWS/interfaces/backends.hpp>
 
-namespace LWS::internal
+namespace LWS::Wayland
 {
-    class DragAndDropTarget;
-}
-
-namespace LWS
-{
-    class WindowBackendWin32 : public IWindowBackend
+    /// Wayland implementation of IWindowBackend.
+    /// All methods are currently stubs — to be implemented in a future commit
+    /// when a Wayland compositor is available at build time.
+    ///
+    /// Protocol mapping:
+    ///   create()           → wl_surface + xdg_toplevel_surface (xdg-shell protocol)
+    ///   destroy()          → xdg_toplevel_destroy + wl_surface_destroy
+    ///   show/hide          → xdg_toplevel_set_minimized / unset_minimized
+    ///   setTitle()         → xdg_toplevel_set_title()
+    ///   setPosition()      → no direct Wayland API (compositor-controlled placement)
+    ///   setMinMaxSize()    → xdg_toplevel_set_min_size / set_max_size
+    ///   setFullScreenState → xdg_toplevel_set_fullscreen / unset_fullscreen
+    ///   setAlwaysOnTop()   → zwlr_layer_shell_v1 layer surface (extension; not universal)
+    ///   setTransparent()   → compositor alpha channel on wl_surface (always available)
+    ///   setCursor()        → wl_cursor_theme + wl_pointer.set_cursor
+    ///   enableDragAndDrop  → wl_data_device offer/drop (wl_data_device_manager protocol)
+    ///   addListener()      → wl_event_queue + epoll on wl_display_get_fd()
+    class WindowBackendWayland : public IWindowBackend
     {
     public:
-        WindowBackendWin32();
-        ~WindowBackendWin32() override;
+        WindowBackendWayland() = default;
+        ~WindowBackendWayland() override;
 
+        // IWindowBackend
         Result create(const WindowConfig& config) override;
         void destroy() override;
         void show() override;
@@ -72,46 +82,31 @@ namespace LWS
         void removeListener(EventListenerToken token) override;
         void injectRawEvent(void* platformEvent) override;
         Handle getHandle() const override;
-        BackendId backend() const override;
-
-        void setMenuChar(bool suppress);
-        bool getMenuChar() const;
+        BackendId backend() const override { return BackendId::Wayland; }
 
     private:
-        static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+        // Wayland surface handles (opaque void* to avoid including wayland-client.h here)
+        void* fWlSurface = nullptr;      // wl_surface*
+        void* fXdgSurface = nullptr;     // xdg_surface*
+        void* fXdgToplevel = nullptr;    // xdg_toplevel*
 
-        LRESULT windowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
-        LONG composeWindowStyles() const;
-        void updateWindowStyles();
-        void updateBackgroundBrush();
-        void setWindowed();
-        void setFullScreen(bool multiMonitor);
-        LRESULT getCorner(POINTS points) const;
-        void dispatchEvent(const AnyEvent& event_data);
-
-        HWND fHwnd = nullptr;
-        bool fSuppressMenuChar = false;
+        LWS::string_type fTitle;
+        Size fSize = { 800, 600 };
         Size fMinSize = { 0, 0 };
         Size fMaxSize = { 0, 0 };
-        bool fEraseBackground = true;
-        LLUtils::Color fBackgroundColor = {};
-        HBRUSH fBackgroundBrush = nullptr;
-        LockMouseToWindowMode fLockMode = LockMouseToWindowMode::NoLock;
-        DoubleClickMode fDoubleClickMode = DoubleClickMode::NotSet;
-        FullScreenState fFullScreenState = FullScreenState::Windowed;
-        WINDOWPLACEMENT fSavedFullScreenPlacement = {};
         bool fVisible = false;
         bool fAlwaysOnTop = false;
         bool fTransparent = false;
-        WindowStyle fWindowStyles = WindowStyle::NoStyle;
+        bool fEraseBackground = true;
+        bool fFullScreen = false;
+        LLUtils::Color fBackgroundColor;
+        WindowStyle fWindowStyles = WindowStyle::Caption;
         WindowDisplayState fDisplayState = WindowDisplayState::Restored;
-        IWindowBackend* fParentBackend = nullptr;
-        Point fLastMousePos = {};
-        bool fDndEnabled = false;
-        std::shared_ptr<ICursorBackend> fCursor;
-        std::shared_ptr<internal::DragAndDropTarget> fDragAndDrop;
-        uint64_t fNextToken = 1;
-        std::map<EventListenerToken, EventCallback> fListeners;
+        FullScreenState fFullScreenState = FullScreenState::None;
+        LockMouseToWindowMode fLockMode = LockMouseToWindowMode::NoLock;
+        DoubleClickMode fDoubleClickMode = DoubleClickMode::NotSet;
+
+        uint64_t fNextListenerToken = 1;
+        std::vector<std::pair<EventListenerToken, EventCallback>> fListeners;
     };
 }
-#endif // LWS_PLATFORM_WIN32

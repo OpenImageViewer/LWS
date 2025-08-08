@@ -1,10 +1,13 @@
-#include <LWS/facade/Window.h>
+#pragma once
+#ifdef LWS_PLATFORM_X11
+#include <LWS/Window.hpp>
+
 namespace LWS
 {
-class X11Window : public Window
-{
-public:
-  X11Window();
-  void x11SpecialCall();
-};
+    class WindowX11 : public Window
+    {
+    public:
+        WindowX11() = default;
+    };
 }
+#endif

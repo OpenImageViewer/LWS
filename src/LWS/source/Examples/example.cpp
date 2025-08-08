@@ -1,19 +1,30 @@
-#include <LWS/facade/Window.h>
-#include <LWS/facade/Cursor.h>
-#include <LWS/Win32/WindowsWin32.hpp>
-#include <LWS/facade/Window.h>
+#include <LWS/Cursor.hpp>
+#include <LWS/Platform.hpp>
+#include <LWS/Window.hpp>
+#include <LLUtils/StringDefs.h>
+#include <LLUtils/Colors.h>
 
-int main() 
+int main()
 {
- using namespace LWS;
-  Window win = std::move(Win32Window());
-  win.setTitle("My Win32 Window");
-  Cursor cur = std::move(Win32Cursor());
-  Window win2 = std::move(Win32Window());
-  win.setTitle("Hello Window");
-  cur.setVisible(true);
-  win.setCursor(cur);
-  static_cast<Win32Window&>(win).win32SpecialCall();
-  win.show();
-  return 0;
+    using namespace LWS;
+
+    Platform::init();
+    Window win;
+    WindowConfig config;
+    config.title = LLUTILS_TEXT("Hello LWS");
+    config.size = { 800, 600 };
+    config.styles = WindowStyle::Caption | WindowStyle::CloseButton |
+        WindowStyle::MaximizeButton | WindowStyle::MinimizeButton |
+        WindowStyle::ResizableBorder;
+    config.visible = true;
+
+    win.Create(config);
+    win.SetWindowStyles(WindowStyle::ResizableBorder, true);
+    win.SetBackgroundColor(LLUtils::Colors::Red);
+    win.SetEraseBackground(true);
+
+    Platform::runMessageLoop();
+    Platform::shutdown();
+
+    return 0;
 }

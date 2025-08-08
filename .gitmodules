@@ -1,0 +1,3 @@
+[submodule "external/LLUtils"]
+	path = external/LLUtils
+	url = https://github.com/TheNicker/LLUtils.git
