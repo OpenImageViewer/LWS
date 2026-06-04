@@ -4,7 +4,7 @@
 
 #include <LWS/interfaces/backends.hpp>
 
-namespace LWS::Wayland
+namespace LWS
 {
     /// Wayland implementation of IWindowBackend.
     /// All methods are currently stubs — to be implemented in a future commit

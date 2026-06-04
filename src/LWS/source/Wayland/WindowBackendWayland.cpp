@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-namespace LWS::Wayland
+namespace LWS
 {
     WindowBackendWayland::~WindowBackendWayland()
     {

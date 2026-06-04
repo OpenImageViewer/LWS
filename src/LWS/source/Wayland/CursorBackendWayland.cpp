@@ -3,7 +3,7 @@
 
 #ifdef LWS_PLATFORM_WAYLAND
 
-namespace LWS::Wayland
+namespace LWS
 {
     CursorBackendWayland::~CursorBackendWayland()
     {

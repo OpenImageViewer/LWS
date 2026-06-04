@@ -1,7 +1,7 @@
 #pragma once
 #include <LWS/interfaces/backends.hpp>
 
-namespace LWS::Wayland
+namespace LWS
 {
     /// Wayland implementation of ICursorBackend.
     /// Protocol mapping:

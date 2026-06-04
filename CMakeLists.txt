@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.20) #TODO: 4.2 creates a build error
 project("LWS")
 
 set(CMAKE_CXX_STANDARD 26)
@@ -11,14 +11,32 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/LLUtils")
 if(WIN32)
   set(LWS_PLATFORM_WIN32 ON)
 elseif(UNIX)
+  list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+  # find_package(Wayland QUIET PATHS /usr/lib/cmake/Wayland)
   find_package(Wayland QUIET)
   if(Wayland_FOUND)
+    message(STATUS "Wayland found: ${Wayland_LIBRARIES}")
     set(LWS_PLATFORM_WAYLAND ON)
   else()
+    message(WARNING "Wayland not found — falling back to X11")
     find_package(X11 REQUIRED)
     set(LWS_PLATFORM_X11 ON)
   endif()
 endif()
+
+find_package(Wayland QUIET)
+
+if(Wayland_FOUND)
+    message(STATUS "Wayland FOUND")
+    message(STATUS "Wayland include dirs: ${Wayland_INCLUDE_DIRS}")
+    message(STATUS "Wayland libs: ${Wayland_LIBRARIES}")
+    set(LWS_PLATFORM_WAYLAND ON)
+else()
+    message(WARNING "Wayland NOT FOUND — falling back to X11")
+    find_package(X11 REQUIRED)
+    set(LWS_PLATFORM_X11 ON)
+endif()
+
 
 # ---------------------------------------------------------------------------
 # Shared include/compile settings helper function
@@ -27,6 +45,7 @@ function(lws_configure_target target)
   target_include_directories(${target} PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/LWS/include"
+      "${CMAKE_CURRENT_SOURCE_DIR}/external/LLUtils/include"
   )
   target_link_libraries(${target} PUBLIC LLUtils::LLUtils)
   target_compile_definitions(${target} PRIVATE NOMINMAX UNICODE _UNICODE)
@@ -76,7 +95,7 @@ add_executable(LWS "./src/LWS/source/Examples/example.cpp")
 target_link_libraries(LWS PRIVATE LWSLib)
 lws_configure_target(LWS)
 if(MSVC)
-  target_link_options(LWS PRIVATE /SUBSYSTEM:CONSOLE)
+target_link_options(LWS PRIVATE /SUBSYSTEM:CONSOLE)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -97,7 +116,7 @@ if(testSources)
   target_link_libraries(LWSTests PRIVATE LWSLib Catch2::Catch2WithMain)
   lws_configure_target(LWSTests)
   if(MSVC)
-    target_link_options(LWSTests PRIVATE /SUBSYSTEM:CONSOLE)
+  target_link_options(LWSTests PRIVATE /SUBSYSTEM:CONSOLE)
   endif()
 
   include(CTest)
