@@ -50,7 +50,7 @@ namespace LWS
         Point position = { 100, 100 };
         Size size = { 800, 600 };
         LWS::string_type title;
-        WindowStyle styles = WindowStyle::Caption;
+        WindowStyle styles = WindowStyle::NoStyle;
         WindowDisplayState displayState = WindowDisplayState::Restored;
         bool visible = false;
         bool eraseBackground = true;

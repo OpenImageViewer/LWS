@@ -3,7 +3,12 @@ project("LWS")
 
 set(CMAKE_CXX_STANDARD 26)
 
-add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/LLUtils")
+option(LWS_BUILD_EXAMPLES "Build LWS example executable" ${PROJECT_IS_TOP_LEVEL})
+option(LWS_BUILD_TESTS "Build LWS tests" ${PROJECT_IS_TOP_LEVEL})
+
+if(NOT TARGET LLUtils::LLUtils)
+  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/LLUtils")
+endif()
 
 # ---------------------------------------------------------------------------
 # Platform detection
@@ -24,25 +29,11 @@ elseif(UNIX)
   endif()
 endif()
 
-find_package(Wayland QUIET)
-
-if(Wayland_FOUND)
-    message(STATUS "Wayland FOUND")
-    message(STATUS "Wayland include dirs: ${Wayland_INCLUDE_DIRS}")
-    message(STATUS "Wayland libs: ${Wayland_LIBRARIES}")
-    set(LWS_PLATFORM_WAYLAND ON)
-else()
-    message(WARNING "Wayland NOT FOUND — falling back to X11")
-    find_package(X11 REQUIRED)
-    set(LWS_PLATFORM_X11 ON)
-endif()
-
-
 # ---------------------------------------------------------------------------
 # Shared include/compile settings helper function
 # ---------------------------------------------------------------------------
 function(lws_configure_target target)
-  target_include_directories(${target} PRIVATE
+  target_include_directories(${target} PUBLIC
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/LWS/include"
       "${CMAKE_CURRENT_SOURCE_DIR}/external/LLUtils/include"
@@ -91,35 +82,39 @@ lws_configure_target(LWSLib)
 # ---------------------------------------------------------------------------
 # Main executable
 # ---------------------------------------------------------------------------
-add_executable(LWS "./src/LWS/source/Examples/example.cpp")
-target_link_libraries(LWS PRIVATE LWSLib)
-lws_configure_target(LWS)
-if(MSVC)
-target_link_options(LWS PRIVATE /SUBSYSTEM:CONSOLE)
+if(LWS_BUILD_EXAMPLES)
+  add_executable(LWS "./src/LWS/source/Examples/example.cpp")
+  target_link_libraries(LWS PRIVATE LWSLib)
+  lws_configure_target(LWS)
+  if(MSVC)
+    target_link_options(LWS PRIVATE /SUBSYSTEM:CONSOLE)
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
 # Tests (Catch2 via FetchContent)
 # ---------------------------------------------------------------------------
-include(FetchContent)
-FetchContent_Declare(
-    Catch2
-    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG        v3.7.1
-    GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(Catch2)
+if(LWS_BUILD_TESTS)
+  include(FetchContent)
+  FetchContent_Declare(
+      Catch2
+      GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+      GIT_TAG        v3.7.1
+      GIT_SHALLOW    TRUE
+  )
+  FetchContent_MakeAvailable(Catch2)
 
-file(GLOB_RECURSE testSources "./tests/*.cpp")
-if(testSources)
-  add_executable(LWSTests ${testSources})
-  target_link_libraries(LWSTests PRIVATE LWSLib Catch2::Catch2WithMain)
-  lws_configure_target(LWSTests)
-  if(MSVC)
-  target_link_options(LWSTests PRIVATE /SUBSYSTEM:CONSOLE)
+  file(GLOB_RECURSE testSources "./tests/*.cpp")
+  if(testSources)
+    add_executable(LWSTests ${testSources})
+    target_link_libraries(LWSTests PRIVATE LWSLib Catch2::Catch2WithMain)
+    lws_configure_target(LWSTests)
+    if(MSVC)
+      target_link_options(LWSTests PRIVATE /SUBSYSTEM:CONSOLE)
+    endif()
+
+    include(CTest)
+    include(Catch)
+    catch_discover_tests(LWSTests)
   endif()
-
-  include(CTest)
-  include(Catch)
-  catch_discover_tests(LWSTests)
 endif()

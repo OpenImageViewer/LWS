@@ -100,7 +100,7 @@ namespace LWS
         bool fEraseBackground = true;
         bool fFullScreen = false;
         LLUtils::Color fBackgroundColor;
-        WindowStyle fWindowStyles = WindowStyle::Caption;
+        WindowStyle fWindowStyles = WindowStyle::NoStyle;
         WindowDisplayState fDisplayState = WindowDisplayState::Restored;
         FullScreenState fFullScreenState = FullScreenState::None;
         LockMouseToWindowMode fLockMode = LockMouseToWindowMode::NoLock;

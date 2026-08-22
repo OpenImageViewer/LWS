@@ -38,6 +38,7 @@ TEST_CASE("WindowConfig has expected defaults", "[config]")
     REQUIRE(cfg.minSize.y == 0);
     REQUIRE(cfg.maxSize.x == 0);
     REQUIRE(cfg.maxSize.y == 0);
+    REQUIRE(cfg.styles == LWS::WindowStyle::NoStyle);
     REQUIRE(cfg.displayState == LWS::WindowDisplayState::Restored);
 }
 
