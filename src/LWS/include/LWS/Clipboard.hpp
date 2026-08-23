@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <tuple>
 #include <vector>
 
@@ -12,6 +13,12 @@ namespace LWS
 {
     using ClipboardFormatType = std::uint32_t;
     using ClipboardData = std::tuple<ClipboardFormatType, LLUtils::Buffer>;
+
+    struct ClipboardDataView
+    {
+        ClipboardFormatType format = 0;
+        std::span<const std::byte> data;
+    };
 
     enum class ClipboardResult
     {
@@ -25,11 +32,11 @@ namespace LWS
     public:
         void RegisterFormat(ClipboardFormatType format);
         ClipboardFormatType RegisterFormat(const string_type& format);
-        ClipboardResult SetClipboardData(ClipboardFormatType format, const LLUtils::Buffer& data);
-        ClipboardResult SetClipboardData(ClipboardFormatType format, const std::byte* data, size_t size);
-        ClipboardResult SetClipboardText(const char_type* text);
-        ClipboardResult SetClipboardText(const char* text);
-        ClipboardResult SetClipboardDataNative(ClipboardFormatType format, Handle data);
+        ClipboardResult SetClipboardData(Handle ownerWindow, ClipboardFormatType format, const LLUtils::Buffer& data);
+        ClipboardResult SetClipboardData(Handle ownerWindow, ClipboardFormatType format, const std::byte* data, size_t size);
+        ClipboardResult SetClipboardData(Handle ownerWindow, std::span<const ClipboardDataView> data);
+        ClipboardResult SetClipboardText(Handle ownerWindow, const char_type* text);
+        ClipboardResult SetClipboardText(Handle ownerWindow, const char* text);
         ClipboardData GetClipboardData();
 
     private:

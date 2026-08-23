@@ -1,13 +1,13 @@
 #ifdef LWS_PLATFORM_WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-#include <ShlObj.h>
+    #define WIN32_LEAN_AND_MEAN
+    #include <Windows.h>
+    #include <ShlObj.h>
 
-#include <LWS/FileDialog.hpp>
-#include <LLUtils/Warnings.h>
+    #include <LWS/FileDialog.hpp>
+    #include <LLUtils/Warnings.h>
 
-#include <sstream>
-#include <vector>
+    #include <sstream>
+    #include <vector>
 
 namespace
 {
@@ -43,7 +43,7 @@ namespace
 
         return storage;
     }
-}
+}  // namespace
 
 namespace LWS
 {
@@ -56,12 +56,9 @@ namespace LWS
 
     FileDialogResult FileDialog::Show(FileDialogType dialogType,
                                       const FileDialogFilterBuilder::ListFileDialogFilters& filters,
-                                      const file_dialog_string_type& title,
-                                      Handle ownerWindow,
-                                      const file_dialog_string_type& defaultExtension,
-                                      uint32_t filterIndex,
-                                      file_dialog_string_type defaultFileName,
-                                      file_dialog_string_type& outFilename)
+                                      const file_dialog_string_type& title, Handle ownerWindow,
+                                      const file_dialog_string_type& defaultExtension, uint32_t filterIndex,
+                                      file_dialog_string_type defaultFileName, file_dialog_string_type& outFilename)
     {
         ListFileDialogFileNames fileNames;
         FileDialogResult result = Show(dialogType, filters, title, ownerWindow, defaultExtension, filterIndex,
@@ -76,25 +73,23 @@ namespace LWS
 
     FileDialogResult FileDialog::Show(FileDialogType dialogType,
                                       const FileDialogFilterBuilder::ListFileDialogFilters& filters,
-                                      const file_dialog_string_type& title,
-                                      Handle ownerWindow,
-                                      const file_dialog_string_type& defaultExtension,
-                                      uint32_t filterIndex,
-                                      file_dialog_string_type defaultFileName,
-                                      ListFileDialogFileNames& outFilenames)
+                                      const file_dialog_string_type& title, Handle ownerWindow,
+                                      const file_dialog_string_type& defaultExtension, uint32_t filterIndex,
+                                      file_dialog_string_type defaultFileName, ListFileDialogFileNames& outFilenames)
     {
         FileDialogResult result = FileDialogResult::UnknownError;
         IFileDialog* pfd = nullptr;
-        const CLSID& dialogClassID = dialogType == FileDialogType::OpenFile ? CLSID_FileOpenDialog
-                                      : dialogType == FileDialogType::SaveFile ? CLSID_FileSaveDialog
-                                                                               : CLSID_FileOpenDialog;
+        const CLSID& dialogClassID = dialogType == FileDialogType::OpenFile   ? CLSID_FileOpenDialog
+                                     : dialogType == FileDialogType::SaveFile ? CLSID_FileSaveDialog
+                                                                              : CLSID_FileOpenDialog;
         HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-        if (SUCCEEDED(hr))
+        const bool comInitialized = SUCCEEDED(hr);
+        if (comInitialized)
         {
-LLUTILS_DISABLE_WARNING_PUSH
-LLUTILS_DISABLE_WARNING_LANGUAGE_EXTENSION
+            LLUTILS_DISABLE_WARNING_PUSH
+            LLUTILS_DISABLE_WARNING_LANGUAGE_EXTENSION
             hr = CoCreateInstance(dialogClassID, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pfd));
-LLUTILS_DISABLE_WARNING_POP
+            LLUTILS_DISABLE_WARNING_POP
             if (SUCCEEDED(hr))
             {
                 DWORD flags{};
@@ -161,8 +156,11 @@ LLUTILS_DISABLE_WARNING_POP
                 pfd->Release();
             }
         }
-        CoUninitialize();
+        if (comInitialized)
+        {
+            CoUninitialize();
+        }
         return result;
     }
-}
+}  // namespace LWS
 #endif

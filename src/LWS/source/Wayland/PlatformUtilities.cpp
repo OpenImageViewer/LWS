@@ -22,11 +22,11 @@ namespace LWS
 
     void Clipboard::RegisterFormat(ClipboardFormatType format) { fListFormats.push_back(format); }
     ClipboardFormatType Clipboard::RegisterFormat(const string_type&) { return 0; }
-    ClipboardResult Clipboard::SetClipboardData(ClipboardFormatType, const LLUtils::Buffer&) { return ClipboardResult::UnknownError; }
-    ClipboardResult Clipboard::SetClipboardData(ClipboardFormatType, const std::byte*, size_t) { return ClipboardResult::UnknownError; }
-    ClipboardResult Clipboard::SetClipboardText(const char_type*) { return ClipboardResult::UnknownError; }
-    ClipboardResult Clipboard::SetClipboardText(const char*) { return ClipboardResult::UnknownError; }
-    ClipboardResult Clipboard::SetClipboardDataNative(ClipboardFormatType, Handle) { return ClipboardResult::UnknownError; }
+    ClipboardResult Clipboard::SetClipboardData(Handle, ClipboardFormatType, const LLUtils::Buffer&) { return ClipboardResult::UnknownError; }
+    ClipboardResult Clipboard::SetClipboardData(Handle, ClipboardFormatType, const std::byte*, size_t) { return ClipboardResult::UnknownError; }
+    ClipboardResult Clipboard::SetClipboardData(Handle, std::span<const ClipboardDataView>) { return ClipboardResult::UnknownError; }
+    ClipboardResult Clipboard::SetClipboardText(Handle, const char_type*) { return ClipboardResult::UnknownError; }
+    ClipboardResult Clipboard::SetClipboardText(Handle, const char*) { return ClipboardResult::UnknownError; }
     ClipboardData Clipboard::GetClipboardData() { return {}; }
     ClipboardResult Clipboard::GetClipboardError() const { return ClipboardResult::UnknownError; }
 
@@ -38,7 +38,7 @@ namespace LWS
     NotificationIconGroup::NotificationIconGroup() = default;
     NotificationIconGroup::~NotificationIconGroup() = default;
     NotificationIconGroup::IconID NotificationIconGroup::AddIconResource(uint16_t, const string_type&) { return 0; }
-    LLUtils::Rect<uint16_t> NotificationIconGroup::GetIconRect(IconID) const { return {}; }
+    Rect NotificationIconGroup::GetIconRect(IconID) const { return {}; }
 
     Timer::Timer() = default;
     Timer::~Timer() = default;

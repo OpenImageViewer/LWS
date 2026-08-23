@@ -95,14 +95,16 @@ endif()
 # Tests (Catch2 via FetchContent)
 # ---------------------------------------------------------------------------
 if(LWS_BUILD_TESTS)
-  include(FetchContent)
-  FetchContent_Declare(
-      Catch2
-      GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-      GIT_TAG        v3.7.1
-      GIT_SHALLOW    TRUE
-  )
-  FetchContent_MakeAvailable(Catch2)
+  if(NOT TARGET Catch2::Catch2WithMain)
+    include(FetchContent)
+    FetchContent_Declare(
+        Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG        v3.7.1
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(Catch2)
+  endif()
 
   file(GLOB_RECURSE testSources "./tests/*.cpp")
   if(testSources)
@@ -111,6 +113,7 @@ if(LWS_BUILD_TESTS)
     lws_configure_target(LWSTests)
     if(MSVC)
       target_link_options(LWSTests PRIVATE /SUBSYSTEM:CONSOLE)
+      target_link_options(LWSTests PRIVATE /ENTRY:wmainCRTStartup)
     endif()
 
     include(CTest)

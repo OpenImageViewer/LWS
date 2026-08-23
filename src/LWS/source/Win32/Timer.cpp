@@ -1,24 +1,25 @@
 #ifdef LWS_PLATFORM_WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
+    #define WIN32_LEAN_AND_MEAN
+    #include <Windows.h>
 
-#include <LWS/Timer.hpp>
-#include <LLUtils/Exception.h>
-#include <LLUtils/Singleton.h>
-#include <LLUtils/Templates.h>
-#include <LLUtils/UniqueIDProvider.h>
+    #include <LWS/Timer.hpp>
+    #include <LLUtils/Exception.h>
+    #include <LLUtils/Singleton.h>
+    #include <LLUtils/Templates.h>
+    #include <LLUtils/UniqueIDProvider.h>
 
-#include <map>
-#include <mutex>
-#include <set>
-#include <tuple>
-#include <utility>
+    #include <map>
+    #include <mutex>
+    #include <set>
+    #include <tuple>
+    #include <utility>
 
 namespace
 {
     class TimerManager : public LLUtils::Singleton<TimerManager>
     {
-    public:
+      public:
+
         using TimerIDType = size_t;
 
         TimerIDType RegisterTimer(const LWS::Timer::Impl& timer)
@@ -46,22 +47,21 @@ namespace
 
         static void CALLBACK TimerProc(HWND hwnd, UINT message, UINT_PTR idTimer, DWORD dwTime);
 
-    private:
+      private:
+
         using UniqueIdProviderType = LLUtils::UniqueIdProvider<TimerIDType, std::set<TimerIDType>>;
         UniqueIdProviderType fUniqueIdProvider = UniqueIdProviderType(1);
         std::map<TimerIDType, const LWS::Timer::Impl*> fMapTimerIdToTimer;
     };
-}
+}  // namespace
 
 namespace LWS
 {
     class Timer::Impl
     {
-    public:
-        ~Impl()
-        {
-            Unregister();
-        }
+      public:
+
+        ~Impl() { Unregister(); }
 
         void SetTargetWindow(Handle hwnd)
         {
@@ -70,15 +70,13 @@ namespace LWS
                 LL_EXCEPTION(LLUtils::Exception::ErrorCode::InvalidState, "null window as timer target is illegal");
             }
 
+            const uint32_t interval = fInterval;
             Unregister();
             fWindowHandle = reinterpret_cast<HWND>(hwnd);
-            SetInterval(fInterval);
+            SetInterval(interval);
         }
 
-        uint32_t GetInterval() const
-        {
-            return fInterval;
-        }
+        uint32_t GetInterval() const { return fInterval; }
 
         void SetInterval(uint32_t interval)
         {
@@ -99,10 +97,7 @@ namespace LWS
             }
         }
 
-        void SetCallback(Callback callback)
-        {
-            fCallback = std::move(callback);
-        }
+        void SetCallback(Callback callback) { fCallback = std::move(callback); }
 
         void Execute() const
         {
@@ -112,7 +107,8 @@ namespace LWS
             }
         }
 
-    private:
+      private:
+
         void Unregister()
         {
             if (fTimerID != 0)
@@ -144,18 +140,28 @@ namespace LWS
 
     Timer::Timer() : impl_(std::make_unique<Impl>()) {}
     Timer::~Timer() = default;
-    void Timer::SetTargetWindow(Handle windowHandle) { impl_->SetTargetWindow(windowHandle); }
-    uint32_t Timer::GetInterval() const { return impl_->GetInterval(); }
-    void Timer::SetInterval(uint32_t interval) { impl_->SetInterval(interval); }
-    void Timer::SetCallback(Callback callback) { impl_->SetCallback(std::move(callback)); }
+    void Timer::SetTargetWindow(Handle windowHandle)
+    {
+        impl_->SetTargetWindow(windowHandle);
+    }
+    uint32_t Timer::GetInterval() const
+    {
+        return impl_->GetInterval();
+    }
+    void Timer::SetInterval(uint32_t interval)
+    {
+        impl_->SetInterval(interval);
+    }
+    void Timer::SetCallback(Callback callback)
+    {
+        impl_->SetCallback(std::move(callback));
+    }
 
     class HighPrecisionTimer::Impl
     {
-    public:
-        explicit Impl(Callback callback) : fCallback(std::move(callback))
-        {
-            RegisterWindow();
-        }
+      public:
+
+        explicit Impl(Callback callback) : fCallback(std::move(callback)) { RegisterWindow(); }
 
         ~Impl()
         {
@@ -180,15 +186,9 @@ namespace LWS
             }
         }
 
-        void SetDueTime(uint32_t dueTime)
-        {
-            fDueTime = dueTime;
-        }
+        void SetDueTime(uint32_t dueTime) { fDueTime = dueTime; }
 
-        bool GetEnabled() const
-        {
-            return fEnabled;
-        }
+        bool GetEnabled() const { return fEnabled; }
 
         void Enable(bool enable)
         {
@@ -219,16 +219,14 @@ namespace LWS
             }
         }
 
-    private:
+      private:
+
         static VOID CALLBACK OnTimer(PVOID parameter, BOOLEAN)
         {
             reinterpret_cast<Impl*>(parameter)->ExecuteTimerFunc();
         }
 
-        void ExecuteTimerFunc()
-        {
-            SendMessage(fWindowHandle, ON_TIMER_MESSAGE, reinterpret_cast<WPARAM>(this), 0);
-        }
+        void ExecuteTimerFunc() { SendMessage(fWindowHandle, ON_TIMER_MESSAGE, reinterpret_cast<WPARAM>(this), 0); }
 
         void ExecuteTimerFuncThreadSafe()
         {
@@ -249,27 +247,28 @@ namespace LWS
         {
             switch (msg)
             {
-            case ON_TIMER_MESSAGE:
-                reinterpret_cast<Impl*>(wParam)->ExecuteTimerFuncThreadSafe();
-                return 0;
-            default:
-                return DefWindowProc(hWnd, msg, wParam, lParam);
+                case ON_TIMER_MESSAGE:
+                    reinterpret_cast<Impl*>(wParam)->ExecuteTimerFuncThreadSafe();
+                    return 0;
+                default:
+                    return DefWindowProc(hWnd, msg, wParam, lParam);
             }
         }
 
         void CreateWindowClassOnce()
         {
-            std::call_once(fCreateClassOnceFlag, []()
-            {
-                WNDCLASS wc{};
-                wc.lpfnWndProc = WindowProc;
-                wc.hInstance = GetModuleHandle(nullptr);
-                wc.lpszClassName = CLASS_NAME;
-                if (RegisterClass(&wc) == 0)
-                {
-                    LL_EXCEPTION_SYSTEM_ERROR("Could not create window class");
-                }
-            });
+            std::call_once(fCreateClassOnceFlag,
+                           []()
+                           {
+                               WNDCLASS wc{};
+                               wc.lpfnWndProc = WindowProc;
+                               wc.hInstance = GetModuleHandle(nullptr);
+                               wc.lpszClassName = CLASS_NAME;
+                               if (RegisterClass(&wc) == 0)
+                               {
+                                   LL_EXCEPTION_SYSTEM_ERROR("Could not create window class");
+                               }
+                           });
         }
 
         void RegisterWindow()
@@ -302,11 +301,23 @@ namespace LWS
 
     HighPrecisionTimer::HighPrecisionTimer(Callback callback) : impl_(std::make_unique<Impl>(std::move(callback))) {}
     HighPrecisionTimer::~HighPrecisionTimer() = default;
-    void HighPrecisionTimer::SetRepeatInterval(uint32_t repeatInterval) { impl_->SetRepeatInterval(repeatInterval); }
-    void HighPrecisionTimer::SetDueTime(uint32_t dueTime) { impl_->SetDueTime(dueTime); }
-    bool HighPrecisionTimer::GetEnabled() const { return impl_->GetEnabled(); }
-    void HighPrecisionTimer::Enable(bool enable) { impl_->Enable(enable); }
-}
+    void HighPrecisionTimer::SetRepeatInterval(uint32_t repeatInterval)
+    {
+        impl_->SetRepeatInterval(repeatInterval);
+    }
+    void HighPrecisionTimer::SetDueTime(uint32_t dueTime)
+    {
+        impl_->SetDueTime(dueTime);
+    }
+    bool HighPrecisionTimer::GetEnabled() const
+    {
+        return impl_->GetEnabled();
+    }
+    void HighPrecisionTimer::Enable(bool enable)
+    {
+        impl_->Enable(enable);
+    }
+}  // namespace LWS
 
 namespace
 {
@@ -321,5 +332,5 @@ namespace
 
         it->second->Execute();
     }
-}
+}  // namespace
 #endif

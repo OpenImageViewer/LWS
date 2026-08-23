@@ -4,12 +4,18 @@
 
 #ifdef LWS_PLATFORM_WIN32
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
+    #define WIN32_LEAN_AND_MEAN
+    #define NOMINMAX
+    #include <windows.h>
 
-#include <LWS/Platform.hpp>
-#include <LWS/Window.hpp>
+    #include <LWS/Platform.hpp>
+    #include <LWS/Bitmap.hpp>
+    #include <LWS/Clipboard.hpp>
+    #include <LWS/Timer.hpp>
+    #include <LWS/Window.hpp>
+    #include <LLUtils/Exception.h>
+
+    #include <array>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -27,13 +33,13 @@ namespace
     LWS::WindowConfig makeTestConfig()
     {
         LWS::WindowConfig cfg;
-        cfg.title   = L"LWSTest";
-        cfg.size    = { 640, 480 };
-        cfg.position = { 50, 50 };
-        cfg.visible = false; // keep hidden — no user interaction required
+        cfg.title = L"LWSTest";
+        cfg.size = {640, 480};
+        cfg.position = {50, 50};
+        cfg.visible = false;  // keep hidden — no user interaction required
         return cfg;
     }
-}
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Platform lifecycle
@@ -41,9 +47,9 @@ namespace
 TEST_CASE("Platform init and shutdown are idempotent", "[platform][win32]")
 {
     LWS::Platform::init();
-    LWS::Platform::init(); // second call must not crash or assert
+    LWS::Platform::init();  // second call must not crash or assert
     LWS::Platform::shutdown();
-    LWS::Platform::shutdown(); // second call must not crash
+    LWS::Platform::shutdown();  // second call must not crash
     // re-init so later tests can use the platform
     LWS::Platform::init();
 }
@@ -122,7 +128,7 @@ TEST_CASE("SetVisible / GetVisible round-trip", "[window][win32]")
     LWS::Platform::init();
     {
         LWS::Window win;
-        auto cfg  = makeTestConfig();
+        auto cfg = makeTestConfig();
         cfg.visible = false;
         win.Create(cfg);
         pumpMessages();
@@ -151,7 +157,7 @@ TEST_CASE("SetPosition / GetPosition round-trip", "[window][win32]")
         win.Create(makeTestConfig());
         pumpMessages();
 
-        win.SetPosition({ 200, 150 });
+        win.SetPosition({200, 150});
         pumpMessages();
 
         const LWS::Point pos = win.GetPosition();
@@ -266,11 +272,13 @@ TEST_CASE("EventListenerGuard removes listener on destruction", "[window][event]
 
         int callCount = 0;
         {
-            LWS::EventListenerToken tok = win.AddEventListener([&](const LWS::AnyEvent& e) {
-                if (std::holds_alternative<LWS::EventPaint>(e))
-                    ++callCount;
-                return false;
-            });
+            LWS::EventListenerToken tok = win.AddEventListener(
+                [&](const LWS::AnyEvent& e)
+                {
+                    if (std::holds_alternative<LWS::EventPaint>(e))
+                        ++callCount;
+                    return false;
+                });
             LWS::EventListenerGuard guard = win.MakeListenerGuard(tok);
 
             // Force a paint so the listener fires at least once while active.
@@ -317,7 +325,7 @@ TEST_CASE("SetMinMaxSize / GetMinSize / GetMaxSize round-trip", "[window][win32]
         win.Create(makeTestConfig());
         pumpMessages();
 
-        win.SetMinMaxSize({ 320, 240 }, { 1920, 1080 });
+        win.SetMinMaxSize({320, 240}, {1920, 1080});
         REQUIRE(win.GetMinSize().x == 320);
         REQUIRE(win.GetMinSize().y == 240);
         REQUIRE(win.GetMaxSize().x == 1920);
@@ -386,4 +394,44 @@ TEST_CASE("processMessages returns false when no WM_QUIT is pending", "[platform
     LWS::Platform::shutdown();
 }
 
-#endif // LWS_PLATFORM_WIN32
+TEST_CASE("Bitmap rejects a pixel span smaller than its declared layout", "[bitmap][win32]")
+{
+    const std::array<std::byte, 4> pixels{};
+    const LWS::BitmapBuffer buffer{
+        .pixels = pixels,
+        .bitsPerPixel = 32,
+        .width = 2,
+        .height = 2,
+        .rowPitch = 8,
+    };
+
+    REQUIRE_THROWS_AS(LWS::Bitmap(buffer), LLUtils::Exception);
+}
+
+TEST_CASE("Clipboard rejects writes without an owner window", "[clipboard][win32]")
+{
+    const std::array data{ std::byte{} };
+    LWS::Clipboard clipboard;
+    REQUIRE(clipboard.SetClipboardData(0, CF_TEXT, data.data(), data.size()) == LWS::ClipboardResult::UnknownError);
+}
+
+TEST_CASE("Timer preserves its interval when moved to another window", "[timer][win32]")
+{
+    LWS::Platform::init();
+    {
+        LWS::Window firstWindow;
+        LWS::Window secondWindow;
+        REQUIRE(firstWindow.Create(makeTestConfig()) == LWS::Result::Success);
+        REQUIRE(secondWindow.Create(makeTestConfig()) == LWS::Result::Success);
+
+        LWS::Timer timer;
+        timer.SetTargetWindow(firstWindow.GetHandle());
+        timer.SetInterval(50);
+        timer.SetTargetWindow(secondWindow.GetHandle());
+        REQUIRE(timer.GetInterval() == 50);
+        timer.SetInterval(0);
+    }
+    LWS::Platform::shutdown();
+}
+
+#endif  // LWS_PLATFORM_WIN32

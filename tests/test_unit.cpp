@@ -4,22 +4,26 @@
 #include <LWS/Event.hpp>
 #include <LWS/KeyCode.hpp>
 #include <LWS/MouseButton.hpp>
+#include <LWS/NotificationIconGroup.hpp>
 #include <LWS/Result.hpp>
 #include <LWS/Window.hpp>
 #include <LWS/WindowDisplayState.hpp>
 #include <LWS/interfaces/backends.hpp>
+
+#include <type_traits>
+#include <utility>
 
 // ---------------------------------------------------------------------------
 // Result enum
 // ---------------------------------------------------------------------------
 TEST_CASE("Result enum covers all expected values", "[result]")
 {
-    REQUIRE(static_cast<int>(LWS::Result::Success)      == 0);
-    REQUIRE(LWS::Result::Failure        != LWS::Result::Success);
-    REQUIRE(LWS::Result::InvalidState   != LWS::Result::Success);
-    REQUIRE(LWS::Result::NotSupported   != LWS::Result::Success);
+    REQUIRE(static_cast<int>(LWS::Result::Success) == 0);
+    REQUIRE(LWS::Result::Failure != LWS::Result::Success);
+    REQUIRE(LWS::Result::InvalidState != LWS::Result::Success);
+    REQUIRE(LWS::Result::NotSupported != LWS::Result::Success);
     REQUIRE(LWS::Result::AlreadyCreated != LWS::Result::Success);
-    REQUIRE(LWS::Result::NotCreated     != LWS::Result::Success);
+    REQUIRE(LWS::Result::NotCreated != LWS::Result::Success);
 }
 
 // ---------------------------------------------------------------------------
@@ -47,22 +51,25 @@ TEST_CASE("WindowConfig has expected defaults", "[config]")
 // ---------------------------------------------------------------------------
 TEST_CASE("AnyEvent variant holds EventResize and can be visited", "[event]")
 {
-    LWS::AnyEvent ev = LWS::EventResize{ {1280, 720} };
+    LWS::AnyEvent ev = LWS::EventResize{{1280, 720}};
     bool visited = false;
-    std::visit([&](const auto& e) {
-        if constexpr (std::is_same_v<std::decay_t<decltype(e)>, LWS::EventResize>)
+    std::visit(
+        [&](const auto& e)
         {
-            REQUIRE(e.newClientSize.x == 1280);
-            REQUIRE(e.newClientSize.y == 720);
-            visited = true;
-        }
-    }, ev);
+            if constexpr (std::is_same_v<std::decay_t<decltype(e)>, LWS::EventResize>)
+            {
+                REQUIRE(e.newClientSize.x == 1280);
+                REQUIRE(e.newClientSize.y == 720);
+                visited = true;
+            }
+        },
+        ev);
     REQUIRE(visited);
 }
 
 TEST_CASE("AnyEvent variant holds EventKeyDown", "[event]")
 {
-    LWS::AnyEvent ev = LWS::EventKeyDown{ LWS::KeyCode::A, false };
+    LWS::AnyEvent ev = LWS::EventKeyDown{LWS::KeyCode::A, false};
     REQUIRE(std::holds_alternative<LWS::EventKeyDown>(ev));
     REQUIRE(std::get<LWS::EventKeyDown>(ev).key == LWS::KeyCode::A);
     REQUIRE(std::get<LWS::EventKeyDown>(ev).repeat == false);
@@ -70,7 +77,7 @@ TEST_CASE("AnyEvent variant holds EventKeyDown", "[event]")
 
 TEST_CASE("AnyEvent variant holds EventMouseButton", "[event]")
 {
-    LWS::AnyEvent ev = LWS::EventMouseButton{ LWS::MouseButton::Left, true, {100, 200} };
+    LWS::AnyEvent ev = LWS::EventMouseButton{LWS::MouseButton::Left, true, {100, 200}};
     REQUIRE(std::holds_alternative<LWS::EventMouseButton>(ev));
     const auto& mb = std::get<LWS::EventMouseButton>(ev);
     REQUIRE(mb.button == LWS::MouseButton::Left);
@@ -115,9 +122,9 @@ TEST_CASE("EventListenerGuard move constructor transfers ownership", "[event][gu
 // ---------------------------------------------------------------------------
 TEST_CASE("WindowDisplayState enum values are distinct", "[state]")
 {
-    REQUIRE(LWS::WindowDisplayState::Restored  != LWS::WindowDisplayState::Minimized);
+    REQUIRE(LWS::WindowDisplayState::Restored != LWS::WindowDisplayState::Minimized);
     REQUIRE(LWS::WindowDisplayState::Minimized != LWS::WindowDisplayState::Maximized);
-    REQUIRE(LWS::WindowDisplayState::Restored  != LWS::WindowDisplayState::Maximized);
+    REQUIRE(LWS::WindowDisplayState::Restored != LWS::WindowDisplayState::Maximized);
 }
 
 // ---------------------------------------------------------------------------
@@ -150,4 +157,10 @@ TEST_CASE("BitmapBuffer defaults are zeroed", "[bitmap]")
     REQUIRE(buf.height == 0);
     REQUIRE(buf.bitsPerPixel == 32);
     REQUIRE(buf.pixels.empty());
+}
+
+TEST_CASE("Notification icon rectangles use signed screen coordinates", "[notification-icon]")
+{
+    using IconRect = decltype(std::declval<const LWS::NotificationIconGroup&>().GetIconRect(0));
+    REQUIRE(std::is_signed_v<typename IconRect::Point_Type::point_type>);
 }

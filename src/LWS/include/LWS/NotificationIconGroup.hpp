@@ -11,7 +11,8 @@ namespace LWS
 {
     class NotificationIconGroup final
     {
-    public:
+      public:
+
         using IconID = uint8_t;
 
         enum class NotificationIconAction
@@ -40,12 +41,13 @@ namespace LWS
 
         NotificationIconGroup();
 
-        [[nodiscard]] LLUtils::Rect<uint16_t> GetIconRect(IconID iconid) const;
+        [[nodiscard]] Rect GetIconRect(IconID iconid) const;
 
         NotificationIconEvent OnNotificationIconEvent;
 
-    private:
+      private:
+
         class Impl;
         std::unique_ptr<Impl> impl_;
     };
-}
+}  // namespace LWS

@@ -5,11 +5,46 @@
 #include <LWS/Bitmap.hpp>
 #include <LLUtils/Exception.h>
 #include <LLUtils/FileHelper.h>
-#include <LLUtils/PlatformUtility.h>
-#include <LLUtils/Utility.h>
 
-#include <climits>
-#include <fstream>
+#include <limits>
+
+namespace
+{
+    struct BitmapLayout
+    {
+        uint32_t rowPitch;
+        DWORD pixelSize;
+        uint32_t height;
+    };
+
+    BitmapLayout GetBitmapLayout(int64_t width, int64_t height, uint16_t bitsPerPixel)
+    {
+        if (width <= 0 || height <= 0 || bitsPerPixel == 0 ||
+            width > std::numeric_limits<LONG>::max() || height > std::numeric_limits<LONG>::max())
+        {
+            LL_EXCEPTION(LLUtils::Exception::ErrorCode::BadParameters, "Invalid bitmap layout");
+        }
+
+        const uint64_t rowPitch = ((static_cast<uint64_t>(width) * bitsPerPixel + 31U) / 32U) * sizeof(DWORD);
+        const uint64_t pixelSize = rowPitch * static_cast<uint64_t>(height);
+        if (pixelSize > std::numeric_limits<DWORD>::max())
+        {
+            LL_EXCEPTION(LLUtils::Exception::ErrorCode::BadParameters, "Bitmap pixel buffer exceeds Win32 limits");
+        }
+
+        return {
+            static_cast<uint32_t>(rowPitch),
+            static_cast<DWORD>(pixelSize),
+            static_cast<uint32_t>(height),
+        };
+    }
+
+    BitmapLayout GetBitmapLayout(const BITMAPINFOHEADER& header)
+    {
+        const int64_t height = header.biHeight < 0 ? -static_cast<int64_t>(header.biHeight) : header.biHeight;
+        return GetBitmapLayout(header.biWidth, height, header.biBitCount);
+    }
+}
 
 namespace LWS
 {
@@ -40,18 +75,17 @@ namespace LWS
             SelectObject(dcSrc, fBitmap);
 
             const auto header = GetBitmapHeaderNative();
-            const uint32_t rowPitch = LLUtils::Utility::Align<uint32_t>(header.biBitCount * width / CHAR_BIT, sizeof(DWORD));
-            const uint32_t pixelsDataSize = rowPitch * width;
+            const BitmapLayout layout = GetBitmapLayout(width, height, header.biBitCount);
 
-            std::unique_ptr<std::uint8_t[]> emptyBuffer = std::make_unique<std::uint8_t[]>(pixelsDataSize);
-            memset(emptyBuffer.get(), background, pixelsDataSize);
+            std::unique_ptr<std::uint8_t[]> emptyBuffer = std::make_unique<std::uint8_t[]>(layout.pixelSize);
+            memset(emptyBuffer.get(), background, layout.pixelSize);
 
             BitmapBuffer buffer;
             buffer.bitsPerPixel = static_cast<uint8_t>(header.biBitCount);
-            buffer.pixels = std::span<const std::byte>(reinterpret_cast<const std::byte*>(emptyBuffer.get()), pixelsDataSize);
+            buffer.pixels = std::span<const std::byte>(reinterpret_cast<const std::byte*>(emptyBuffer.get()), layout.pixelSize);
             buffer.width = static_cast<uint32_t>(width);
             buffer.height = static_cast<uint32_t>(height);
-            buffer.rowPitch = rowPitch;
+            buffer.rowPitch = layout.rowPitch;
 
             BitmapSharedPtr resized = std::make_shared<Bitmap>(buffer);
             HDC dst = CreateCompatibleDC(nullptr);
@@ -79,35 +113,40 @@ namespace LWS
             fileHeader.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
 
             const auto header = GetBitmapHeaderNative();
-            size_t pixelsSize = header.biWidth * header.biBitCount / CHAR_BIT * header.biHeight;
-            LLUtils::Buffer pixelsData(pixelsSize);
+            const BitmapLayout layout = GetBitmapLayout(header);
+            LLUtils::Buffer pixelsData(layout.pixelSize);
 
             HDC hdc = GetDC(nullptr);
             BITMAPINFO info{};
             info.bmiHeader = header;
 
-            int returnedLines = GetDIBits(hdc, fBitmap, 0, header.biHeight, pixelsData.data(), &info, DIB_RGB_COLORS);
-            if (returnedLines != header.biHeight)
+            int returnedLines = GetDIBits(hdc, fBitmap, 0, layout.height, pixelsData.data(), &info, DIB_RGB_COLORS);
+            ReleaseDC(nullptr, hdc);
+            if (returnedLines != static_cast<int>(layout.height))
             {
                 LL_EXCEPTION(LLUtils::Exception::ErrorCode::InvalidState, "Data size mismatch");
             }
 
-            ReleaseDC(nullptr, hdc);
-            fileHeader.bfSize = static_cast<DWORD>(fileHeader.bfOffBits + pixelsSize);
+            if (layout.pixelSize > std::numeric_limits<DWORD>::max() - fileHeader.bfOffBits)
+            {
+                LL_EXCEPTION(LLUtils::Exception::ErrorCode::BadParameters, "Bitmap is too large for the BMP file format");
+            }
+            fileHeader.bfSize = fileHeader.bfOffBits + layout.pixelSize;
 
             LLUtils::File::WriteAllBytes(fileName.wstring(), sizeof(BITMAPFILEHEADER), reinterpret_cast<std::byte*>(&fileHeader));
             LLUtils::File::WriteAllBytes(fileName.wstring(), sizeof(BITMAPINFOHEADER), reinterpret_cast<const std::byte*>(&header), true);
-            LLUtils::File::WriteAllBytes(fileName.wstring(), pixelsSize, reinterpret_cast<const std::byte*>(pixelsData.data()), true);
+            LLUtils::File::WriteAllBytes(fileName.wstring(), layout.pixelSize, reinterpret_cast<const std::byte*>(pixelsData.data()), true);
         }
 
         BitmapBuffer GetBitmapHeader() const
         {
             const auto header = GetBitmapHeaderNative();
+            const BitmapLayout layout = GetBitmapLayout(header);
             BitmapBuffer result{};
             result.bitsPerPixel = static_cast<uint8_t>(header.biBitCount);
             result.width = static_cast<uint32_t>(header.biWidth);
-            result.height = static_cast<uint32_t>(header.biHeight);
-            result.rowPitch = LLUtils::Utility::Align<uint32_t>(header.biBitCount * result.width / CHAR_BIT, sizeof(DWORD));
+            result.height = layout.height;
+            result.rowPitch = layout.rowPitch;
             return result;
         }
 
@@ -131,13 +170,19 @@ namespace LWS
 
         static HBITMAP FromMemory(const BitmapBuffer& bitmapBuffer)
         {
+            const BitmapLayout layout = GetBitmapLayout(bitmapBuffer.width, bitmapBuffer.height, bitmapBuffer.bitsPerPixel);
+            if (bitmapBuffer.rowPitch != layout.rowPitch || bitmapBuffer.pixels.size() < layout.pixelSize)
+            {
+                LL_EXCEPTION(LLUtils::Exception::ErrorCode::BadParameters, "Bitmap buffer layout is invalid");
+            }
+
             BITMAPINFO info{};
             info.bmiHeader.biBitCount = static_cast<WORD>(bitmapBuffer.bitsPerPixel);
             info.bmiHeader.biHeight = static_cast<LONG>(bitmapBuffer.height);
             info.bmiHeader.biWidth = static_cast<LONG>(bitmapBuffer.width);
             info.bmiHeader.biPlanes = 1;
             info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-            info.bmiHeader.biSizeImage = bitmapBuffer.rowPitch * bitmapBuffer.height;
+            info.bmiHeader.biSizeImage = layout.pixelSize;
 
             void* bits = nullptr;
             HBITMAP bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
@@ -149,6 +194,7 @@ namespace LWS
             if (SetDIBits(nullptr, bitmap, 0, bitmapBuffer.height, bitmapBuffer.pixels.data(), &info, DIB_RGB_COLORS) !=
                 bitmapBuffer.height)
             {
+                DeleteObject(bitmap);
                 LL_EXCEPTION_SYSTEM_ERROR("can not set bitmap pixels");
             }
 
