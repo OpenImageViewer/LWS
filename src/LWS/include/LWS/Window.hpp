@@ -96,7 +96,7 @@ namespace LWS
         void SetParent(Window* parent);
         [[nodiscard]] Window* GetParent() const;
 
-        void EnableDragAndDrop(bool enable);
+        [[nodiscard]] Result EnableDragAndDrop(bool enable);
 
         void SetDestroyOnClose(bool destroyOnClose);
 

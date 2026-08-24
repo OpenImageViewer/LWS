@@ -14,8 +14,10 @@
 #include <LWS/Win32/CursorBackendWin32.hpp>
 #include <LWS/Win32/EventWin32.hpp>
 #include <LWS/Win32/WindowBackendWin32.hpp>
+#include <LWS/Platform.hpp>
 #include "internal/DragAndDropTarget.hpp"
 #include "internal/MonitorInfo.hpp"
+#include "internal/PlatformState.hpp"
 #include "internal/WindowPosHelper.hpp"
 
 namespace
@@ -232,7 +234,12 @@ namespace LWS
 
         if (fDndEnabled)
         {
-            enableDragAndDrop(true);
+            const Result dragAndDropResult = enableDragAndDrop(true);
+            if (dragAndDropResult != Result::Success)
+            {
+                destroy();
+                return dragAndDropResult;
+            }
         }
 
         switch (config.displayState)
@@ -690,31 +697,40 @@ namespace LWS
         }
     }
 
-    void WindowBackendWin32::enableDragAndDrop(bool enable)
+    Result WindowBackendWin32::enableDragAndDrop(bool enable)
     {
-        fDndEnabled = enable;
-        if (fHwnd == nullptr)
-        {
-            return;
-        }
-
-        bool enabled = fDragAndDrop != nullptr;
-        if (enabled == enable)
-        {
-            return;
-        }
+        if (!Platform::isInitialized())
+            return Result::PlatformNotInitialized;
 
         if (!enable)
         {
-            fDragAndDrop->detach();
-            fDragAndDrop.reset();
-            return;
+            fDndEnabled = false;
+            if (fDragAndDrop != nullptr)
+            {
+                fDragAndDrop->detach();
+                fDragAndDrop.reset();
+            }
+            return Result::Success;
         }
 
-        fDragAndDrop = std::make_shared<internal::DragAndDropTarget>(fHwnd, [this](const std::filesystem::path& path)
+        if (!internal::isOleInitializedForCurrentThread())
+            return Result::IncompatibleThreadApartment;
+
+        fDndEnabled = true;
+        if (fHwnd == nullptr || fDragAndDrop != nullptr)
+            return Result::Success;
+
+        auto dragAndDrop = std::make_shared<internal::DragAndDropTarget>(fHwnd,
+                                                                         [this](const std::filesystem::path& path)
+                                                                         { dispatchEvent(EventDragDropFile{path}); });
+        if (FAILED(dragAndDrop->getAttachResult()))
         {
-            dispatchEvent(EventDragDropFile{ path });
-        });
+            fDndEnabled = false;
+            return Result::Failure;
+        }
+
+        fDragAndDrop = std::move(dragAndDrop);
+        return Result::Success;
     }
 
     EventListenerToken WindowBackendWin32::addListener(EventCallback cb)
@@ -1166,4 +1182,4 @@ namespace LWS
         }
     }
 }
-#endif // LWS_PLATFORM_WIN32
+#endif  // LWS_PLATFORM_WIN32

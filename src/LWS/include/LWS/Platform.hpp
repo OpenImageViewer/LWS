@@ -18,8 +18,30 @@ namespace LWS
             bool primary = false;
         };
 
-        void init();
+        Result init();
         void shutdown();
+        [[nodiscard]] bool isInitialized();
+
+        class [[nodiscard]] Session
+        {
+          public:
+
+            Session();
+            ~Session();
+
+            Session(const Session&) = delete;
+            Session& operator=(const Session&) = delete;
+            Session(Session&&) = delete;
+            Session& operator=(Session&&) = delete;
+
+            [[nodiscard]] explicit operator bool() const { return fResult == Result::Success; }
+            [[nodiscard]] Result GetResult() const { return fResult; }
+
+          private:
+
+            Result fResult;
+        };
+
         void runMessageLoop();
         bool processMessages();
 

@@ -17,6 +17,7 @@ namespace LWS::internal
         ~DragAndDropTarget();
 
         void detach();
+        [[nodiscard]] HRESULT getAttachResult() const { return fAttachResult; }
 
         STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override;
         STDMETHODIMP_(ULONG) AddRef() override;
@@ -33,6 +34,6 @@ namespace LWS::internal
         LONG mRefCount = 1;
         HWND fHwnd = nullptr;
         DragDropCallback fCallback;
-        bool fAttached = false;
+        HRESULT fAttachResult = E_UNEXPECTED;
     };
 }

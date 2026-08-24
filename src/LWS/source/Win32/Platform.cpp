@@ -6,11 +6,47 @@
 
 #include <LWS/Platform.hpp>
 #include "internal/MonitorInfo.hpp"
+#include "internal/PlatformState.hpp"
+
+#include <mutex>
 
 namespace
 {
-    UINT g_platformInitCount = 0;
-    bool g_oleInitialized = false;
+    struct PlatformThreadState
+    {
+        ~PlatformThreadState() { releaseOleReference(); }
+
+        void releaseOleReference()
+        {
+            if (ownsOleReference)
+                OleUninitialize();
+            ownsOleReference = false;
+            oleInitialized = false;
+        }
+
+        uint32_t initCount = 0;
+        bool ownsOleReference = false;
+        bool oleInitialized = false;
+    };
+
+    thread_local PlatformThreadState g_platformThreadState;
+    std::once_flag g_processInitFlag;
+
+    void initializeProcess()
+    {
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        if (user32 == nullptr)
+            return;
+
+        using SetProcessDpiAwarenessContextFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+        auto setDpiAwarenessContext = reinterpret_cast<SetProcessDpiAwarenessContextFn>(
+            GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
+        if (setDpiAwarenessContext == nullptr ||
+            setDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) == FALSE)
+        {
+            SetProcessDPIAware();
+        }
+    }
 
     int virtualKeyFromKeyCode(LWS::KeyCode key)
     {
@@ -148,50 +184,58 @@ namespace
     }
 }
 
+namespace LWS::internal
+{
+    bool isOleInitializedForCurrentThread()
+    {
+        return g_platformThreadState.initCount != 0 && g_platformThreadState.oleInitialized;
+    }
+}  // namespace LWS::internal
+
 namespace LWS::Platform
 {
-    void init()
+    Result init()
     {
-        if (g_platformInitCount++ != 0)
+        if (g_platformThreadState.initCount != 0)
         {
-            return;
+            ++g_platformThreadState.initCount;
+            return Result::Success;
         }
 
-        HMODULE user32 = GetModuleHandleW(L"user32.dll");
-        if (user32 != nullptr)
+        std::call_once(g_processInitFlag, initializeProcess);
+
+        const HRESULT oleResult = OleInitialize(nullptr);
+        if (oleResult == S_OK || oleResult == S_FALSE)
         {
-            using SetProcessDpiAwarenessContextFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
-            auto setDpiAwarenessContext = reinterpret_cast<SetProcessDpiAwarenessContextFn>(
-                GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
-            if (setDpiAwarenessContext != nullptr)
-            {
-                if (setDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) == FALSE)
-                {
-                    SetProcessDPIAware();
-                }
-            }
-            else
-            {
-                SetProcessDPIAware();
-            }
+            g_platformThreadState.ownsOleReference = true;
+            g_platformThreadState.oleInitialized = true;
+        }
+        else if (oleResult != RPC_E_CHANGED_MODE)
+        {
+            return Result::Failure;
         }
 
-        g_oleInitialized = SUCCEEDED(OleInitialize(nullptr));
+        g_platformThreadState.initCount = 1;
+        return Result::Success;
     }
 
     void shutdown()
     {
-        if (g_platformInitCount == 0)
+        if (g_platformThreadState.initCount == 0)
         {
             return;
         }
 
-        --g_platformInitCount;
-        if (g_platformInitCount == 0 && g_oleInitialized)
+        --g_platformThreadState.initCount;
+        if (g_platformThreadState.initCount == 0)
         {
-            OleUninitialize();
-            g_oleInitialized = false;
+            g_platformThreadState.releaseOleReference();
         }
+    }
+
+    bool isInitialized()
+    {
+        return g_platformThreadState.initCount != 0;
     }
 
     void runMessageLoop()

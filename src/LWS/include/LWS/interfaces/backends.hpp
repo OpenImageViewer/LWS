@@ -131,7 +131,7 @@ namespace LWS
         virtual DoubleClickMode getDoubleClickMode() const = 0;
         virtual void setCursor(std::shared_ptr<ICursorBackend> cursor) = 0;
         virtual void setParent(IWindowBackend* parent) = 0;
-        virtual void enableDragAndDrop(bool enable) = 0;
+        [[nodiscard]] virtual Result enableDragAndDrop(bool enable) = 0;
         [[nodiscard]] virtual EventListenerToken addListener(EventCallback cb) = 0;
         virtual void removeListener(EventListenerToken token) = 0;
         virtual void injectRawEvent(void* platformEvent) = 0;

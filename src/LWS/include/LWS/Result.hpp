@@ -8,6 +8,8 @@ namespace LWS
         InvalidState,
         NotSupported,
         AlreadyCreated,
-        NotCreated
+        NotCreated,
+        PlatformNotInitialized,
+        IncompatibleThreadApartment
     };
 }

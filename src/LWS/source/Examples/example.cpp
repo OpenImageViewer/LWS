@@ -8,7 +8,10 @@ int main()
 {
     using namespace LWS;
 
-    Platform::init();
+    if (Platform::init() != Result::Success)
+    {
+        return 1;
+    }
     Window win;
     WindowConfig config;
     config.title = LLUTILS_TEXT("Hello LWS");

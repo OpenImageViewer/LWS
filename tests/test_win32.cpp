@@ -16,6 +16,7 @@
     #include <LLUtils/Exception.h>
 
     #include <array>
+    #include <thread>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,12 +47,148 @@ namespace
 // ---------------------------------------------------------------------------
 TEST_CASE("Platform init and shutdown are idempotent", "[platform][win32]")
 {
-    LWS::Platform::init();
-    LWS::Platform::init();  // second call must not crash or assert
+    while (LWS::Platform::isInitialized())
+        LWS::Platform::shutdown();
+
+    REQUIRE(LWS::Platform::init() == LWS::Result::Success);
+    REQUIRE(LWS::Platform::init() == LWS::Result::Success);
+    REQUIRE(LWS::Platform::isInitialized());
+
     LWS::Platform::shutdown();
-    LWS::Platform::shutdown();  // second call must not crash
-    // re-init so later tests can use the platform
-    LWS::Platform::init();
+    REQUIRE(LWS::Platform::isInitialized());
+
+    LWS::Platform::shutdown();
+    REQUIRE_FALSE(LWS::Platform::isInitialized());
+
+    LWS::Platform::shutdown();
+    REQUIRE_FALSE(LWS::Platform::isInitialized());
+}
+
+TEST_CASE("Window creation requires platform initialization on the current thread", "[platform][window][win32]")
+{
+    while (LWS::Platform::isInitialized())
+        LWS::Platform::shutdown();
+
+    LWS::Window win;
+    REQUIRE(win.Create(makeTestConfig()) == LWS::Result::PlatformNotInitialized);
+    REQUIRE(win.GetHandle() == 0);
+}
+
+TEST_CASE("Platform session owns one balanced thread initialization", "[platform][win32]")
+{
+    while (LWS::Platform::isInitialized())
+        LWS::Platform::shutdown();
+
+    {
+        const LWS::Platform::Session session;
+        REQUIRE(session);
+        REQUIRE(session.GetResult() == LWS::Result::Success);
+        REQUIRE(LWS::Platform::isInitialized());
+    }
+
+    REQUIRE_FALSE(LWS::Platform::isInitialized());
+}
+
+TEST_CASE("Platform initialization is independent for each UI thread", "[platform][thread][win32]")
+{
+    REQUIRE(LWS::Platform::init() == LWS::Result::Success);
+
+    struct ThreadResults
+    {
+        bool initiallyInitialized = true;
+        LWS::Result createBeforeInit = LWS::Result::Failure;
+        LWS::Result init = LWS::Result::Failure;
+        LWS::Result createAfterInit = LWS::Result::Failure;
+        LWS::Result enableDragAndDrop = LWS::Result::Failure;
+        bool initializedAfterShutdown = true;
+    } results;
+
+    std::thread worker(
+        [&results]()
+        {
+            results.initiallyInitialized = LWS::Platform::isInitialized();
+            LWS::Window win;
+            results.createBeforeInit = win.Create(makeTestConfig());
+            results.init = LWS::Platform::init();
+            results.createAfterInit = win.Create(makeTestConfig());
+            results.enableDragAndDrop = win.EnableDragAndDrop(true);
+            win.Destroy();
+            LWS::Platform::shutdown();
+            results.initializedAfterShutdown = LWS::Platform::isInitialized();
+        });
+    worker.join();
+
+    REQUIRE_FALSE(results.initiallyInitialized);
+    REQUIRE(results.createBeforeInit == LWS::Result::PlatformNotInitialized);
+    REQUIRE(results.init == LWS::Result::Success);
+    REQUIRE(results.createAfterInit == LWS::Result::Success);
+    REQUIRE(results.enableDragAndDrop == LWS::Result::Success);
+    REQUIRE_FALSE(results.initializedAfterShutdown);
+    REQUIRE(LWS::Platform::isInitialized());
+    LWS::Platform::shutdown();
+}
+
+TEST_CASE("Platform owns a balanced reference to an externally initialized STA", "[platform][com][win32]")
+{
+    struct ThreadResults
+    {
+        HRESULT externalInit = E_UNEXPECTED;
+        LWS::Result platformInit = LWS::Result::Failure;
+        HRESULT probeAfterShutdown = E_UNEXPECTED;
+    } results;
+
+    std::thread worker(
+        [&results]()
+        {
+            results.externalInit = OleInitialize(nullptr);
+            if (SUCCEEDED(results.externalInit))
+            {
+                results.platformInit = LWS::Platform::init();
+                LWS::Platform::shutdown();
+                results.probeAfterShutdown = OleInitialize(nullptr);
+                if (SUCCEEDED(results.probeAfterShutdown))
+                    OleUninitialize();
+                OleUninitialize();
+            }
+        });
+    worker.join();
+
+    REQUIRE(SUCCEEDED(results.externalInit));
+    REQUIRE(results.platformInit == LWS::Result::Success);
+    REQUIRE(results.probeAfterShutdown == S_FALSE);
+}
+
+TEST_CASE("MTA threads can create windows but cannot enable OLE drag and drop", "[platform][com][win32]")
+{
+    struct ThreadResults
+    {
+        HRESULT externalInit = E_UNEXPECTED;
+        LWS::Result platformInit = LWS::Result::Failure;
+        LWS::Result create = LWS::Result::Failure;
+        LWS::Result enableDragAndDrop = LWS::Result::Failure;
+    } results;
+
+    std::thread worker(
+        [&results]()
+        {
+            results.externalInit = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            if (SUCCEEDED(results.externalInit))
+            {
+                results.platformInit = LWS::Platform::init();
+                LWS::Window win;
+                results.create = win.Create(makeTestConfig());
+                results.enableDragAndDrop = win.EnableDragAndDrop(true);
+                win.Destroy();
+                LWS::Platform::shutdown();
+                CoUninitialize();
+            }
+        });
+    worker.join();
+
+    REQUIRE(SUCCEEDED(results.externalInit));
+    REQUIRE(results.platformInit == LWS::Result::Success);
+    REQUIRE(results.create == LWS::Result::Success);
+    REQUIRE(results.enableDragAndDrop == LWS::Result::IncompatibleThreadApartment);
 }
 
 // ---------------------------------------------------------------------------
@@ -387,8 +524,12 @@ TEST_CASE("Child window has correct parent pointer", "[window][win32]")
 // ---------------------------------------------------------------------------
 TEST_CASE("processMessages returns false when no WM_QUIT is pending", "[platform][win32]")
 {
-    LWS::Platform::init();
-    // There is no pending WM_QUIT — processMessages should return false.
+    REQUIRE(LWS::Platform::init() == LWS::Result::Success);
+    // Other window tests may have posted WM_QUIT on this thread.
+    while (LWS::Platform::processMessages())
+    {
+    }
+
     bool result = LWS::Platform::processMessages();
     REQUIRE(result == false);
     LWS::Platform::shutdown();

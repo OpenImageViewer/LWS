@@ -77,7 +77,7 @@ namespace LWS
         DoubleClickMode getDoubleClickMode() const override;
         void setCursor(std::shared_ptr<ICursorBackend> cursor) override;
         void setParent(IWindowBackend* parent) override;
-        void enableDragAndDrop(bool enable) override;
+        Result enableDragAndDrop(bool enable) override;
         EventListenerToken addListener(EventCallback cb) override;
         void removeListener(EventListenerToken token) override;
         void injectRawEvent(void* platformEvent) override;

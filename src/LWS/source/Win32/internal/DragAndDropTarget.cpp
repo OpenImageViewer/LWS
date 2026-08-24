@@ -10,7 +10,7 @@ namespace LWS::internal
         : fHwnd(hwnd)
         , fCallback(std::move(callback))
     {
-        fAttached = SUCCEEDED(RegisterDragDrop(fHwnd, this));
+        fAttachResult = RegisterDragDrop(fHwnd, this);
     }
 
     DragAndDropTarget::~DragAndDropTarget()
@@ -20,10 +20,10 @@ namespace LWS::internal
 
     void DragAndDropTarget::detach()
     {
-        if (fAttached && fHwnd != nullptr)
+        if (SUCCEEDED(fAttachResult) && fHwnd != nullptr)
         {
             RevokeDragDrop(fHwnd);
-            fAttached = false;
+            fAttachResult = E_UNEXPECTED;
         }
     }
 

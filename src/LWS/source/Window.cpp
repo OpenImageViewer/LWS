@@ -1,5 +1,6 @@
 #include <LWS/Window.hpp>
 #include <LWS/Cursor.hpp>
+#include <LWS/Platform.hpp>
 #include <algorithm>
 #include <cassert>
 #include <stdexcept>
@@ -26,6 +27,10 @@ namespace LWS
         if (!impl_)
         {
             return Result::InvalidState;
+        }
+        if (!Platform::isInitialized())
+        {
+            return Result::PlatformNotInitialized;
         }
 
         return impl_->create(config);
@@ -152,7 +157,14 @@ namespace LWS
     }
 
     Window* Window::GetParent() const { return fParent; }
-    void Window::EnableDragAndDrop(bool enable) { impl_->enableDragAndDrop(enable); }
+    Result Window::EnableDragAndDrop(bool enable)
+    {
+        if (!Platform::isInitialized())
+        {
+            return Result::PlatformNotInitialized;
+        }
+        return impl_->enableDragAndDrop(enable);
+    }
     void Window::SetDestroyOnClose(bool destroy_on_close) { fDestroyOnClose = destroy_on_close; }
     EventListenerToken Window::AddEventListener(EventCallback callback) { return impl_->addListener(std::move(callback)); }
     void Window::RemoveEventListener(EventListenerToken token) { impl_->removeListener(token); }

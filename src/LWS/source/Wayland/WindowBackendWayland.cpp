@@ -260,9 +260,10 @@ namespace LWS
         // TODO: xdg_toplevel_set_parent(fXdgToplevel, parent->fXdgToplevel)
     }
 
-    void WindowBackendWayland::enableDragAndDrop(bool)
+    Result WindowBackendWayland::enableDragAndDrop(bool)
     {
         // TODO: wl_data_device_manager + wl_data_device offer/drop protocol
+        return Result::NotSupported;
     }
 
     EventListenerToken WindowBackendWayland::addListener(EventCallback cb)

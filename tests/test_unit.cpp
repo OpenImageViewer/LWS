@@ -24,6 +24,8 @@ TEST_CASE("Result enum covers all expected values", "[result]")
     REQUIRE(LWS::Result::NotSupported != LWS::Result::Success);
     REQUIRE(LWS::Result::AlreadyCreated != LWS::Result::Success);
     REQUIRE(LWS::Result::NotCreated != LWS::Result::Success);
+    REQUIRE(LWS::Result::PlatformNotInitialized != LWS::Result::Success);
+    REQUIRE(LWS::Result::IncompatibleThreadApartment != LWS::Result::Success);
 }
 
 // ---------------------------------------------------------------------------

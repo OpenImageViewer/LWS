@@ -3,8 +3,25 @@
 
 namespace LWS::Platform
 {
-    void init() {}
-    void shutdown() {}
+    namespace
+    {
+        thread_local uint32_t g_initCount = 0;
+    }
+
+    Result init()
+    {
+        ++g_initCount;
+        return Result::Success;
+    }
+    void shutdown()
+    {
+        if (g_initCount != 0)
+            --g_initCount;
+    }
+    bool isInitialized()
+    {
+        return g_initCount != 0;
+    }
     void runMessageLoop() {}
     bool processMessages() { return false; }
     bool isKeyPressed(KeyCode) { return false; }
