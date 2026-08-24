@@ -1,12 +1,82 @@
-// Wayland backend stub implementation.
-// All methods return Result::NotSupported or do nothing.
-// Replace with real wl_* API calls once wayland-client.h is available at build time.
 #include <LWS/Wayland/WindowBackendWayland.hpp>
+#include "internal/WaylandPlatformState.hpp"
 
 #ifdef LWS_PLATFORM_WAYLAND
 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <wayland-client.h>
+#include <xdg-shell-client-protocol.h>
+#include <xdg-decoration-unstable-v1-client-protocol.h>
+#include <LLUtils/Colors.h>
+
+#include <cerrno>
+#include <cstring>
 #include <utility>
 #include <vector>
+
+namespace
+{
+    void xdgSurfaceConfigure(void* data, xdg_surface* surface, uint32_t serial)
+    {
+        xdg_surface_ack_configure(surface, serial);
+        auto* self = static_cast<LWS::WindowBackendWayland*>(data);
+        self->markConfigured();
+        self->commitBuffer();
+    }
+
+    const xdg_surface_listener g_xdgSurfaceListener = {
+        .configure = xdgSurfaceConfigure,
+    };
+
+    void toplevelConfigure(void* data, xdg_toplevel*, int32_t width, int32_t height, [[maybe_unused]] wl_array*)
+    {
+        auto* self = static_cast<LWS::WindowBackendWayland*>(data);
+        if (width > 0 && height > 0)
+        {
+            self->setSize({ width, height });
+        }
+    }
+
+    void toplevelClose(void*, xdg_toplevel*)
+    {
+        LWS::internal::decrementWindowCount();
+    }
+
+    void toplevelConfigureBounds(void*, xdg_toplevel*, int32_t, int32_t)
+    {
+        // Advisory bounds from the compositor — ignored for now.
+    }
+
+    void toplevelWmCapabilities(void*, xdg_toplevel*, wl_array*)
+    {
+        // Advertised compositor capabilities — ignored for now.
+    }
+
+    const xdg_toplevel_listener g_xdgToplevelListener = {
+        .configure = toplevelConfigure,
+        .close = toplevelClose,
+        .configure_bounds = toplevelConfigureBounds,
+        .wm_capabilities = toplevelWmCapabilities,
+    };
+
+    // ---- zxdg_toplevel_decoration_v1 listener ----
+    void decoConfigure(void*, zxdg_toplevel_decoration_v1*, uint32_t) {}
+
+    const zxdg_toplevel_decoration_v1_listener g_decoListener = {
+        .configure = decoConfigure,
+    };
+
+    // Scale from LLUtils Color (ARGB) to a Wayland-compatible ARGB8888 uint32_t.
+    uint32_t colorToArgb8888(LLUtils::Color color)
+    {
+        return (static_cast<uint32_t>(color.A()) << 24) |
+            (static_cast<uint32_t>(color.R()) << 16) |
+            (static_cast<uint32_t>(color.G()) << 8) |
+            static_cast<uint32_t>(color.B());
+    }
+}
 
 namespace LWS
 {
@@ -27,35 +97,135 @@ namespace LWS
         fEraseBackground = config.eraseBackground;
         fWindowStyles = config.styles;
         fDisplayState = config.displayState;
+        fBackgroundColor = LLUtils::Colors::Black;
 
-        // TODO: wl_compositor_create_surface(g_wlCompositor) → fWlSurface
-        // TODO: xdg_wm_base_get_xdg_surface(g_xdgWmBase, fWlSurface) → fXdgSurface
-        // TODO: xdg_surface_get_toplevel(fXdgSurface) → fXdgToplevel
-        // TODO: xdg_toplevel_set_title(fXdgToplevel, fTitle.c_str())
-        // TODO: wl_surface_commit(fWlSurface)
-        return Result::NotSupported;
+        wl_compositor* compositor = internal::getWlCompositor();
+        xdg_wm_base* xdgWmBase = internal::getXdgWmBase();
+        if (!compositor || !xdgWmBase)
+        {
+            return Result::Failure;
+        }
+
+        // Create wl_surface
+        fWlSurface = wl_compositor_create_surface(compositor);
+        if (!fWlSurface)
+        {
+            return Result::Failure;
+        }
+
+        // Create xdg_surface from wl_surface
+        fXdgSurface = xdg_wm_base_get_xdg_surface(xdgWmBase, fWlSurface);
+        if (!fXdgSurface)
+        {
+            wl_surface_destroy(fWlSurface);
+            fWlSurface = nullptr;
+            return Result::Failure;
+        }
+        xdg_surface_add_listener(fXdgSurface, &g_xdgSurfaceListener, this);
+
+        // Create xdg_toplevel from xdg_surface
+        fXdgToplevel = xdg_surface_get_toplevel(fXdgSurface);
+        if (!fXdgToplevel)
+        {
+            xdg_surface_destroy(fXdgSurface);
+            fXdgSurface = nullptr;
+            wl_surface_destroy(fWlSurface);
+            fWlSurface = nullptr;
+            return Result::Failure;
+        }
+        xdg_toplevel_add_listener(fXdgToplevel, &g_xdgToplevelListener, this);
+
+        // Request server-side decorations
+        zxdg_decoration_manager_v1* decoManager = internal::getDecoManager();
+        if (decoManager)
+        {
+            fDecoration = zxdg_decoration_manager_v1_get_toplevel_decoration(
+                decoManager, fXdgToplevel);
+            zxdg_toplevel_decoration_v1_add_listener(fDecoration, &g_decoListener, this);
+            zxdg_toplevel_decoration_v1_set_mode(fDecoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+        }
+
+        // Set the window title (convert from native string to UTF-8)
+        xdg_toplevel_set_title(fXdgToplevel, fTitle.c_str());
+
+        // Set minimum/maximum size hints
+        if (fMinSize.x > 0 && fMinSize.y > 0)
+        {
+            xdg_toplevel_set_min_size(fXdgToplevel, fMinSize.x, fMinSize.y);
+        }
+        if (fMaxSize.x > 0 && fMaxSize.y > 0)
+        {
+            xdg_toplevel_set_max_size(fXdgToplevel, fMaxSize.x, fMaxSize.y);
+        }
+
+        // Commit the surface to trigger the initial configure
+        wl_surface_commit(fWlSurface);
+
+        // Track open windows for message loop auto-exit
+        fWindowCounted = true;
+        internal::incrementWindowCount();
+
+        return Result::Success;
     }
 
     void WindowBackendWayland::destroy()
     {
-        // TODO: xdg_toplevel_destroy(fXdgToplevel)
-        // TODO: xdg_surface_destroy(fXdgSurface)
-        // TODO: wl_surface_destroy(fWlSurface)
-        fXdgToplevel = nullptr;
-        fXdgSurface = nullptr;
-        fWlSurface = nullptr;
+        destroyShmBuffer();
+
+        // Only send protocol destroy requests if the display connection is still alive.
+        // shutdown() invalidates the display before disconnecting; if the window destructor
+        // runs after that, we must not touch any wl_* or xdg_* objects.
+        if (internal::isDisplayConnected())
+        {
+            if (fDecoration)
+            {
+                zxdg_toplevel_decoration_v1_destroy(fDecoration);
+                fDecoration = nullptr;
+            }
+            if (fXdgToplevel)
+            {
+                xdg_toplevel_destroy(fXdgToplevel);
+                fXdgToplevel = nullptr;
+            }
+            if (fXdgSurface)
+            {
+                xdg_surface_destroy(fXdgSurface);
+                fXdgSurface = nullptr;
+            }
+            if (fWlSurface)
+            {
+                wl_surface_destroy(fWlSurface);
+                fWlSurface = nullptr;
+            }
+        }
+        else
+        {
+            fDecoration = nullptr;
+            fXdgToplevel = nullptr;
+            fXdgSurface = nullptr;
+            fWlSurface = nullptr;
+        }
+
+        // Decrement open window count — may trigger message loop exit
+        if (fWindowCounted)
+        {
+            fWindowCounted = false;
+            internal::decrementWindowCount();
+        }
     }
 
     void WindowBackendWayland::show()
     {
         fVisible = true;
-        // TODO: unset_minimized on xdg_toplevel; wl_surface_commit
     }
 
     void WindowBackendWayland::hide()
     {
         fVisible = false;
-        // TODO: xdg_toplevel_set_minimized(fXdgToplevel)
+        if (fXdgToplevel)
+        {
+            xdg_toplevel_set_minimized(fXdgToplevel);
+        }
     }
 
     bool WindowBackendWayland::getVisible() const
@@ -66,7 +236,23 @@ namespace LWS
     void WindowBackendWayland::setDisplayState(WindowDisplayState state)
     {
         fDisplayState = state;
-        // TODO: map to xdg_toplevel_set_minimized / set_maximized / unset_maximized
+        if (!fXdgToplevel)
+            return;
+
+        switch (state)
+        {
+        case WindowDisplayState::Minimized:
+            xdg_toplevel_set_minimized(fXdgToplevel);
+            break;
+        case WindowDisplayState::Maximized:
+            xdg_toplevel_set_maximized(fXdgToplevel);
+            break;
+        case WindowDisplayState::Restored:
+            xdg_toplevel_unset_maximized(fXdgToplevel);
+            break;
+        default:
+            break;
+        }
     }
 
     WindowDisplayState WindowBackendWayland::getDisplayState() const
@@ -77,7 +263,10 @@ namespace LWS
     void WindowBackendWayland::setTitle(const LWS::string_type& title)
     {
         fTitle = title;
-        // TODO: xdg_toplevel_set_title(fXdgToplevel, utf8_title.c_str())
+        if (fXdgToplevel)
+        {
+            xdg_toplevel_set_title(fXdgToplevel, fTitle.c_str());
+        }
     }
 
     LWS::string_type WindowBackendWayland::getTitle() const
@@ -88,25 +277,21 @@ namespace LWS
     void WindowBackendWayland::setWindowIcon(const std::filesystem::path&)
     {
         // No standard Wayland protocol for window icons.
-        // Desktop integration via .desktop file application icon.
     }
 
     void WindowBackendWayland::setPosition(Point)
     {
         // Wayland does not expose a window position API.
-        // Position is managed entirely by the compositor.
     }
 
     Point WindowBackendWayland::getPosition() const
     {
-        // Not available on Wayland — compositor controls placement.
         return { 0, 0 };
     }
 
     void WindowBackendWayland::setSize(Size sz)
     {
         fSize = sz;
-        // TODO: xdg_toplevel configure response (size negotiation via configure event)
     }
 
     Size WindowBackendWayland::getClientSize() const
@@ -128,7 +313,6 @@ namespace LWS
     {
         fSize = p.size;
         fDisplayState = p.displayState;
-        // Position ignored — compositor-controlled on Wayland.
     }
 
     WindowPlacement WindowBackendWayland::getPlacement() const
@@ -140,8 +324,13 @@ namespace LWS
     {
         fMinSize = minSize;
         fMaxSize = maxSize;
-        // TODO: xdg_toplevel_set_min_size(fXdgToplevel, minSize.x, minSize.y)
-        // TODO: xdg_toplevel_set_max_size(fXdgToplevel, maxSize.x, maxSize.y)
+        if (fXdgToplevel)
+        {
+            if (fMinSize.x > 0 && fMinSize.y > 0)
+                xdg_toplevel_set_min_size(fXdgToplevel, fMinSize.x, fMinSize.y);
+            if (fMaxSize.x > 0 && fMaxSize.y > 0)
+                xdg_toplevel_set_max_size(fXdgToplevel, fMaxSize.x, fMaxSize.y);
+        }
     }
 
     Size WindowBackendWayland::getMinSize() const { return fMinSize; }
@@ -153,8 +342,6 @@ namespace LWS
         fWindowStyles = static_cast<WindowStyle>(enable
             ? (current | std::to_underlying(styles))
             : (current & ~std::to_underlying(styles)));
-        // Wayland compositor controls window decorations; only limited style hints available
-        // via the xdg-decoration protocol (prefer server-side vs client-side decorations).
     }
 
     WindowStyle WindowBackendWayland::getWindowStyles() const { return fWindowStyles; }
@@ -162,7 +349,6 @@ namespace LWS
     void WindowBackendWayland::setForeground()
     {
         // No Wayland API to programmatically raise or activate a window.
-        // Activation is compositor-initiated only (e.g. xdg_activation_v1 token).
     }
 
     void WindowBackendWayland::setFocus()
@@ -172,14 +358,12 @@ namespace LWS
 
     bool WindowBackendWayland::isInFocus() const
     {
-        // TODO: track via wl_keyboard.enter / wl_keyboard.leave events
         return false;
     }
 
     void WindowBackendWayland::setAlwaysOnTop(bool onTop)
     {
         fAlwaysOnTop = onTop;
-        // TODO: zwlr_layer_shell_v1 (layer surface) — requires compositor extension support
     }
 
     bool WindowBackendWayland::getAlwaysOnTop() const { return fAlwaysOnTop; }
@@ -187,7 +371,6 @@ namespace LWS
     void WindowBackendWayland::setTransparent(bool transparent)
     {
         fTransparent = transparent;
-        // wl_surface alpha channel is always available — controlled via the pixel buffer content.
     }
 
     bool WindowBackendWayland::getTransparent() const { return fTransparent; }
@@ -195,19 +378,38 @@ namespace LWS
     void WindowBackendWayland::setBackgroundColor(LLUtils::Color color)
     {
         fBackgroundColor = color;
-        // TODO: fill wl_shm buffer with background color when no app content is rendered
+        if (fWlSurface && fEraseBackground && internal::isDisplayConnected())
+        {
+            destroyShmBuffer();
+            initShmBuffer();
+            commitBuffer();
+        }
     }
 
     LLUtils::Color WindowBackendWayland::getBackgroundColor() const { return fBackgroundColor; }
 
-    void WindowBackendWayland::setEraseBackground(bool erase) { fEraseBackground = erase; }
+    void WindowBackendWayland::setEraseBackground(bool erase)
+    {
+        fEraseBackground = erase;
+    }
+
     bool WindowBackendWayland::getEraseBackground() const { return fEraseBackground; }
 
     void WindowBackendWayland::setFullScreenState(FullScreenState state)
     {
         fFullScreenState = state;
         fFullScreen = (state != FullScreenState::None && state != FullScreenState::Windowed);
-        // TODO: xdg_toplevel_set_fullscreen(fXdgToplevel, wl_output) / unset_fullscreen
+        if (!fXdgToplevel)
+            return;
+
+        if (fFullScreen)
+        {
+            xdg_toplevel_set_fullscreen(fXdgToplevel, nullptr);
+        }
+        else
+        {
+            xdg_toplevel_unset_fullscreen(fXdgToplevel);
+        }
     }
 
     FullScreenState WindowBackendWayland::getFullScreenState() const { return fFullScreenState; }
@@ -220,7 +422,6 @@ namespace LWS
 
     bool WindowBackendWayland::isMouseInClientRect() const
     {
-        // TODO: track via wl_pointer.enter / wl_pointer.motion / wl_pointer.leave
         return false;
     }
 
@@ -228,14 +429,12 @@ namespace LWS
 
     Point WindowBackendWayland::getMousePosition() const
     {
-        // TODO: last known pointer position from wl_pointer.motion events
         return { 0, 0 };
     }
 
     void WindowBackendWayland::setLockMouseToWindowMode(LockMouseToWindowMode mode)
     {
         fLockMode = mode;
-        // TODO: zwp_pointer_constraints_v1.lock_pointer (zwp-pointer-constraints-unstable-v1)
     }
 
     LockMouseToWindowMode WindowBackendWayland::getLockMouseToWindowMode() const { return fLockMode; }
@@ -243,9 +442,6 @@ namespace LWS
     void WindowBackendWayland::setDoubleClickMode(DoubleClickMode mode)
     {
         fDoubleClickMode = mode;
-        // Wayland compositor controls window decorations; non-client double-click behaviour
-        // is not available via any standard protocol. ClientArea double-clicks are fired via
-        // the normal wl_pointer button event sequence detected by the application.
     }
 
     DoubleClickMode WindowBackendWayland::getDoubleClickMode() const { return fDoubleClickMode; }
@@ -257,12 +453,11 @@ namespace LWS
 
     void WindowBackendWayland::setParent(IWindowBackend*)
     {
-        // TODO: xdg_toplevel_set_parent(fXdgToplevel, parent->fXdgToplevel)
+        // TODO: xdg_toplevel_set_parent
     }
 
     Result WindowBackendWayland::enableDragAndDrop(bool)
     {
-        // TODO: wl_data_device_manager + wl_data_device offer/drop protocol
         return Result::NotSupported;
     }
 
@@ -280,12 +475,98 @@ namespace LWS
 
     void WindowBackendWayland::injectRawEvent(void*)
     {
-        // TODO: cast to Wayland-specific raw event struct and process
     }
 
     Handle WindowBackendWayland::getHandle() const
     {
         return reinterpret_cast<Handle>(fWlSurface);
+    }
+
+    // ---- SHM buffer management ----
+
+    void WindowBackendWayland::initShmBuffer()
+    {
+        wl_shm* shm = internal::getWlShm();
+        if (!shm)
+            return;
+
+        uint32_t stride = fSize.x * 4;
+        fShmSize = stride * fSize.y;
+
+        // Create anonymous file for shared memory
+        fShmFd = memfd_create("lws-shm", MFD_CLOEXEC);
+        if (fShmFd < 0)
+            return;
+
+        // Set the file size
+        if (ftruncate(fShmFd, fShmSize) < 0)
+        {
+            close(fShmFd);
+            fShmFd = -1;
+            return;
+        }
+
+        // Memory-map the file
+        fShmData = mmap(nullptr, fShmSize, PROT_READ | PROT_WRITE, MAP_SHARED, fShmFd, 0);
+        if (fShmData == MAP_FAILED)
+        {
+            close(fShmFd);
+            fShmFd = -1;
+            fShmData = nullptr;
+            return;
+        }
+
+        // Fill the buffer with the background color
+        uint32_t* pixels = static_cast<uint32_t*>(fShmData);
+        uint32_t argb = colorToArgb8888(fBackgroundColor);
+        for (uint32_t i = 0; i < fSize.x * fSize.y; ++i)
+        {
+            pixels[i] = argb;
+        }
+
+        // Create wl_shm_pool and wl_buffer
+        wl_shm_pool* pool = wl_shm_create_pool(shm, fShmFd, fShmSize);
+        fWlBuffer = wl_shm_pool_create_buffer(pool, 0, fSize.x, fSize.y, stride, WL_SHM_FORMAT_ARGB8888);
+        wl_shm_pool_destroy(pool);
+    }
+
+    void WindowBackendWayland::destroyShmBuffer()
+    {
+        if (fWlBuffer)
+        {
+            if (internal::isDisplayConnected())
+                wl_buffer_destroy(fWlBuffer);
+            fWlBuffer = nullptr;
+        }
+        if (fShmData && fShmData != MAP_FAILED)
+        {
+            munmap(fShmData, fShmSize);
+            fShmData = nullptr;
+        }
+        if (fShmFd >= 0)
+        {
+            close(fShmFd);
+            fShmFd = -1;
+        }
+        fShmSize = 0;
+    }
+
+    void WindowBackendWayland::commitBuffer()
+    {
+        if (!fWlSurface)
+            return;
+
+        if (fEraseBackground && !fWlBuffer)
+        {
+            initShmBuffer();
+        }
+
+        if (!fWlBuffer || !fConfigured)
+            return;
+
+        wl_surface_attach(fWlSurface, fWlBuffer, 0, 0);
+        wl_surface_damage_buffer(fWlSurface, 0, 0, fSize.x, fSize.y);
+        wl_surface_commit(fWlSurface);
     }
 }
 

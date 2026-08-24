@@ -1,14 +1,21 @@
 #pragma once
+#include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include <LWS/interfaces/backends.hpp>
 
+struct wl_buffer;
+struct wl_shm_pool;
+struct wl_surface;
+struct xdg_surface;
+struct xdg_toplevel;
+struct zxdg_toplevel_decoration_v1;
+
 namespace LWS
 {
     /// Wayland implementation of IWindowBackend.
-    /// All methods are currently stubs — to be implemented in a future commit
-    /// when a Wayland compositor is available at build time.
     ///
     /// Protocol mapping:
     ///   create()           → wl_surface + xdg_toplevel_surface (xdg-shell protocol)
@@ -84,11 +91,24 @@ namespace LWS
         Handle getHandle() const override;
         BackendId backend() const override { return BackendId::Wayland; }
 
+        void commitBuffer();
+        void markConfigured() { fConfigured = true; }
+
     private:
-        // Wayland surface handles (opaque void* to avoid including wayland-client.h here)
-        void* fWlSurface = nullptr;      // wl_surface*
-        void* fXdgSurface = nullptr;     // xdg_surface*
-        void* fXdgToplevel = nullptr;    // xdg_toplevel*
+        void initShmBuffer();
+        void destroyShmBuffer();
+
+        ::wl_surface* fWlSurface = nullptr;
+        ::xdg_surface* fXdgSurface = nullptr;
+        ::xdg_toplevel* fXdgToplevel = nullptr;
+        ::zxdg_toplevel_decoration_v1* fDecoration = nullptr;
+
+        ::wl_buffer* fWlBuffer = nullptr;
+        void* fShmData = nullptr;
+        int fShmFd = -1;
+        uint32_t fShmSize = 0;
+        bool fWindowCounted = false;
+        bool fConfigured = false;
 
         LWS::string_type fTitle;
         Size fSize = { 800, 600 };

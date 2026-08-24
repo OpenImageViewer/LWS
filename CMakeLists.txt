@@ -53,6 +53,7 @@ function(lws_configure_target target)
     )
   elseif(LWS_PLATFORM_WAYLAND)
     target_compile_definitions(${target} PUBLIC LWS_PLATFORM_WAYLAND)
+    target_link_libraries(${target} PRIVATE Wayland::Client)
   elseif(LWS_PLATFORM_X11)
     target_compile_definitions(${target} PUBLIC LWS_PLATFORM_X11)
   endif()
@@ -76,8 +77,55 @@ elseif(LWS_PLATFORM_X11)
   list(FILTER lwsLibSources EXCLUDE REGEX ".*/Wayland/(CursorBackendWayland|WindowBackendWayland|WindowWayland)\\.cpp$")
 endif()
 
+# ---------------------------------------------------------------------------
+# Wayland xdg-shell protocol code generation
+# ---------------------------------------------------------------------------
+if(LWS_PLATFORM_WAYLAND)
+  find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
+  execute_process(
+    COMMAND ${CMAKE_COMMAND} -E env PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig
+      pkg-config --variable=pkgdatadir wayland-protocols
+    OUTPUT_VARIABLE WAYLAND_PROTOCOLS_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  set(XDG_SHELL_XML "${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml")
+  set(XDG_DECORATION_XML "${WAYLAND_PROTOCOLS_DIR}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml")
+  set(XDG_SHELL_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/wayland-generated")
+  file(MAKE_DIRECTORY "${XDG_SHELL_GEN_DIR}")
+
+  add_custom_command(
+    OUTPUT "${XDG_SHELL_GEN_DIR}/xdg-shell-client-protocol.h" "${XDG_SHELL_GEN_DIR}/xdg-shell-protocol.c"
+    COMMAND ${WAYLAND_SCANNER} client-header "${XDG_SHELL_XML}" "${XDG_SHELL_GEN_DIR}/xdg-shell-client-protocol.h"
+    COMMAND ${WAYLAND_SCANNER} private-code "${XDG_SHELL_XML}" "${XDG_SHELL_GEN_DIR}/xdg-shell-protocol.c"
+    DEPENDS "${XDG_SHELL_XML}"
+    COMMENT "Generating xdg-shell protocol code"
+  )
+  add_custom_command(
+    OUTPUT "${XDG_SHELL_GEN_DIR}/xdg-decoration-unstable-v1-client-protocol.h" "${XDG_SHELL_GEN_DIR}/xdg-decoration-unstable-v1-protocol.c"
+    COMMAND ${WAYLAND_SCANNER} client-header "${XDG_DECORATION_XML}" "${XDG_SHELL_GEN_DIR}/xdg-decoration-unstable-v1-client-protocol.h"
+    COMMAND ${WAYLAND_SCANNER} private-code "${XDG_DECORATION_XML}" "${XDG_SHELL_GEN_DIR}/xdg-decoration-unstable-v1-protocol.c"
+    DEPENDS "${XDG_DECORATION_XML}"
+    COMMENT "Generating xdg-decoration protocol code"
+  )
+  add_custom_target(xdg_shell_protocol DEPENDS
+    "${XDG_SHELL_GEN_DIR}/xdg-shell-client-protocol.h"
+    "${XDG_SHELL_GEN_DIR}/xdg-shell-protocol.c"
+    "${XDG_SHELL_GEN_DIR}/xdg-decoration-unstable-v1-client-protocol.h"
+    "${XDG_SHELL_GEN_DIR}/xdg-decoration-unstable-v1-protocol.c"
+  )
+endif()
+
 add_library(LWSLib STATIC ${lwsLibSources})
 lws_configure_target(LWSLib)
+
+if(LWS_PLATFORM_WAYLAND)
+  target_sources(LWSLib PRIVATE
+    "${XDG_SHELL_GEN_DIR}/xdg-shell-protocol.c"
+    "${XDG_SHELL_GEN_DIR}/xdg-decoration-unstable-v1-protocol.c"
+  )
+  target_include_directories(LWSLib PRIVATE "${XDG_SHELL_GEN_DIR}")
+  add_dependencies(LWSLib xdg_shell_protocol)
+endif()
 
 # ---------------------------------------------------------------------------
 # Main executable
