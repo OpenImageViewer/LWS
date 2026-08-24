@@ -26,7 +26,6 @@ namespace LWS
     ClipboardResult Clipboard::SetClipboardData(Handle, ClipboardFormatType, const std::byte*, size_t) { return ClipboardResult::UnknownError; }
     ClipboardResult Clipboard::SetClipboardData(Handle, std::span<const ClipboardDataView>) { return ClipboardResult::UnknownError; }
     ClipboardResult Clipboard::SetClipboardText(Handle, const char_type*) { return ClipboardResult::UnknownError; }
-    ClipboardResult Clipboard::SetClipboardText(Handle, const char*) { return ClipboardResult::UnknownError; }
     ClipboardData Clipboard::GetClipboardData() { return {}; }
     ClipboardResult Clipboard::GetClipboardError() const { return ClipboardResult::UnknownError; }
 

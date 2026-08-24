@@ -36,7 +36,9 @@ namespace LWS
         ClipboardResult SetClipboardData(Handle ownerWindow, ClipboardFormatType format, const std::byte* data, size_t size);
         ClipboardResult SetClipboardData(Handle ownerWindow, std::span<const ClipboardDataView> data);
         ClipboardResult SetClipboardText(Handle ownerWindow, const char_type* text);
+#ifdef LWS_PLATFORM_WIN32
         ClipboardResult SetClipboardText(Handle ownerWindow, const char* text);
+#endif
         ClipboardData GetClipboardData();
 
     private:
