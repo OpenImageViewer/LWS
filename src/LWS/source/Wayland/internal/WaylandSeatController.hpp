@@ -3,6 +3,7 @@
 #ifdef LWS_PLATFORM_WAYLAND
 
     #include "WaylandCursorController.hpp"
+    #include "WheelDeltaFrame.hpp"
     #include "WindowFrame.hpp"
 
     #include <LWS/KeyCode.hpp>
@@ -71,6 +72,8 @@ namespace LWS::internal
                                       uint32_t latched, uint32_t locked, uint32_t group);
         static void keyboardRepeatInfo(void* data, wl_keyboard* keyboard, int32_t rate, int32_t delay);
 
+        void beginPointerWheelFrame();
+        void dispatchPointerWheelFrame();
         void startKeyRepeat(KeyCode key);
         void stopKeyRepeat();
 
@@ -89,6 +92,9 @@ namespace LWS::internal
         uint32_t fPointerButtonSerial = 0;
         uint32_t fPointerEnterSerial = 0;
         Point fPointerPosition{};
+        WheelDeltaFrame fPointerWheelFrame;
+        WindowBackendWayland* fPointerWheelWindow = nullptr;
+        Point fPointerWheelPosition{};
         std::unordered_set<KeyCode> fPressedKeys;
     };
 }  // namespace LWS::internal

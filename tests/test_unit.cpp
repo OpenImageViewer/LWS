@@ -13,6 +13,8 @@
 #include <LWS/interfaces/backends.hpp>
 #include <LLUtils/Exception.h>
 
+#include "LWS/source/Wayland/internal/WheelDeltaFrame.hpp"
+
 #include <array>
 #include <cstddef>
 #include <type_traits>
@@ -203,6 +205,44 @@ TEST_CASE("Mouse wheel events expose normalized steps", "[input]")
 {
     REQUIRE((LWS::EventMouseWheel{120, {}}.steps() == 1.0));
     REQUIRE((LWS::EventMouseWheel{-60, {}}.steps() == -0.5));
+    REQUIRE((LWS::EventMouseWheel{30, {}}.steps() == 0.25));
+    REQUIRE((LWS::EventMouseWheel{240, {}}.steps() == 2.0));
+}
+
+TEST_CASE("Wayland wheel frames prefer exact detent data", "[input][wayland]")
+{
+    STATIC_REQUIRE_FALSE(LWS::internal::WheelDeltaFrame::usesPointerFrame(4));
+    STATIC_REQUIRE(LWS::internal::WheelDeltaFrame::usesPointerFrame(5));
+
+    LWS::internal::WheelDeltaFrame frame;
+    frame.addWaylandAxis(15.0);
+    frame.addWaylandDiscrete(2);
+    frame.addWaylandValue120(60);
+
+    REQUIRE(frame.takeDelta() == -60);
+    REQUIRE_FALSE(frame.takeDelta().has_value());
+}
+
+TEST_CASE("Wayland wheel frames aggregate and normalize fallbacks", "[input][wayland]")
+{
+    LWS::internal::WheelDeltaFrame frame;
+
+    frame.addWaylandValue120(30);
+    frame.addWaylandValue120(90);
+    REQUIRE(frame.takeDelta() == -120);
+
+    frame.addWaylandDiscrete(-2);
+    REQUIRE(frame.takeDelta() == 240);
+
+    frame.addWaylandAxis(-5.0);
+    REQUIRE(frame.takeDelta() == 60);
+
+    frame.addWaylandAxis(-0.03);
+    REQUIRE_FALSE(frame.takeDelta().has_value());
+
+    frame.addWaylandValue120(120);
+    frame.clear();
+    REQUIRE_FALSE(frame.takeDelta().has_value());
 }
 
 // ---------------------------------------------------------------------------

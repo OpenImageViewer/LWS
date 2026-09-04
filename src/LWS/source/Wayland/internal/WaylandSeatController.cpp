@@ -107,6 +107,8 @@ namespace LWS::internal
                 wl_pointer_destroy(controller.fPointer);
             controller.fPointer = nullptr;
             controller.fPointerWindow = nullptr;
+            controller.fPointerWheelFrame.clear();
+            controller.fPointerWheelWindow = nullptr;
         }
 
         if ((capabilities & WL_SEAT_CAPABILITY_KEYBOARD) != 0 && controller.fKeyboard == nullptr)
@@ -197,19 +199,46 @@ namespace LWS::internal
         }
     }
 
-    void WaylandSeatController::pointerAxis(void* data, wl_pointer*, uint32_t, uint32_t axis, wl_fixed_t value)
+    void WaylandSeatController::pointerAxis(void* data, wl_pointer* pointer, uint32_t, uint32_t axis, wl_fixed_t value)
     {
         auto& controller = *static_cast<WaylandSeatController*>(data);
         if (controller.fPointerWindow != nullptr && axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
-            controller.fPointerWindow->handlePointerWheel(-wl_fixed_to_int(value) * 12,
-                                                          controller.fPointerPosition);
+        {
+            controller.beginPointerWheelFrame();
+            controller.fPointerWheelFrame.addWaylandAxis(wl_fixed_to_double(value));
+            if (!WheelDeltaFrame::usesPointerFrame(wl_pointer_get_version(pointer)))
+                controller.dispatchPointerWheelFrame();
+        }
     }
 
-    void WaylandSeatController::pointerFrame(void*, wl_pointer*) {}
+    void WaylandSeatController::pointerFrame(void* data, wl_pointer*)
+    {
+        static_cast<WaylandSeatController*>(data)->dispatchPointerWheelFrame();
+    }
+
     void WaylandSeatController::pointerAxisSource(void*, wl_pointer*, uint32_t) {}
     void WaylandSeatController::pointerAxisStop(void*, wl_pointer*, uint32_t, uint32_t) {}
-    void WaylandSeatController::pointerAxisDiscrete(void*, wl_pointer*, uint32_t, int32_t) {}
-    void WaylandSeatController::pointerAxisValue120(void*, wl_pointer*, uint32_t, int32_t) {}
+
+    void WaylandSeatController::pointerAxisDiscrete(void* data, wl_pointer*, uint32_t axis, int32_t discrete)
+    {
+        auto& controller = *static_cast<WaylandSeatController*>(data);
+        if (controller.fPointerWindow != nullptr && axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
+        {
+            controller.beginPointerWheelFrame();
+            controller.fPointerWheelFrame.addWaylandDiscrete(discrete);
+        }
+    }
+
+    void WaylandSeatController::pointerAxisValue120(void* data, wl_pointer*, uint32_t axis, int32_t value120)
+    {
+        auto& controller = *static_cast<WaylandSeatController*>(data);
+        if (controller.fPointerWindow != nullptr && axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
+        {
+            controller.beginPointerWheelFrame();
+            controller.fPointerWheelFrame.addWaylandValue120(value120);
+        }
+    }
+
     void WaylandSeatController::pointerAxisRelativeDirection(void*, wl_pointer*, uint32_t, uint32_t) {}
 
     #ifdef WL_POINTER_WARP_SINCE_VERSION
@@ -342,10 +371,32 @@ namespace LWS::internal
         }
     }
 
+    void WaylandSeatController::beginPointerWheelFrame()
+    {
+        if (fPointerWheelWindow == nullptr)
+        {
+            fPointerWheelWindow = fPointerWindow;
+            fPointerWheelPosition = fPointerPosition;
+        }
+    }
+
+    void WaylandSeatController::dispatchPointerWheelFrame()
+    {
+        const std::optional<int32_t> delta = fPointerWheelFrame.takeDelta();
+        if (delta && fPointerWheelWindow != nullptr)
+            fPointerWheelWindow->handlePointerWheel(*delta, fPointerWheelPosition);
+        fPointerWheelWindow = nullptr;
+    }
+
     void WaylandSeatController::windowRemoved(WindowBackendWayland& window)
     {
         if (fPointerWindow == &window)
             fPointerWindow = nullptr;
+        if (fPointerWheelWindow == &window)
+        {
+            fPointerWheelFrame.clear();
+            fPointerWheelWindow = nullptr;
+        }
         if (fKeyboardWindow == &window)
         {
             fKeyboardWindow = nullptr;
@@ -372,6 +423,9 @@ namespace LWS::internal
         fPointerButtonSerial = 0;
         fPointerEnterSerial = 0;
         fPointerPosition = {};
+        fPointerWheelFrame.clear();
+        fPointerWheelWindow = nullptr;
+        fPointerWheelPosition = {};
         if (fKeyboard != nullptr)
         {
             if (wl_keyboard_get_version(fKeyboard) >= WL_KEYBOARD_RELEASE_SINCE_VERSION)

@@ -32,6 +32,7 @@ namespace LWS
     {
         static constexpr int32_t DeltaPerStep = 120;
 
+        // Signed wheel motion; DeltaPerStep units represent one logical detent.
         int32_t delta;
         Point position;
 
