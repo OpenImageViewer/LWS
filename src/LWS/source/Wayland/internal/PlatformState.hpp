@@ -5,6 +5,7 @@
     #include <LWS/Platform.hpp>
 
     #include "WaylandCursorController.hpp"
+    #include "WaylandOutputManager.hpp"
     #include "WindowFrame.hpp"
 
     #include <cstdint>
@@ -65,19 +66,14 @@ namespace LWS::internal
         [[nodiscard]] uint32_t pointerButtonSerial() const { return fPointerButtonSerial; }
         [[nodiscard]] Point pointerPosition() const { return fPointerPosition; }
         [[nodiscard]] bool isKeyPressed(KeyCode key) const;
-        [[nodiscard]] Platform::MonitorDesc monitorInfo(Handle handle) const;
-        [[nodiscard]] Platform::MonitorDesc primaryMonitor() const;
-        [[nodiscard]] Rect boundingMonitorArea() const;
+        [[nodiscard]] Platform::MonitorDesc monitorInfo(Handle handle) const
+        {
+            return fOutputManager.monitorInfo(handle);
+        }
+        [[nodiscard]] Platform::MonitorDesc primaryMonitor() const { return fOutputManager.primaryMonitor(); }
+        [[nodiscard]] Rect boundingMonitorArea() const { return fOutputManager.boundingMonitorArea(); }
 
       private:
-
-        struct Output
-        {
-            uint32_t registryName = 0;
-            wl_output* object = nullptr;
-            Platform::MonitorDesc description;
-            int32_t scale = 1;
-        };
 
         struct WindowRegistration
         {
@@ -116,17 +112,6 @@ namespace LWS::internal
         static void keyboardModifiers(void* data, wl_keyboard* keyboard, uint32_t serial, uint32_t depressed,
                                       uint32_t latched, uint32_t locked, uint32_t group);
         static void keyboardRepeatInfo(void* data, wl_keyboard* keyboard, int32_t rate, int32_t delay);
-        static void outputGeometry(void* data, wl_output* output, int32_t x, int32_t y, int32_t physicalWidth,
-                                   int32_t physicalHeight, int32_t subpixel, const char* make, const char* model,
-                                   int32_t transform);
-        static void outputMode(void* data, wl_output* output, uint32_t flags, int32_t width, int32_t height,
-                               int32_t refresh);
-        static void outputDone(void* data, wl_output* output);
-        static void outputScale(void* data, wl_output* output, int32_t factor);
-        static void outputName(void* data, wl_output* output, const char* name);
-        static void outputDescription(void* data, wl_output* output, const char* description);
-
-        [[nodiscard]] Output* findOutput(wl_output* output);
         void dispatchKeyRepeats();
         void releaseObjects();
         void startKeyRepeat(KeyCode key);
@@ -165,7 +150,7 @@ namespace LWS::internal
         Point fPointerPosition{};
         std::unordered_set<KeyCode> fPressedKeys;
         std::unordered_map<wl_surface*, WindowRegistration> fWindows;
-        std::vector<Output> fOutputs;
+        WaylandOutputManager fOutputManager;
     };
 }  // namespace LWS::internal
 

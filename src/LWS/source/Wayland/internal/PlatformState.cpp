@@ -11,7 +11,6 @@
     #include <cstring>
     #include <poll.h>
     #include <optional>
-    #include <ranges>
     #include <sys/eventfd.h>
     #include <sys/timerfd.h>
     #include <tuple>
@@ -207,39 +206,6 @@ namespace LWS::internal
         return fPressedKeys.contains(key);
     }
 
-    Platform::MonitorDesc WaylandPlatformState::monitorInfo(Handle handle) const
-    {
-        const auto it = std::ranges::find_if(fOutputs, [handle](const Output& output)
-                                             { return output.description.handle == handle; });
-        return it != fOutputs.end() ? it->description : Platform::MonitorDesc{};
-    }
-
-    Platform::MonitorDesc WaylandPlatformState::primaryMonitor() const
-    {
-        return fOutputs.empty() ? Platform::MonitorDesc{} : fOutputs.front().description;
-    }
-
-    Rect WaylandPlatformState::boundingMonitorArea() const
-    {
-        if (fOutputs.empty())
-        {
-            return {};
-        }
-
-        Point topLeft = fOutputs.front().description.monitorRect.GetCorner(LLUtils::TopLeft);
-        Point bottomRight = fOutputs.front().description.monitorRect.GetCorner(LLUtils::BottomRight);
-        for (const Output& output : fOutputs | std::views::drop(1))
-        {
-            const Point outputTopLeft = output.description.monitorRect.GetCorner(LLUtils::TopLeft);
-            const Point outputBottomRight = output.description.monitorRect.GetCorner(LLUtils::BottomRight);
-            topLeft.x = std::min(topLeft.x, outputTopLeft.x);
-            topLeft.y = std::min(topLeft.y, outputTopLeft.y);
-            bottomRight.x = std::max(bottomRight.x, outputBottomRight.x);
-            bottomRight.y = std::max(bottomRight.y, outputBottomRight.y);
-        }
-        return {topLeft, bottomRight};
-    }
-
     void WaylandPlatformState::registryGlobal(void* data, wl_registry* registry, uint32_t name, const char* interface,
                                               uint32_t version)
     {
@@ -297,38 +263,13 @@ namespace LWS::internal
         }
         else if (std::strcmp(interface, wl_output_interface.name) == 0)
         {
-            Output output;
-            output.registryName = name;
-            output.object = static_cast<wl_output*>(
-                wl_registry_bind(registry, name, &wl_output_interface, std::min(version, 4U)));
-            output.description.handle = reinterpret_cast<Handle>(output.object);
-            output.description.primary = state.fOutputs.empty();
-            state.fOutputs.push_back(std::move(output));
-            static constexpr wl_output_listener outputListener{
-                .geometry = outputGeometry,
-                .mode = outputMode,
-                .done = outputDone,
-                .scale = outputScale,
-                .name = outputName,
-                .description = outputDescription,
-            };
-            wl_output_add_listener(state.fOutputs.back().object, &outputListener, &state);
+            state.fOutputManager.bindOutput(registry, name, version);
         }
     }
 
     void WaylandPlatformState::registryGlobalRemove(void* data, wl_registry*, uint32_t name)
     {
-        auto& state = *static_cast<WaylandPlatformState*>(data);
-        const auto it = std::ranges::find(state.fOutputs, name, &Output::registryName);
-        if (it != state.fOutputs.end())
-        {
-            wl_output_destroy(it->object);
-            state.fOutputs.erase(it);
-            if (!state.fOutputs.empty())
-            {
-                state.fOutputs.front().description.primary = true;
-            }
-        }
+        static_cast<WaylandPlatformState*>(data)->fOutputManager.removeGlobal(name);
     }
 
     void WaylandPlatformState::shellPing(void*, xdg_wm_base* shell, uint32_t serial)
@@ -541,64 +482,6 @@ namespace LWS::internal
             state.stopKeyRepeat();
     }
 
-    WaylandPlatformState::Output* WaylandPlatformState::findOutput(wl_output* output)
-    {
-        const auto it = std::ranges::find(fOutputs, output, &Output::object);
-        return it != fOutputs.end() ? &*it : nullptr;
-    }
-
-    void WaylandPlatformState::outputGeometry(void* data, wl_output* output, int32_t x, int32_t y, int32_t, int32_t,
-                                              int32_t, const char*, const char*, int32_t)
-    {
-        auto& state = *static_cast<WaylandPlatformState*>(data);
-        if (Output* item = state.findOutput(output); item != nullptr)
-        {
-            const Size size{item->description.monitorRect.GetWidth(), item->description.monitorRect.GetHeight()};
-            item->description.monitorRect = {{x, y}, {x + size.x, y + size.y}};
-            item->description.workRect = item->description.monitorRect;
-        }
-    }
-
-    void WaylandPlatformState::outputMode(void* data, wl_output* output, uint32_t flags, int32_t width, int32_t height,
-                                          int32_t refresh)
-    {
-        auto& state = *static_cast<WaylandPlatformState*>(data);
-        if ((flags & WL_OUTPUT_MODE_CURRENT) != 0)
-        {
-            if (Output* item = state.findOutput(output); item != nullptr)
-            {
-                const Point position = item->description.monitorRect.GetCorner(LLUtils::TopLeft);
-                item->description.monitorRect = {position, {position.x + width, position.y + height}};
-                item->description.workRect = item->description.monitorRect;
-                item->description.displayFrequency = refresh > 0 ? static_cast<uint32_t>(refresh / 1000) : 0;
-            }
-        }
-    }
-
-    void WaylandPlatformState::outputDone(void*, wl_output*) {}
-
-    void WaylandPlatformState::outputScale(void* data, wl_output* output, int32_t factor)
-    {
-        auto& state = *static_cast<WaylandPlatformState*>(data);
-        if (Output* item = state.findOutput(output); item != nullptr)
-        {
-            item->scale = std::max(factor, 1);
-            item->description.dpiX = 96U * static_cast<uint32_t>(item->scale);
-            item->description.dpiY = item->description.dpiX;
-        }
-    }
-
-    void WaylandPlatformState::outputName(void* data, wl_output* output, const char* name)
-    {
-        auto& state = *static_cast<WaylandPlatformState*>(data);
-        if (Output* item = state.findOutput(output); item != nullptr && name != nullptr)
-        {
-            item->description.deviceName = name;
-        }
-    }
-
-    void WaylandPlatformState::outputDescription(void*, wl_output*, const char*) {}
-
     void WaylandPlatformState::dispatchTasks()
     {
         std::vector<std::move_only_function<void()>> tasks;
@@ -727,9 +610,7 @@ namespace LWS::internal
             wl_pointer_release(fPointer);
         if (fSeat != nullptr)
             wl_seat_release(fSeat);
-        for (Output& output : fOutputs)
-            wl_output_destroy(output.object);
-        fOutputs.clear();
+        fOutputManager.reset();
         if (fShell != nullptr)
             xdg_wm_base_destroy(fShell);
         if (fDecorationManager != nullptr)

@@ -65,6 +65,19 @@ TEST_CASE("Wayland marks repeated key-down events", "[wayland][keyboard]")
     REQUIRE(repeated);
 }
 
+TEST_CASE("Wayland reports its primary output", "[wayland][output]")
+{
+    PlatformSession platform;
+    if (platform.result != LWS::Result::Success)
+        SKIP("No Wayland compositor is available");
+
+    const LWS::Platform::MonitorDesc primary = LWS::Platform::getPrimaryMonitor();
+    if (primary.handle == 0)
+        SKIP("No Wayland output is available");
+    REQUIRE(primary.primary);
+    REQUIRE(LWS::Platform::getMonitorInfo(primary.handle).handle == primary.handle);
+}
+
 TEST_CASE("Wayland cursor state can be configured before platform initialization", "[wayland][cursor]")
 {
     LWS::CursorBackendWayland cursor;
