@@ -1,6 +1,7 @@
 #pragma once
 
-#include <LWS/interfaces/backends.hpp>
+#include <LWS/Platform.hpp>
+#include <LWS/Window.hpp>
 #include <LLUtils/Buffer.h>
 
 #include <cstddef>
@@ -29,20 +30,32 @@ namespace LWS
 
     class Clipboard
     {
-    public:
+      public:
+
+        explicit Clipboard(PlatformContext& platform);
+        ~Clipboard();
+
+        Clipboard(const Clipboard&) = delete;
+        Clipboard& operator=(const Clipboard&) = delete;
+        Clipboard(Clipboard&&) = delete;
+        Clipboard& operator=(Clipboard&&) = delete;
+
         void RegisterFormat(ClipboardFormatType format);
         ClipboardFormatType RegisterFormat(const string_type& format);
-        ClipboardResult SetClipboardData(Handle ownerWindow, ClipboardFormatType format, const LLUtils::Buffer& data);
-        ClipboardResult SetClipboardData(Handle ownerWindow, ClipboardFormatType format, const std::byte* data, size_t size);
-        ClipboardResult SetClipboardData(Handle ownerWindow, std::span<const ClipboardDataView> data);
-        ClipboardResult SetClipboardText(Handle ownerWindow, const char_type* text);
-#ifdef LWS_PLATFORM_WIN32
-        ClipboardResult SetClipboardText(Handle ownerWindow, const char* text);
+        ClipboardResult SetClipboardData(Window& ownerWindow, ClipboardFormatType format, const LLUtils::Buffer& data);
+        ClipboardResult SetClipboardData(Window& ownerWindow, ClipboardFormatType format, const std::byte* data,
+                                         size_t size);
+        ClipboardResult SetClipboardData(Window& ownerWindow, std::span<const ClipboardDataView> data);
+        ClipboardResult SetClipboardText(Window& ownerWindow, const char_type* text);
+#ifdef LWS_HAS_WIN32_BACKEND
+        ClipboardResult SetClipboardText(Window& ownerWindow, const char* text);
 #endif
         ClipboardData GetClipboardData();
 
-    private:
+      private:
+
+        PlatformContext& platform_;
         ClipboardResult GetClipboardError() const;
         std::vector<ClipboardFormatType> fListFormats;
     };
-}
+}  // namespace LWS

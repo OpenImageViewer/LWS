@@ -1,6 +1,6 @@
 #pragma once
 
-#include <LWS/interfaces/backends.hpp>
+#include <LWS/Window.hpp>
 
 #include <optional>
 #include <vector>
@@ -26,7 +26,8 @@ namespace LWS
 
     class FileDialogFilterBuilder
     {
-    public:
+      public:
+
         using ListExtensions = std::vector<file_dialog_string_type>;
 
         struct FileDialogFilter
@@ -42,29 +43,25 @@ namespace LWS
 
         [[nodiscard]] const ListFileDialogFilters& GetFilters() const;
 
-    private:
+      private:
+
         ListFileDialogFilters fFilters;
     };
 
     class FileDialog
     {
-    public:
-        static FileDialogResult Show(FileDialogType dialogType,
-                                     const FileDialogFilterBuilder::ListFileDialogFilters& filters,
-                                     const file_dialog_string_type& title,
-                                     Handle ownerWindow,
-                                     const file_dialog_string_type& defaultExtension,
-                                     uint32_t filterIndex,
-                                     file_dialog_string_type defaultFileName,
-                                     file_dialog_string_type& outFilename);
+      public:
 
         static FileDialogResult Show(FileDialogType dialogType,
                                      const FileDialogFilterBuilder::ListFileDialogFilters& filters,
-                                     const file_dialog_string_type& title,
-                                     Handle ownerWindow,
-                                     const file_dialog_string_type& defaultExtension,
-                                     uint32_t filterIndex,
-                                     file_dialog_string_type defaultFileName,
-                                     ListFileDialogFileNames& outFilenames);
+                                     const file_dialog_string_type& title, Window& ownerWindow,
+                                     const file_dialog_string_type& defaultExtension, uint32_t filterIndex,
+                                     file_dialog_string_type defaultFileName, file_dialog_string_type& outFilename);
+
+        static FileDialogResult Show(FileDialogType dialogType,
+                                     const FileDialogFilterBuilder::ListFileDialogFilters& filters,
+                                     const file_dialog_string_type& title, Window& ownerWindow,
+                                     const file_dialog_string_type& defaultExtension, uint32_t filterIndex,
+                                     file_dialog_string_type defaultFileName, ListFileDialogFileNames& outFilenames);
     };
-}
+}  // namespace LWS

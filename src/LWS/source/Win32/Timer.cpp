@@ -3,14 +3,13 @@
     #include <Windows.h>
 
     #include <LWS/Timer.hpp>
+    #include <LWS/interfaces/backends.hpp>
     #include <LLUtils/Exception.h>
-    #include <LLUtils/Singleton.h>
-    #include <LLUtils/Templates.h>
-    #include <LLUtils/UniqueIDProvider.h>
 
+    #include <atomic>
     #include <map>
+    #include <memory>
     #include <mutex>
-    #include <set>
     #include <tuple>
     #include <utility>
 
@@ -21,48 +20,42 @@ namespace LWS
 
 namespace
 {
-    class TimerManager : public LLUtils::Singleton<TimerManager>
+    class TimerManager
     {
       public:
 
-        using TimerIDType = size_t;
+        using TimerIDType = UINT_PTR;
+
+        static TimerManager& Get()
+        {
+            thread_local TimerManager manager;
+            return manager;
+        }
 
         TimerIDType RegisterTimer(const LWS::TimerBackendWin32& timer)
         {
-            TimerIDType id = fUniqueIdProvider.Acquire();
-            auto [_, inserted] = fMapTimerIdToTimer.emplace(id, &timer);
-            if (!inserted)
-            {
-                LL_EXCEPTION(LLUtils::Exception::ErrorCode::DuplicateItem, "Timer id already registered");
-            }
+            if (fNextID == 0)
+                LL_EXCEPTION(LLUtils::Exception::ErrorCode::InvalidState, "Timer identifiers exhausted");
+            const TimerIDType id = fNextID++;
+            fMapTimerIdToTimer.emplace(id, &timer);
             return id;
         }
 
-        void UnRegisterTimer(TimerIDType timerID)
-        {
-            auto it = fMapTimerIdToTimer.find(timerID);
-            if (it == fMapTimerIdToTimer.end())
-            {
-                LL_EXCEPTION(LLUtils::Exception::ErrorCode::InvalidState, "Timer id not found in data structure");
-            }
-
-            fMapTimerIdToTimer.erase(it);
-            fUniqueIdProvider.Release(timerID);
-        }
+        void UnRegisterTimer(TimerIDType timerID) { fMapTimerIdToTimer.erase(timerID); }
 
         static void CALLBACK TimerProc(HWND hwnd, UINT message, UINT_PTR idTimer, DWORD dwTime);
 
       private:
 
-        using UniqueIdProviderType = LLUtils::UniqueIdProvider<TimerIDType, std::set<TimerIDType>>;
-        UniqueIdProviderType fUniqueIdProvider = UniqueIdProviderType(1);
+        // Never recycle an ID: KillTimer does not remove already retrieved WM_TIMER messages.
+        TimerIDType fNextID = 1;
         std::map<TimerIDType, const LWS::TimerBackendWin32*> fMapTimerIdToTimer;
     };
 }  // namespace
 
 namespace LWS
 {
-    class TimerBackendWin32 final : public ITimerBackend
+    class TimerBackendWin32 final : public internal::ITimerBackend
     {
       public:
 
@@ -75,15 +68,14 @@ namespace LWS
 
         void SetTargetWindow(Handle hwnd)
         {
-            if (hwnd == 0)
-            {
-                LL_EXCEPTION(LLUtils::Exception::ErrorCode::InvalidState, "null window as timer target is illegal");
-            }
-
             const uint32_t interval = fInterval;
             Unregister();
             fWindowHandle = reinterpret_cast<HWND>(hwnd);
-            SetInterval(interval);
+            fInterval = 0;
+            if (fWindowHandle != nullptr)
+                SetInterval(interval);
+            else
+                fInterval = interval;
         }
 
         uint32_t GetInterval() const { return fInterval; }
@@ -91,30 +83,36 @@ namespace LWS
         void SetInterval(uint32_t interval)
         {
             if (fInterval == interval)
-            {
                 return;
-            }
 
-            Register();
+            if (interval == 0)
+                Unregister();
+            else if (fWindowHandle != nullptr)
+            {
+                if (fTimerID == 0)
+                    fTimerID = TimerManager::Get().RegisterTimer(*this);
+                if (SetTimer(fWindowHandle, fTimerID, interval, TimerManager::TimerProc) == 0)
+                {
+                    Unregister();
+                    fInterval = 0;
+                    LL_EXCEPTION_SYSTEM_ERROR("Could not create timer");
+                }
+            }
             fInterval = interval;
-            if (fInterval == 0)
-            {
-                KillTimer(fWindowHandle, fTimerID);
-            }
-            else
-            {
-                SetTimer(fWindowHandle, fTimerID, fInterval, reinterpret_cast<TIMERPROC>(TimerManager::TimerProc));
-            }
         }
 
-        void SetCallback(Callback callback) { fCallback = std::move(callback); }
-
-        void Execute() const
+        void SetCallback(Callback callback)
         {
-            if (fCallback)
-            {
-                fCallback();
-            }
+            fCallback = callback ? std::make_shared<Callback>(std::move(callback)) : nullptr;
+        }
+
+        void Execute(HWND window) const
+        {
+            if (window != fWindowHandle || !IsWindow(window))
+                return;
+            const auto callback = fCallback;
+            if (callback != nullptr)
+                (*callback)();
         }
 
       private:
@@ -123,48 +121,32 @@ namespace LWS
         {
             if (fTimerID != 0)
             {
-                SetInterval(0);
-                TimerManager::GetSingleton().UnRegisterTimer(fTimerID);
+                KillTimer(fWindowHandle, fTimerID);
+                TimerManager::Get().UnRegisterTimer(fTimerID);
                 fTimerID = 0;
             }
         }
 
-        void Register()
-        {
-            if (fTimerID == 0)
-            {
-                if (fWindowHandle == nullptr)
-                {
-                    LL_EXCEPTION(LLUtils::Exception::ErrorCode::InvalidState,
-                                 "Timer is not bound to a window, call LWS::Timer::SetTargetWindow first");
-                }
-                fTimerID = TimerManager::GetSingleton().RegisterTimer(*this);
-            }
-        }
-
-        ITimerBackend::Callback fCallback;
+        std::shared_ptr<Callback> fCallback;
         TimerManager::TimerIDType fTimerID = 0;
         uint32_t fInterval = 0;
         HWND fWindowHandle = nullptr;
     };
 
-    class HighPrecisionTimerBackendWin32 final : public IHighPrecisionTimerBackend
+    class HighPrecisionTimerBackendWin32 final : public internal::IHighPrecisionTimerBackend
     {
       public:
 
-        explicit HighPrecisionTimerBackendWin32(ITimerBackend::Callback callback) : fCallback(std::move(callback))
+        explicit HighPrecisionTimerBackendWin32(internal::ITimerBackend::Callback callback)
+            : fCallback(callback ? std::make_shared<internal::ITimerBackend::Callback>(std::move(callback)) : nullptr)
         {
             RegisterWindow();
         }
 
         ~HighPrecisionTimerBackendWin32() override
         {
-            Enable(false);
-            UnregisterWindow();
-            if (fTimerID != nullptr)
-            {
-                std::ignore = DeleteTimerQueueTimer(nullptr, fTimerID, INVALID_HANDLE_VALUE);
-            }
+            Stop();
+            DestroyWindow(fWindowHandle);
         }
 
         void SetRepeatInterval(uint32_t repeatInterval)
@@ -187,29 +169,19 @@ namespace LWS
         void Enable(bool enable)
         {
             if (enable == fEnabled)
-            {
                 return;
-            }
 
-            fEnabled = enable;
-            if (fEnabled)
+            Stop();
+            if (enable)
             {
-                if (fTimerID == nullptr)
+                fEnabled = true;
+                const uint32_t period = fRepeatInterval == INFINITE ? 0 : fRepeatInterval;
+                if (CreateTimerQueueTimer(&fTimerID, nullptr, OnTimer, this, fDueTime, period,
+                                          WT_EXECUTEINTIMERTHREAD) == FALSE)
                 {
-                    if (CreateTimerQueueTimer(&fTimerID, nullptr, OnTimer, reinterpret_cast<PVOID>(this), fDueTime,
-                                              fRepeatInterval, WT_EXECUTEINTIMERTHREAD) == FALSE)
-                    {
-                        LL_EXCEPTION_SYSTEM_ERROR("Could not create timer");
-                    }
+                    fEnabled = false;
+                    LL_EXCEPTION_SYSTEM_ERROR("Could not create timer");
                 }
-                else if (ChangeTimerQueueTimer(nullptr, fTimerID, fDueTime, fRepeatInterval) == FALSE)
-                {
-                    LL_EXCEPTION_SYSTEM_ERROR("Could not reenable timer");
-                }
-            }
-            else if (fTimerID != nullptr && ChangeTimerQueueTimer(nullptr, fTimerID, INFINITE, INFINITE) == FALSE)
-            {
-                LL_EXCEPTION_SYSTEM_ERROR("Could not disable timer");
             }
         }
 
@@ -225,33 +197,56 @@ namespace LWS
             reinterpret_cast<HighPrecisionTimerBackendWin32*>(parameter)->ExecuteTimerFunc();
         }
 
-        void ExecuteTimerFunc() { SendMessage(fWindowHandle, ON_TIMER_MESSAGE, reinterpret_cast<WPARAM>(this), 0); }
+        void ExecuteTimerFunc()
+        {
+            // Coalesce ticks while the UI is busy; the timer thread must never wait for the UI thread.
+            if (!fTickPending.exchange(true) && !PostMessageW(fWindowHandle, ON_TIMER_MESSAGE, 0, 0))
+                fTickPending = false;
+        }
 
         void ExecuteTimerFuncThreadSafe()
         {
-            if (fEnabled)
+            fTickPending = false;
+            if (!fEnabled)
+                return;
+            if (fRepeatInterval == INFINITE || fRepeatInterval == 0)
+                fEnabled = false;
+            const auto callback = fCallback;
+            if (callback != nullptr)
+                (*callback)();
+        }
+
+        void Stop()
+        {
+            fEnabled = false;
+            if (fTimerID != nullptr)
             {
-                if (fCallback)
-                {
-                    fCallback();
-                }
-                if (fRepeatInterval == INFINITE)
-                {
-                    fEnabled = false;
-                }
+                std::ignore = DeleteTimerQueueTimer(nullptr, fTimerID, INVALID_HANDLE_VALUE);
+                fTimerID = nullptr;
             }
+            MSG message{};
+            while (PeekMessageW(&message, fWindowHandle, ON_TIMER_MESSAGE, ON_TIMER_MESSAGE, PM_REMOVE))
+            {
+            }
+            fTickPending = false;
         }
 
         static LRESULT CALLBACK WindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
-            switch (msg)
+            if (msg == WM_NCCREATE)
             {
-                case ON_TIMER_MESSAGE:
-                    reinterpret_cast<HighPrecisionTimerBackendWin32*>(wParam)->ExecuteTimerFuncThreadSafe();
-                    return 0;
-                default:
-                    return DefWindowProc(hWnd, msg, wParam, lParam);
+                const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
+                SetWindowLongPtrW(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
             }
+            else if (msg == ON_TIMER_MESSAGE)
+            {
+                auto* timer = reinterpret_cast<HighPrecisionTimerBackendWin32*>(
+                    GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+                if (timer != nullptr)
+                    timer->ExecuteTimerFuncThreadSafe();
+                return 0;
+            }
+            return DefWindowProcW(hWnd, msg, wParam, lParam);
         }
 
         void CreateWindowClassOnce()
@@ -273,26 +268,19 @@ namespace LWS
         void RegisterWindow()
         {
             CreateWindowClassOnce();
-            fWindowHandle = CreateWindowEx(0, CLASS_NAME, nullptr, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-                                           CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr, GetModuleHandle(nullptr),
-                                           nullptr);
-        }
-
-        void UnregisterWindow()
-        {
-            if (fWindowHandle != nullptr)
-            {
-                DestroyWindow(fWindowHandle);
-                fWindowHandle = nullptr;
-            }
+            fWindowHandle = CreateWindowExW(0, CLASS_NAME, nullptr, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
+                                            GetModuleHandleW(nullptr), this);
+            if (fWindowHandle == nullptr)
+                LL_EXCEPTION_SYSTEM_ERROR("Could not create timer window");
         }
 
         static constexpr LWS::char_type CLASS_NAME[] = L"LWS.HighPrecisionTimerWindow";
         static constexpr UINT ON_TIMER_MESSAGE = WM_USER + 1;
         static inline std::once_flag fCreateClassOnceFlag;
+        std::atomic_bool fTickPending = false;
         bool fEnabled = false;
         HANDLE fTimerID = nullptr;
-        ITimerBackend::Callback fCallback;
+        std::shared_ptr<internal::ITimerBackend::Callback> fCallback;
         uint32_t fDueTime = INFINITE;
         uint32_t fRepeatInterval = INFINITE;
         HWND fWindowHandle = nullptr;
@@ -302,11 +290,12 @@ namespace LWS
 
 namespace LWS::internal
 {
-    std::unique_ptr<ITimerBackend> createTimerBackend()
+    std::unique_ptr<ITimerBackend> createTimerBackend(PlatformContext&)
     {
         return std::make_unique<TimerBackendWin32>();
     }
-    std::unique_ptr<IHighPrecisionTimerBackend> createHighPrecisionTimerBackend(ITimerBackend::Callback callback)
+    std::unique_ptr<IHighPrecisionTimerBackend> createHighPrecisionTimerBackend(PlatformContext&,
+                                                                                ITimerBackend::Callback callback)
     {
         return std::make_unique<HighPrecisionTimerBackendWin32>(std::move(callback));
     }
@@ -314,16 +303,12 @@ namespace LWS::internal
 
 namespace
 {
-    void CALLBACK TimerManager::TimerProc(HWND, UINT, UINT_PTR idTimer, DWORD)
+    void CALLBACK TimerManager::TimerProc(HWND window, UINT, UINT_PTR idTimer, DWORD)
     {
-        TimerManager& manager = TimerManager::GetSingleton();
-        auto it = manager.fMapTimerIdToTimer.find(static_cast<TimerIDType>(idTimer));
-        if (it == manager.fMapTimerIdToTimer.end())
-        {
-            LL_EXCEPTION(LLUtils::Exception::ErrorCode::InvalidState, "Timer id not found in data structure");
-        }
-
-        it->second->Execute();
+        TimerManager& manager = TimerManager::Get();
+        const auto it = manager.fMapTimerIdToTimer.find(idTimer);
+        if (it != manager.fMapTimerIdToTimer.end())
+            it->second->Execute(window);
     }
 }  // namespace
 #endif

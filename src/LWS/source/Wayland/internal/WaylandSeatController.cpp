@@ -8,6 +8,7 @@
     #include <LWS/Wayland/WindowBackendWayland.hpp>
 
     #include <algorithm>
+    #include <cmath>
     #include <optional>
     #include <sys/timerfd.h>
     #include <tuple>

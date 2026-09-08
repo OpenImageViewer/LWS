@@ -39,16 +39,16 @@ namespace LWS::internal
             fOutputs.front().description.primary = true;
     }
 
-    Platform::MonitorDesc WaylandOutputManager::monitorInfo(Handle handle) const
+    MonitorDesc WaylandOutputManager::monitorInfo(Handle handle) const
     {
         const auto it = std::ranges::find_if(fOutputs, [handle](const Output& output)
                                              { return output.description.handle == handle; });
-        return it != fOutputs.end() ? it->description : Platform::MonitorDesc{};
+        return it != fOutputs.end() ? it->description : MonitorDesc{};
     }
 
-    Platform::MonitorDesc WaylandOutputManager::primaryMonitor() const
+    MonitorDesc WaylandOutputManager::primaryMonitor() const
     {
-        return fOutputs.empty() ? Platform::MonitorDesc{} : fOutputs.front().description;
+        return fOutputs.empty() ? MonitorDesc{} : fOutputs.front().description;
     }
 
     Rect WaylandOutputManager::boundingMonitorArea() const
@@ -68,6 +68,12 @@ namespace LWS::internal
             bottomRight.y = std::max(bottomRight.y, outputBottomRight.y);
         }
         return {topLeft, bottomRight};
+    }
+
+    int32_t WaylandOutputManager::scale(wl_output* output) const
+    {
+        const auto it = std::ranges::find(fOutputs, output, &Output::object);
+        return it != fOutputs.end() ? it->scale : 1;
     }
 
     WaylandOutputManager::Output* WaylandOutputManager::findOutput(wl_output* output)
@@ -96,8 +102,11 @@ namespace LWS::internal
         {
             if (Output* item = manager.findOutput(output); item != nullptr)
             {
+                item->description.pixelSize = {width, height};
                 const Point position = item->description.monitorRect.GetCorner(LLUtils::TopLeft);
-                item->description.monitorRect = {position, {position.x + width, position.y + height}};
+                const int32_t logicalWidth = width / item->scale;
+                const int32_t logicalHeight = height / item->scale;
+                item->description.monitorRect = {position, {position.x + logicalWidth, position.y + logicalHeight}};
                 item->description.workRect = item->description.monitorRect;
                 item->description.displayFrequency = refresh > 0 ? static_cast<uint32_t>(refresh / 1000) : 0;
             }
@@ -112,8 +121,17 @@ namespace LWS::internal
         if (Output* item = manager.findOutput(output); item != nullptr)
         {
             item->scale = std::max(factor, 1);
-            item->description.dpiX = 96U * static_cast<uint32_t>(item->scale);
-            item->description.dpiY = item->description.dpiX;
+            item->description.contentScale = {static_cast<double>(item->scale), static_cast<double>(item->scale)};
+            if (item->description.pixelSize.x > 0 && item->description.pixelSize.y > 0)
+            {
+                const Point position = item->description.monitorRect.GetCorner(LLUtils::TopLeft);
+                item->description.monitorRect = {
+                    position,
+                    {position.x + item->description.pixelSize.x / item->scale,
+                     position.y + item->description.pixelSize.y / item->scale},
+                };
+                item->description.workRect = item->description.monitorRect;
+            }
         }
     }
 

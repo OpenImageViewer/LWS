@@ -1,8 +1,10 @@
 #pragma once
-#ifdef LWS_PLATFORM_WIN32
+#ifdef LWS_HAS_WIN32_BACKEND
 
     #include <LWS/Result.hpp>
     #include <LWS/Win32/EventWin32.hpp>
+
+    #include <expected>
 
 namespace LWS
 {
@@ -11,8 +13,10 @@ namespace LWS
 
 namespace LWS::Win32
 {
+    [[nodiscard]] std::expected<HWND, Result> GetHwnd(Window& window);
+    [[nodiscard]] std::expected<HWND, Result> GetHwnd(const Window& window);
     [[nodiscard]] Result SetPlatformCallback(Window& window, PlatformCallback callback);
     [[nodiscard]] Result SetMenuChar(Window& window, bool suppress);
 }  // namespace LWS::Win32
 
-#endif  // LWS_PLATFORM_WIN32
+#endif  // LWS_HAS_WIN32_BACKEND

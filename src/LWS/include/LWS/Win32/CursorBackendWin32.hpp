@@ -7,7 +7,7 @@
 
 namespace LWS
 {
-    class CursorBackendWin32 : public ICursorBackend
+    class CursorBackendWin32 : public internal::ICursorBackend
     {
       public:
 
@@ -16,7 +16,7 @@ namespace LWS
 
         void setVisible(bool visible) override;
         void setCursorShape(CursorShape shape) override;
-        [[nodiscard]] Result setCustomCursor(const BitmapBuffer& bmp) override;
+        [[nodiscard]] Result setCustomCursor(const BitmapBuffer& bmp, Point hotspot) override;
         BackendId backend() const override;
 
         HCURSOR getCursorHandle() const;

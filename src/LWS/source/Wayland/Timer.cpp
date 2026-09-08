@@ -1,8 +1,7 @@
 #ifdef LWS_PLATFORM_WAYLAND
 
     #include <LWS/Timer.hpp>
-
-    #include "internal/PlatformState.hpp"
+    #include <LWS/interfaces/backends.hpp>
 
     #include <atomic>
     #include <chrono>
@@ -17,32 +16,39 @@ namespace LWS
     {
         struct CallbackState
         {
-            internal::WaylandPlatformState* platform = nullptr;
-            std::mutex mutex;
-            Timer::Callback callback;
+            PlatformContext* platform = nullptr;
+            std::shared_ptr<Timer::Callback> callback;
             std::atomic_bool enabled = false;
+            std::atomic_bool pending = false;
+            std::atomic_uint64_t generation = 0;
         };
 
         void postCallback(const std::shared_ptr<CallbackState>& state)
         {
-            if (state->platform == nullptr || !state->platform->isInitialized())
-            {
+            if (state->pending.exchange(true))
                 return;
-            }
-            state->platform->postTask(
-                [weakState = std::weak_ptr(state)]
+            const uint64_t generation = state->generation;
+            const Result result = state->platform->PostTask(
+                [weakState = std::weak_ptr(state), generation]
                 {
-                    if (const auto locked = weakState.lock(); locked != nullptr && locked->enabled)
-                    {
-                        Timer::Callback callback;
-                        {
-                            const std::scoped_lock lock(locked->mutex);
-                            callback = locked->callback;
-                        }
-                        if (callback)
-                            callback();
-                    }
+                    const auto locked = weakState.lock();
+                    if (locked == nullptr || locked->generation != generation)
+                        return;
+                    locked->pending = false;
+                    if (!locked->enabled)
+                        return;
+                    const auto callback = locked->callback;
+                    if (callback != nullptr)
+                        (*callback)();
                 });
+            if (result != Result::Success)
+                state->pending = false;
+        }
+
+        void cancelCallbacks(const std::shared_ptr<CallbackState>& state)
+        {
+            ++state->generation;
+            state->pending = false;
         }
 
         std::jthread startTimerThread(const std::shared_ptr<CallbackState>& state, uint32_t dueTime,
@@ -71,23 +77,31 @@ namespace LWS
         }
     }  // namespace
 
-    class TimerBackendWayland final : public ITimerBackend
+    class TimerBackendWayland final : public internal::ITimerBackend
     {
       public:
 
-        TimerBackendWayland() : fState(std::make_shared<CallbackState>())
+        explicit TimerBackendWayland(PlatformContext& platform) : fState(std::make_shared<CallbackState>())
         {
-            fState->platform = &internal::WaylandPlatformState::current();
+            fState->platform = &platform;
         }
 
         ~TimerBackendWayland() override { stop(); }
 
-        void setTargetWindow(Handle) override {}
+        void setTargetWindow(Handle handle) override
+        {
+            stop();
+            fDetached = handle == 0;
+            if (!fDetached && fInterval != 0)
+            {
+                fState->enabled = true;
+                fThread = startTimerThread(fState, fInterval, fInterval);
+            }
+        }
         uint32_t getInterval() const override { return fInterval; }
         void setCallback(Callback callback) override
         {
-            const std::scoped_lock lock(fState->mutex);
-            fState->callback = std::move(callback);
+            fState->callback = callback ? std::make_shared<Callback>(std::move(callback)) : nullptr;
         }
 
         void setInterval(uint32_t interval) override
@@ -96,7 +110,7 @@ namespace LWS
             {
                 stop();
                 fInterval = interval;
-                if (interval != 0)
+                if (interval != 0 && !fDetached)
                 {
                     fState->enabled = true;
                     fThread = startTimerThread(fState, interval, interval);
@@ -112,22 +126,24 @@ namespace LWS
                 fThread.request_stop();
                 fThread.join();
             }
+            cancelCallbacks(fState);
         }
 
         std::shared_ptr<CallbackState> fState;
         std::jthread fThread;
         uint32_t fInterval = 0;
+        bool fDetached = false;
     };
 
-    class HighPrecisionTimerBackendWayland final : public IHighPrecisionTimerBackend
+    class HighPrecisionTimerBackendWayland final : public internal::IHighPrecisionTimerBackend
     {
       public:
 
-        explicit HighPrecisionTimerBackendWayland(ITimerBackend::Callback callback)
+        HighPrecisionTimerBackendWayland(PlatformContext& platform, internal::ITimerBackend::Callback callback)
             : fState(std::make_shared<CallbackState>())
         {
-            fState->platform = &internal::WaylandPlatformState::current();
-            fState->callback = std::move(callback);
+            fState->platform = &platform;
+            fState->callback = callback ? std::make_shared<Timer::Callback>(std::move(callback)) : nullptr;
         }
 
         ~HighPrecisionTimerBackendWayland() override { enable(false); }
@@ -144,6 +160,7 @@ namespace LWS
                 fThread.request_stop();
                 fThread.join();
             }
+            cancelCallbacks(fState);
             if (enabled)
             {
                 fState->enabled = true;
@@ -188,14 +205,15 @@ namespace LWS
 
     namespace internal
     {
-        std::unique_ptr<ITimerBackend> createTimerBackend()
+        std::unique_ptr<ITimerBackend> createTimerBackend(PlatformContext& platform)
         {
-            return std::make_unique<TimerBackendWayland>();
+            return std::make_unique<TimerBackendWayland>(platform);
         }
 
-        std::unique_ptr<IHighPrecisionTimerBackend> createHighPrecisionTimerBackend(ITimerBackend::Callback callback)
+        std::unique_ptr<IHighPrecisionTimerBackend> createHighPrecisionTimerBackend(PlatformContext& platform,
+                                                                                    ITimerBackend::Callback callback)
         {
-            return std::make_unique<HighPrecisionTimerBackendWayland>(std::move(callback));
+            return std::make_unique<HighPrecisionTimerBackendWayland>(platform, std::move(callback));
         }
     }  // namespace internal
 }  // namespace LWS

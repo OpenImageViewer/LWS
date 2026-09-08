@@ -98,8 +98,7 @@ elseif(UNIX)
       )
     endforeach()
   else()
-    message(WARNING "Wayland not found — falling back to X11")
-    find_package(X11 REQUIRED)
+    message(WARNING "Wayland not found — building the unavailable X11 scaffold")
     set(LWS_PLATFORM_X11 ON)
   endif()
 endif()
@@ -110,6 +109,7 @@ endif()
 function(lws_configure_target target)
   target_include_directories(${target} PUBLIC
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
+
       "${CMAKE_CURRENT_SOURCE_DIR}/src/LWS/include"
       "${CMAKE_CURRENT_SOURCE_DIR}/external/LLUtils/include"
   )
@@ -117,7 +117,7 @@ function(lws_configure_target target)
   target_compile_definitions(${target} PRIVATE NOMINMAX UNICODE _UNICODE)
 
   if(LWS_PLATFORM_WIN32)
-    target_compile_definitions(${target} PUBLIC LWS_PLATFORM_WIN32)
+    target_compile_definitions(${target} PUBLIC LWS_PLATFORM_WIN32 LWS_HAS_WIN32_BACKEND)
     # Keep library names lowercase for case-sensitive MinGW builds on Linux.
     target_link_libraries(${target} PRIVATE
         ole32
@@ -128,7 +128,7 @@ function(lws_configure_target target)
         comctl32
     )
   elseif(LWS_PLATFORM_WAYLAND)
-    target_compile_definitions(${target} PUBLIC LWS_PLATFORM_WAYLAND)
+    target_compile_definitions(${target} PUBLIC LWS_PLATFORM_WAYLAND LWS_HAS_WAYLAND_BACKEND)
   elseif(LWS_PLATFORM_X11)
     target_compile_definitions(${target} PUBLIC LWS_PLATFORM_X11)
   endif()
@@ -149,7 +149,7 @@ elseif(LWS_PLATFORM_WAYLAND)
   list(FILTER lwsLibSources EXCLUDE REGEX ".*/Win32/.*")
 elseif(LWS_PLATFORM_X11)
   list(FILTER lwsLibSources EXCLUDE REGEX ".*/Win32/.*")
-  list(FILTER lwsLibSources EXCLUDE REGEX ".*/Wayland/(CursorBackendWayland|WindowBackendWayland|WindowWayland)\\.cpp$")
+  list(FILTER lwsLibSources EXCLUDE REGEX ".*/Wayland/.*")
 endif()
 
 add_library(LWSLib STATIC ${lwsLibSources})

@@ -1,215 +1,159 @@
 #pragma once
-#include <cstddef>
-#include <cstdint>
-#include <filesystem>
-#include <functional>
-#include <memory>
-#include <span>
 
-#include <LLUtils/Color.h>
-#include <LLUtils/Point.h>
-#include <LLUtils/Rect.h>
+// Private implementation contracts. Public consumers must not include this file.
+
+#include <LWS/Bitmap.hpp>
 #include <LWS/CursorShape.hpp>
 #include <LWS/Event.hpp>
 #include <LWS/Result.hpp>
-#include <LWS/StringDefs.hpp>
-#include <LWS/WindowDisplayState.hpp>
+#include <LWS/WindowTypes.hpp>
+
+#include <filesystem>
+#include <functional>
+#include <memory>
 
 namespace LWS
 {
-    using Size = LLUtils::PointI32;
-    using Point = LLUtils::PointI32;
-    using Rect = LLUtils::RectI32;
-    using Handle = uintptr_t;
-
-    enum class BitmapPixelFormat
-    {
-        Bgr8,
-        Bgra8,
-        Bgra8Premultiplied
-    };
-
-    enum class BitmapRowOrder
-    {
-        TopDown,
-        BottomUp
-    };
-
-    // Built-in IDs are concrete backend discriminators. Custom backends must use Undefined rather than claim one.
-    enum class BackendId
-    {
-        Undefined,
-        Win32,
-        WinUI,
-        Wayland,
-        X11
-    };
-
-    enum class WindowStyle : uint32_t
-    {
-        NoStyle = 0,
-        Caption = 1 << 0,
-        CloseButton = 1 << 1,
-        ResizableBorder = 1 << 2,
-        MinimizeButton = 1 << 3,
-        MaximizeButton = 1 << 4,
-        ChildWindow = 1 << 5,
-    };
-
-    enum class DoubleClickMode
-    {
-        NotSet,
-        Default
-    };
-    enum class LockMouseToWindowMode
-    {
-        NoLock,
-        LockResize,
-        LockMove
-    };
-    enum class FullScreenState
-    {
-        None,
-        Windowed,
-        SingleScreen,
-        MultiScreen
-    };
-
-    struct WindowPlacement
-    {
-        Point position;
-        Size size;
-        WindowDisplayState displayState = WindowDisplayState::Restored;
-    };
-
-    struct WindowConfig
-    {
-        Point position = {100, 100};
-        Size size = {800, 600};
-        LWS::string_type title;
-        WindowStyle styles = WindowStyle::NoStyle;
-        WindowDisplayState displayState = WindowDisplayState::Restored;
-        bool visible = false;
-        bool eraseBackground = true;
-        bool alwaysOnTop = false;
-        bool transparent = false;
-        Size minSize = {0, 0};
-        Size maxSize = {0, 0};
-    };
-
-    struct BitmapBuffer
-    {
-        std::span<const std::byte> pixels;
-        BitmapPixelFormat format = BitmapPixelFormat::Bgra8Premultiplied;
-        BitmapRowOrder rowOrder = BitmapRowOrder::TopDown;
-        uint32_t width = 0;
-        uint32_t height = 0;
-        uint32_t rowPitch = 0;
-    };
-
-    class ICursorBackend
-    {
-      public:
-
-        virtual ~ICursorBackend() = default;
-        virtual void setVisible(bool visible) = 0;
-        virtual void setCursorShape(CursorShape shape) = 0;
-        [[nodiscard]] virtual Result setCustomCursor(const BitmapBuffer& bmp) = 0;
-        virtual BackendId backend() const = 0;
-    };
-
-    class IWindowBackend
-    {
-      public:
-
-        virtual ~IWindowBackend() = default;
-
-        [[nodiscard]] virtual Result create(const WindowConfig& config) = 0;
-        virtual void destroy() = 0;
-        virtual void show() = 0;
-        virtual void hide() = 0;
-        virtual bool getVisible() const = 0;
-        virtual void setDisplayState(WindowDisplayState state) = 0;
-        virtual WindowDisplayState getDisplayState() const = 0;
-        virtual void setTitle(const LWS::string_type& title) = 0;
-        virtual LWS::string_type getTitle() const = 0;
-        virtual void setWindowIcon(const std::filesystem::path& iconPath) = 0;
-        virtual void setPosition(Point pos) = 0;
-        virtual Point getPosition() const = 0;
-        virtual void setSize(Size sz) = 0;
-        virtual Size getClientSize() const = 0;
-        virtual Rect getClientRect() const = 0;
-        virtual Size getWindowSize() const = 0;
-        virtual void setPlacement(const WindowPlacement& placement) = 0;
-        virtual WindowPlacement getPlacement() const = 0;
-        virtual void setMinMaxSize(Size minSize, Size maxSize) = 0;
-        virtual Size getMinSize() const = 0;
-        virtual Size getMaxSize() const = 0;
-        virtual void setWindowStyles(WindowStyle styles, bool enable) = 0;
-        virtual WindowStyle getWindowStyles() const = 0;
-        virtual void setForeground() = 0;
-        virtual void setFocus() = 0;
-        virtual bool isInFocus() const = 0;
-        virtual void setAlwaysOnTop(bool onTop) = 0;
-        virtual bool getAlwaysOnTop() const = 0;
-        virtual void setTransparent(bool transparent) = 0;
-        virtual bool getTransparent() const = 0;
-        virtual void setBackgroundColor(LLUtils::Color color) = 0;
-        virtual LLUtils::Color getBackgroundColor() const = 0;
-        virtual void setEraseBackground(bool erase) = 0;
-        virtual bool getEraseBackground() const = 0;
-        virtual void setFullScreenState(FullScreenState state) = 0;
-        virtual FullScreenState getFullScreenState() const = 0;
-        virtual bool isFullScreen() const = 0;
-        virtual void toggleFullScreen(bool multiMonitor = false) = 0;
-        virtual bool isMouseInClientRect() const = 0;
-        virtual bool isUnderMouseCursor() const = 0;
-        virtual Point getMousePosition() const = 0;
-        virtual void setLockMouseToWindowMode(LockMouseToWindowMode mode) = 0;
-        virtual LockMouseToWindowMode getLockMouseToWindowMode() const = 0;
-        [[nodiscard]] virtual Result setPointerLocked(bool locked) = 0;
-        virtual void setDoubleClickMode(DoubleClickMode mode) = 0;
-        virtual DoubleClickMode getDoubleClickMode() const = 0;
-        virtual void setCursor(std::shared_ptr<ICursorBackend> cursor) = 0;
-        virtual void setParent(IWindowBackend* parent) = 0;
-        [[nodiscard]] virtual Result enableDragAndDrop(bool enable) = 0;
-        [[nodiscard]] virtual EventListenerToken addListener(EventCallback cb) = 0;
-        virtual void removeListener(EventListenerToken token) = 0;
-        virtual void injectRawEvent(void* platformEvent) = 0;
-        [[nodiscard]] virtual Result presentBitmap(const BitmapBuffer&) { return Result::NotSupported; }
-        [[nodiscard]] virtual Handle getHandle() const = 0;
-        [[nodiscard]] virtual BackendId backend() const = 0;
-    };
-
-    class ITimerBackend
-    {
-      public:
-
-        using Callback = std::function<void()>;
-        virtual ~ITimerBackend() = default;
-        virtual void setTargetWindow(Handle windowHandle) = 0;
-        [[nodiscard]] virtual uint32_t getInterval() const = 0;
-        virtual void setInterval(uint32_t interval) = 0;
-        virtual void setCallback(Callback callback) = 0;
-    };
-
-    class IHighPrecisionTimerBackend
-    {
-      public:
-
-        virtual ~IHighPrecisionTimerBackend() = default;
-        virtual void setRepeatInterval(uint32_t repeatInterval) = 0;
-        virtual void setDueTime(uint32_t dueTime) = 0;
-        [[nodiscard]] virtual bool getEnabled() const = 0;
-        virtual void enable(bool enabled) = 0;
-    };
+    class PlatformContext;
 
     namespace internal
     {
-        [[nodiscard]] std::unique_ptr<IWindowBackend> createDefaultWindowBackend();
+        enum class LockMouseToWindowMode
+        {
+            NoLock,
+            LockResize,
+            LockMove
+        };
+
+        enum class FullScreenState
+        {
+            None,
+            Windowed,
+            SingleScreen,
+            MultiScreen
+        };
+
+        struct NativeWindowPlacement
+        {
+            Point position;
+            Size size;
+            WindowShowState displayState{WindowShowState::Restored};
+        };
+
+        struct NativeWindowConfig
+        {
+            Point position{100, 100};
+            Size size{800, 600};
+            string_type title;
+            WindowStyle styles{WindowStyle::NoStyle};
+            WindowShowState displayState{WindowShowState::Restored};
+            bool visible{};
+            bool eraseBackground{true};
+            bool alwaysOnTop{};
+            bool transparent{};
+            Size minSize{};
+            Size maxSize{};
+        };
+
+        class ICursorBackend
+        {
+          public:
+
+            virtual ~ICursorBackend() = default;
+            virtual void setVisible(bool visible) = 0;
+            virtual void setCursorShape(CursorShape shape) = 0;
+            [[nodiscard]] virtual Result setCustomCursor(const BitmapBuffer& bitmap, Point hotspot) = 0;
+            [[nodiscard]] virtual BackendId backend() const = 0;
+        };
+
+        class IWindowBackend
+        {
+          public:
+
+            explicit IWindowBackend(Window& owner) : owner_(owner) {}
+            virtual ~IWindowBackend() = default;
+
+            [[nodiscard]] virtual Result create(const NativeWindowConfig& config) = 0;
+            virtual void destroy() = 0;
+            [[nodiscard]] virtual bool isConfigured() const { return true; }
+            virtual void show() = 0;
+            virtual void hide() = 0;
+            [[nodiscard]] virtual bool getVisible() const = 0;
+            virtual void setDisplayState(WindowShowState state) = 0;
+            [[nodiscard]] virtual WindowShowState getDisplayState() const = 0;
+            virtual void setTitle(const string_type& title) = 0;
+            [[nodiscard]] virtual string_type getTitle() const = 0;
+            virtual void setWindowIcon(const std::filesystem::path& iconPath) = 0;
+            virtual void setPosition(Point position) = 0;
+            [[nodiscard]] virtual Point getPosition() const = 0;
+            [[nodiscard]] virtual uintptr_t getCurrentMonitorHandle() const { return 0; }
+            virtual void setSize(Size size) = 0;
+            [[nodiscard]] virtual Size getClientSize() const = 0;
+            [[nodiscard]] virtual Size getFramebufferSize() const { return getClientSize(); }
+            virtual void setPlacement(const NativeWindowPlacement& placement) = 0;
+            virtual void setMinMaxSize(Size minSize, Size maxSize) = 0;
+            [[nodiscard]] virtual Size getMinSize() const = 0;
+            [[nodiscard]] virtual Size getMaxSize() const = 0;
+            virtual void setWindowStyles(WindowStyle styles, bool enable) = 0;
+            [[nodiscard]] virtual WindowStyle getWindowStyles() const = 0;
+            virtual void setForeground() = 0;
+            [[nodiscard]] virtual bool isInFocus() const = 0;
+            virtual void setAlwaysOnTop(bool onTop) = 0;
+            [[nodiscard]] virtual bool getAlwaysOnTop() const = 0;
+            virtual void setTransparent(bool transparent) = 0;
+            [[nodiscard]] virtual bool getTransparent() const = 0;
+            virtual void setBackgroundColor(LLUtils::Color color) = 0;
+            virtual void setEraseBackground(bool erase) = 0;
+            [[nodiscard]] virtual bool getEraseBackground() const = 0;
+            virtual void setFullScreenState(FullScreenState state) = 0;
+            [[nodiscard]] virtual FullScreenState getFullScreenState() const = 0;
+            [[nodiscard]] virtual bool isMouseInClientRect() const = 0;
+            [[nodiscard]] virtual Point getMousePosition() const = 0;
+            virtual void setLockMouseToWindowMode(LockMouseToWindowMode mode) = 0;
+            [[nodiscard]] virtual Result setPointerLocked(bool locked) = 0;
+            virtual void setCursor(std::shared_ptr<ICursorBackend> cursor) = 0;
+            virtual void setParent(IWindowBackend* parent) = 0;
+            [[nodiscard]] virtual Result enableDragAndDrop(bool enable) = 0;
+            [[nodiscard]] virtual Result presentBitmap(const BitmapBuffer&) { return Result::NotSupported; }
+            [[nodiscard]] virtual Handle getHandle() const = 0;
+            [[nodiscard]] virtual BackendId backend() const = 0;
+
+          protected:
+
+            EventResponse dispatchEvent(const AnyEvent& event);
+            [[nodiscard]] Window& owner() const { return owner_; }
+
+          private:
+
+            Window& owner_;
+        };
+
+        class ITimerBackend
+        {
+          public:
+
+            using Callback = std::function<void()>;
+            virtual ~ITimerBackend() = default;
+            virtual void setTargetWindow(Handle windowHandle) = 0;
+            [[nodiscard]] virtual uint32_t getInterval() const = 0;
+            virtual void setInterval(uint32_t interval) = 0;
+            virtual void setCallback(Callback callback) = 0;
+        };
+
+        class IHighPrecisionTimerBackend
+        {
+          public:
+
+            virtual ~IHighPrecisionTimerBackend() = default;
+            virtual void setRepeatInterval(uint32_t repeatInterval) = 0;
+            virtual void setDueTime(uint32_t dueTime) = 0;
+            [[nodiscard]] virtual bool getEnabled() const = 0;
+            virtual void enable(bool enabled) = 0;
+        };
+
         [[nodiscard]] std::unique_ptr<ICursorBackend> createDefaultCursorBackend();
-        [[nodiscard]] std::unique_ptr<ITimerBackend> createTimerBackend();
+        [[nodiscard]] std::unique_ptr<ITimerBackend> createTimerBackend(PlatformContext& platform);
         [[nodiscard]] std::unique_ptr<IHighPrecisionTimerBackend> createHighPrecisionTimerBackend(
-            ITimerBackend::Callback callback);
+            PlatformContext& platform, ITimerBackend::Callback callback);
     }  // namespace internal
 }  // namespace LWS

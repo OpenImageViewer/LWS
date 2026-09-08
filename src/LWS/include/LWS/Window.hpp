@@ -1,144 +1,114 @@
 #pragma once
+
+#include <LWS/Bitmap.hpp>
+#include <LWS/Cursor.hpp>
 #include <LWS/Event.hpp>
+#include <LWS/Platform.hpp>
 #include <LWS/Result.hpp>
-#include <LWS/interfaces/backends.hpp>
-
-#include <LLUtils/BitFlags.h>
-#include <LLUtils/Color.h>
-#include <LLUtils/EnumClassBitwise.h>
-
 #include <filesystem>
+#include <LWS/WindowTypes.hpp>
+
+#include <expected>
 #include <memory>
-#include <vector>
+#include <optional>
+
+namespace LWS::internal
+{
+    class WindowBackendAccess;
+}
 
 namespace LWS
 {
-    namespace internal
+    /// A stable-address window permanently bound to one active PlatformContext.
+    ///
+    /// Failed Create() attempts may retry. After the first successful native lifetime ends, the object is terminal and
+    /// another native lifetime requires another Window. The borrowed context must outlive this complete C++ object.
+    ///
+    /// @par Thread safety
+    /// Every operation requires the bound context thread. Debug builds assert affinity; wrong-thread release use is
+    /// undefined. Typed native handles are borrowed and stable only from successful Create() until Destroy() begins.
+    class Window final
     {
-        class WindowBackendAccess;
-    }
+      public:
 
-    LLUTILS_DEFINE_ENUM_CLASS_FLAG_OPERATIONS(WindowStyle)
-    using WindowStyleFlags = LLUtils::BitFlags<WindowStyle>;
-
-    class Cursor;
-    class Window;
-    using VecChildWindows = std::vector<Window*>;
-
-    class Window
-    {
-    public:
-        Window();
-        explicit Window(std::unique_ptr<IWindowBackend> impl);
-        virtual ~Window();
+        explicit Window(PlatformContext& platform);
+        ~Window();
 
         Window(const Window&) = delete;
         Window& operator=(const Window&) = delete;
-        Window(Window&&) noexcept = default;
-        Window& operator=(Window&&) noexcept = default;
+        Window(Window&&) = delete;
+        Window& operator=(Window&&) = delete;
 
         [[nodiscard]] Result Create(const WindowConfig& config = {});
-        void Destroy();
+        [[nodiscard]] Result Destroy();
+        [[nodiscard]] bool IsCreated() const;
 
-        void SetTitle(const LWS::string_type& title);
-        [[nodiscard]] LWS::string_type GetTitle() const;
+        [[nodiscard]] PlatformContext& GetPlatformContext();
+        [[nodiscard]] const PlatformContext& GetPlatformContext() const;
+        [[nodiscard]] BackendId GetBackendId() const;
 
-        void SetWindowIcon(const std::filesystem::path& iconPath);
-
-        void SetVisible(bool visible);
+        [[nodiscard]] Result SetTitle(const string_type& title);
+        [[nodiscard]] string_type GetTitle() const;
+        [[nodiscard]] Result SetVisible(bool visible);
         [[nodiscard]] bool GetVisible() const;
-        void SetDisplayState(WindowDisplayState state);
-        [[nodiscard]] WindowDisplayState GetDisplayState() const;
 
-        void SetPosition(const Point& position);
-        [[nodiscard]] Point GetPosition() const;
-        void SetSize(const Size& sz);
+        [[nodiscard]] Result SetPosition(Point position);
+        [[nodiscard]] std::optional<Point> GetPosition() const;
+        /// Requests a drawable client area in native client units; native outer decorations are excluded.
+        [[nodiscard]] Result RequestClientSize(Size size);
         [[nodiscard]] Size GetClientSize() const;
-        [[nodiscard]] Rect GetClientRect() const;
-        [[nodiscard]] Size GetWindowSize() const;
-        void SetPlacement(const WindowPlacement& placement);
+        [[nodiscard]] Result SetPlacement(const WindowPlacement& placement);
         [[nodiscard]] WindowPlacement GetPlacement() const;
-        void SetMinMaxSize(Size minSize, Size maxSize);
-        [[nodiscard]] Size GetMinSize() const;
-        [[nodiscard]] Size GetMaxSize() const;
-        void Move(const Point& delta);
+        [[nodiscard]] Result SetMinMaxClientSize(Size minimum, Size maximum);
+        [[nodiscard]] Size GetMinClientSize() const;
+        [[nodiscard]] Size GetMaxClientSize() const;
+        [[nodiscard]] Result Center(CenterTarget target);
 
-        void CenterOnScreen();
-        void CenterOnParent();
+        [[nodiscard]] Result SetWindowMode(WindowMode mode);
+        [[nodiscard]] WindowMode GetWindowMode() const;
+        [[nodiscard]] Result RequestShowState(WindowShowState state);
+        [[nodiscard]] WindowShowState GetShowState() const;
+        [[nodiscard]] bool IsConfigured() const;
 
-        void SetWindowStyles(WindowStyle styles, bool enable);
+        [[nodiscard]] Result RequestActivation();
+        [[nodiscard]] bool HasKeyboardFocus() const;
+        [[nodiscard]] Result SetWindowStyles(WindowStyleFlags styles);
         [[nodiscard]] WindowStyleFlags GetWindowStyles() const;
-
-        void SetForeground();
-        void SetFocused();
-        [[nodiscard]] bool IsInFocus() const;
-
-        void SetAlwaysOnTop(bool onTop);
+        [[nodiscard]] Result SetAlwaysOnTop(bool onTop);
         [[nodiscard]] bool GetAlwaysOnTop() const;
-        void SetTransparent(bool transparent);
+        [[nodiscard]] Result SetTransparent(bool transparent);
         [[nodiscard]] bool GetTransparent() const;
-
-        void SetBackgroundColor(LLUtils::Color color);
-        void SetEraseBackground(bool erase);
+        [[nodiscard]] Result SetBackgroundColor(LLUtils::Color color);
+        [[nodiscard]] Result SetEraseBackground(bool erase);
         [[nodiscard]] bool GetEraseBackground() const;
-
-        void ToggleFullScreen(bool multiMonitor = false);
-        void SetFullScreenState(FullScreenState state);
-        [[nodiscard]] FullScreenState GetFullScreenState() const;
-        [[nodiscard]] bool IsFullScreen() const;
-
-        [[nodiscard]] bool IsMouseInClientRect() const;
-        [[nodiscard]] bool IsUnderMouseCursor() const;
-        [[nodiscard]] Point GetMousePosition() const;
-        void SetDoubleClickMode(DoubleClickMode mode);
-        [[nodiscard]] DoubleClickMode GetDoubleClickMode() const;
-        void SetLockMouseToWindowMode(LockMouseToWindowMode mode);
-        [[nodiscard]] LockMouseToWindowMode GetLockMouseToWindowMode() const;
-        [[nodiscard]] Result SetPointerLocked(bool locked);
-
-        void SetMouseCursor(Cursor* cursor);
-        [[nodiscard]] Cursor* GetMouseCursor() const;
-
-        void SetParent(Window* parent);
-        [[nodiscard]] Window* GetParent() const;
-
         [[nodiscard]] Result EnableDragAndDrop(bool enable);
 
-        void SetDestroyOnClose(bool destroyOnClose);
+        [[nodiscard]] bool IsMouseInClientRect() const;
+        [[nodiscard]] Point GetMousePosition() const;
+        [[nodiscard]] Result SetPointerLocked(bool locked);
+        [[nodiscard]] Result BeginWindowDrag(WindowDragOperation operation);
 
+        [[nodiscard]] Result SetMouseCursor(Cursor* cursor);
+        [[nodiscard]] Cursor* GetMouseCursor() const;
+        [[nodiscard]] Result SetWindowIcon(const std::filesystem::path& iconPath);
+
+        [[nodiscard]] Window* GetParent() const;
         [[nodiscard]] EventListenerToken AddEventListener(EventCallback callback);
         void RemoveEventListener(EventListenerToken token);
         [[nodiscard]] EventListenerGuard MakeListenerGuard(EventListenerToken token);
-
-        void InjectRawEvent(void* platformEvent);
         [[nodiscard]] Result PresentBitmap(const BitmapBuffer& bitmap);
 
-        [[nodiscard]] BackendId GetBackendId() const;
-        [[nodiscard]] Handle GetHandle() const;
+      private:
 
-    protected:
-        template<typename T>
-        T* getBackendAs() { return dynamic_cast<T*>(impl_.get()); }
+        friend class Timer;
+        [[nodiscard]] EventListenerToken AddEventListener(EventCallback callback, bool beforeUserCallbacks);
 
-        template<typename T>
-        const T* getBackendAs() const { return dynamic_cast<const T*>(impl_.get()); }
-
-        std::unique_ptr<IWindowBackend> impl_;
-
-    private:
         friend class internal::WindowBackendAccess;
 
-        Window* fParent = nullptr;
-        VecChildWindows fChildren;
-        Cursor* fMouseCursor = nullptr;
-        bool fDestroyOnClose = true;
+        [[nodiscard]] EventResponse DispatchEvent(const AnyEvent& event);
 
-        void AddChild(Window* child);
-        void RemoveChild(Window* child);
-        void NotifyRemovedFromRelatedWindows();
+        PlatformContext& platform_;
+        class Impl;
+        std::unique_ptr<Impl> impl_;
     };
-}
-
-#ifdef LWS_PLATFORM_WIN32
-#include <LWS/Win32/WindowExtensions.hpp>
-#endif
+}  // namespace LWS

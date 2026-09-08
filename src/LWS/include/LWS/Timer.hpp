@@ -1,6 +1,6 @@
 #pragma once
 
-#include <LWS/interfaces/backends.hpp>
+#include <LWS/Platform.hpp>
 
 #include <cstdint>
 #include <functional>
@@ -13,7 +13,7 @@ namespace LWS
       public:
 
         using Callback = std::function<void()>;
-        Timer();
+        explicit Timer(PlatformContext& platform);
         ~Timer();
 
         Timer(const Timer&) = delete;
@@ -21,14 +21,17 @@ namespace LWS
         Timer(Timer&&) noexcept = delete;
         Timer& operator=(Timer&&) noexcept = delete;
 
-        void SetTargetWindow(Handle windowHandle);
+        /// A null target or target destruction detaches the timer while preserving its configured interval.
+        [[nodiscard]] Result SetTargetWindow(Window* window);
         [[nodiscard]] uint32_t GetInterval() const;
         void SetInterval(uint32_t interval);
         void SetCallback(Callback callback);
 
       private:
 
-        std::unique_ptr<ITimerBackend> impl_;
+        PlatformContext& platform_;
+        class Impl;
+        std::unique_ptr<Impl> impl_;
     };
 
     class HighPrecisionTimer
@@ -36,7 +39,7 @@ namespace LWS
       public:
 
         using Callback = std::function<void()>;
-        explicit HighPrecisionTimer(Callback callback);
+        HighPrecisionTimer(PlatformContext& platform, Callback callback);
         ~HighPrecisionTimer();
 
         HighPrecisionTimer(const HighPrecisionTimer&) = delete;
@@ -51,6 +54,8 @@ namespace LWS
 
       private:
 
-        std::unique_ptr<IHighPrecisionTimerBackend> impl_;
+        PlatformContext& platform_;
+        class Impl;
+        std::unique_ptr<Impl> impl_;
     };
 }  // namespace LWS

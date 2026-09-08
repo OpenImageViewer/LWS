@@ -6,13 +6,14 @@
 
     #include <LWS/NotificationIconGroup.hpp>
     #include <LWS/Win32/EventWin32.hpp>
+    #include <LWS/Win32/WindowExtensions.hpp>
     #include <LWS/Window.hpp>
+    #include "../internal/WindowBackendAccess.hpp"
     #include <LLUtils/Exception.h>
     #include <LLUtils/StringUtility.h>
     #include <LLUtils/Templates.h>
     #include <LLUtils/UniqueIDProvider.h>
 
-    #include <map>
     #include <set>
 
 namespace LWS
@@ -21,17 +22,17 @@ namespace LWS
     {
       public:
 
-        Impl() = default;
+        explicit Impl(PlatformContext& platform) : fWindow(platform) {}
 
         ~Impl()
         {
             NOTIFYICONDATA nid{};
             nid.cbSize = sizeof(nid);
-            nid.hWnd = reinterpret_cast<HWND>(fWindow.GetHandle());
+            nid.hWnd = reinterpret_cast<HWND>(internal::WindowBackendAccess::Get(fWindow)->getHandle());
             nid.uVersion = NOTIFYICON_VERSION_4;
             nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
 
-            for (const auto& [id, _] : fMapIconData)
+            for (const IconID id : fIconIDs)
             {
                 nid.uID = id;
                 Shell_NotifyIcon(NIM_DELETE, &nid);
@@ -41,21 +42,23 @@ namespace LWS
         IconID AddIconResource(uint16_t iconResourceId, const string_type& tooltip,
                                NotificationIconEvent& notificationEvent)
         {
-            if (fWindow.GetHandle() == 0)
+            if (!fWindow.IsCreated())
             {
-                std::ignore = fWindow.Create({.visible = false});
-                fWindow.SetVisible(false);
-                if (Win32::SetPlatformCallback(
-                        fWindow,
-                        [this, &notificationEvent](const Win32::PlatformEvent& event)
+                if (fWindow.Create({.visible = false}) != Result::Success)
+                    LL_EXCEPTION(LLUtils::Exception::ErrorCode::InvalidState,
+                                 "Unable to create the notification-icon window");
+                const Result connection = Win32::SetPlatformCallback(
+                    fWindow,
+                    [this, &notificationEvent](const Win32::PlatformEvent& event)
+                    {
+                        if (const auto* notification = std::get_if<Win32::NotificationIconEvent>(&event))
                         {
-                            if (const auto* notification = std::get_if<Win32::NotificationIconEvent>(&event))
-                            {
-                                HandleMessage(*notification, notificationEvent);
-                                return std::optional<LRESULT>{0};
-                            }
-                            return std::optional<LRESULT>{};
-                        }) != Result::Success)
+                            HandleMessage(*notification, notificationEvent);
+                            return std::optional<LRESULT>{0};
+                        }
+                        return std::optional<LRESULT>{};
+                    });
+                if (connection != Result::Success)
                 {
                     LL_EXCEPTION(LLUtils::Exception::ErrorCode::InvalidState,
                                  "Unable to register the notification-icon platform callback");
@@ -64,7 +67,7 @@ namespace LWS
 
             NOTIFYICONDATA nid{};
             nid.cbSize = sizeof(nid);
-            nid.hWnd = reinterpret_cast<HWND>(fWindow.GetHandle());
+            nid.hWnd = reinterpret_cast<HWND>(internal::WindowBackendAccess::Get(fWindow)->getHandle());
             nid.uVersion = NOTIFYICON_VERSION_4;
             nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE | NIF_SHOWTIP;
             IconID iconId = fIconIdProvider.Acquire();
@@ -76,10 +79,11 @@ namespace LWS
 
             if (Shell_NotifyIcon(NIM_ADD, &nid) == TRUE && Shell_NotifyIcon(NIM_SETVERSION, &nid) == TRUE)
             {
-                fMapIconData.emplace(iconId, NotificationIconData{iconId});
+                fIconIDs.insert(iconId);
             }
             else
             {
+                Shell_NotifyIcon(NIM_DELETE, &nid);
                 fIconIdProvider.Release(iconId);
                 LL_EXCEPTION_SYSTEM_ERROR("Cannot add notification icon");
             }
@@ -89,11 +93,11 @@ namespace LWS
 
         Rect GetIconRect(IconID iconid) const
         {
-            auto iconData = fMapIconData.find(iconid);
-            if (iconData != fMapIconData.end())
+            if (fIconIDs.contains(iconid))
             {
                 NOTIFYICONIDENTIFIER iconIdentifer{static_cast<DWORD>(sizeof(NOTIFYICONIDENTIFIER)),
-                                                   reinterpret_cast<HWND>(fWindow.GetHandle()),
+                                                   reinterpret_cast<HWND>(
+                                                       internal::WindowBackendAccess::Get(fWindow)->getHandle()),
                                                    static_cast<UINT>(iconid), GUID{}};
                 RECT rect{};
 
@@ -127,27 +131,34 @@ namespace LWS
             }
         }
 
-        struct NotificationIconData
-        {
-            IconID id;
-        };
-
-        std::map<IconID, NotificationIconData> fMapIconData;
+        std::set<IconID> fIconIDs;
         Window fWindow;
         LLUtils::UniqueIdProvider<IconID, std::set<IconID>> fIconIdProvider{1};
     };
 
-    NotificationIconGroup::NotificationIconGroup() : impl_(std::make_unique<Impl>()) {}
-    NotificationIconGroup::~NotificationIconGroup() = default;
+    NotificationIconGroup::NotificationIconGroup(PlatformContext& platform)
+        : platform_(platform), impl_(std::make_unique<Impl>(platform))
+    {
+        platform_.RegisterService();
+    }
+
+    NotificationIconGroup::~NotificationIconGroup()
+    {
+        platform_.AssertCurrentThread();
+        impl_.reset();
+        platform_.UnregisterService();
+    }
 
     NotificationIconGroup::IconID NotificationIconGroup::AddIconResource(uint16_t iconResourceId,
                                                                          const string_type& tooltip)
     {
+        platform_.AssertCurrentThread();
         return impl_->AddIconResource(iconResourceId, tooltip, OnNotificationIconEvent);
     }
 
     Rect NotificationIconGroup::GetIconRect(IconID iconid) const
     {
+        platform_.AssertCurrentThread();
         return impl_->GetIconRect(iconid);
     }
 }  // namespace LWS

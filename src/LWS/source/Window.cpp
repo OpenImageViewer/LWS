@@ -1,228 +1,624 @@
 #include <LWS/Window.hpp>
-#include <LWS/Cursor.hpp>
-#include <LWS/Platform.hpp>
+
+#include "internal/ListenerState.hpp"
+#include "internal/PlatformBackend.hpp"
+#include "internal/WindowBackendAccess.hpp"
+
+#include <LWS/interfaces/backends.hpp>
+
 #include <algorithm>
 #include <cassert>
-#include <stdexcept>
+#include <utility>
+#include <vector>
+
+namespace
+{
+    bool ValidSizeLimits(LWS::Size minimum, LWS::Size maximum)
+    {
+        return minimum.x >= 0 && minimum.y >= 0 && maximum.x >= 0 && maximum.y >= 0 &&
+               (maximum.x == 0 || minimum.x <= maximum.x) && (maximum.y == 0 || minimum.y <= maximum.y);
+    }
+}  // namespace
 
 namespace LWS
 {
-    Window::Window()
-        : impl_(internal::createDefaultWindowBackend())
+    class Window::Impl final
     {
+      public:
+
+        enum class State
+        {
+            PreCreate,
+            Creating,
+            Created,
+            Destroying,
+            Destroyed
+        };
+
+        std::unique_ptr<internal::IWindowBackend> backend;
+        std::shared_ptr<internal::ListenerState> listeners;
+        Cursor* cursor{};
+        uint64_t platformListener{};
+        Window* parent{};
+        std::vector<Window*> children;
+        State state{State::PreCreate};
+        WindowConfig config;
+        bool configured{};
+    };
+
+    internal::IWindowBackend* internal::WindowBackendAccess::Get(Window& window)
+    {
+        return window.impl_->backend.get();
     }
 
-    Window::Window(std::unique_ptr<IWindowBackend> impl)
-        : impl_(std::move(impl))
+    const internal::IWindowBackend* internal::WindowBackendAccess::Get(const Window& window)
     {
+        return window.impl_->backend.get();
+    }
+
+    EventResponse internal::WindowBackendAccess::Dispatch(Window& window, const AnyEvent& event)
+    {
+        return window.DispatchEvent(event);
+    }
+
+#ifdef LWS_PLATFORM_WIN32
+    Result internal::WindowBackendAccess::SetPlatformCallback(Window& window, Win32::PlatformCallback callback)
+    {
+        window.platform_.AssertCurrentThread();
+        window.impl_->listeners->Remove(window.impl_->platformListener);
+        window.impl_->platformListener = callback ? window.impl_->listeners->AddPlatform(std::move(callback)) : 0;
+        return Result::Success;
+    }
+
+    bool internal::WindowBackendAccess::DispatchPlatform(Window& window, const Win32::PlatformEvent& event,
+                                                         LRESULT& result)
+    {
+        return window.impl_->listeners->DispatchPlatform(event, result);
+    }
+#endif
+
+    EventResponse internal::IWindowBackend::dispatchEvent(const AnyEvent& event)
+    {
+        return internal::WindowBackendAccess::Dispatch(owner(), event);
+    }
+
+    Window::Window(PlatformContext& platform) : platform_(platform), impl_(std::make_unique<Impl>())
+    {
+        platform_.AssertCurrentThread();
+        assert(platform_.IsUsable());
+        impl_->listeners = std::make_shared<internal::ListenerState>(platform_);
+        impl_->backend = internal::PlatformContextAccess::CreateWindowBackend(platform_, *this);
+        assert(impl_->backend != nullptr);
+        platform_.RegisterWindow();
     }
 
     Window::~Window()
     {
-        Destroy();
+        platform_.AssertCurrentThread();
+        std::ignore = Destroy();
+        platform_.UnregisterWindow();
     }
 
     Result Window::Create(const WindowConfig& config)
     {
-        if (!impl_)
-        {
+        platform_.AssertCurrentThread();
+        if (impl_->state != Impl::State::PreCreate)
             return Result::InvalidState;
-        }
-        if (!Platform::isInitialized())
+        if (config.clientSize.x <= 0 || config.clientSize.y <= 0 ||
+            !ValidSizeLimits(config.minClientSize, config.maxClientSize))
         {
-            return Result::PlatformNotInitialized;
+            return Result::InvalidArgument;
         }
-
-        return impl_->create(config);
-    }
-
-    void Window::Destroy()
-    {
-        if (!impl_)
+        if (config.parent != nullptr &&
+            (config.parent == this || !config.parent->IsCreated() || &config.parent->platform_ != &platform_))
         {
-            return;
+            return Result::InvalidArgument;
         }
 
-        VecChildWindows copy_of_children = fChildren;
-        for (Window* child : copy_of_children)
+        impl_->state = Impl::State::Creating;
+        impl_->backend->setParent(config.parent != nullptr ? config.parent->impl_->backend.get() : nullptr);
+        const internal::NativeWindowConfig nativeConfig{
+            .position = config.position.value_or(Point{100, 100}),
+            .size = static_cast<Size>(config.clientSize),
+            .title = config.title,
+            .styles = config.styles.get(),
+            .displayState = config.showState,
+            .visible = config.visible,
+            .eraseBackground = config.eraseBackground,
+            .alwaysOnTop = config.alwaysOnTop,
+            .transparent = config.transparent,
+            .minSize = static_cast<Size>(config.minClientSize),
+            .maxSize = static_cast<Size>(config.maxClientSize),
+        };
+        impl_->backend->setBackgroundColor(config.backgroundColor);
+        Result result = Result::Success;
+
+        if (result == Result::Success && config.dragAndDropEnabled)
+            result = impl_->backend->enableDragAndDrop(true);
+        if (result == Result::Success && impl_->cursor != nullptr)
+            result = SetMouseCursor(impl_->cursor);
+        if (result == Result::Success)
+            result = impl_->backend->create(nativeConfig);
+
+        if (result != Result::Success)
         {
-            child->Destroy();
+            impl_->backend->destroy();
+            impl_->backend->setParent(nullptr);
+            impl_->state = Impl::State::PreCreate;
+            return result;
         }
 
-        NotifyRemovedFromRelatedWindows();
-        impl_->destroy();
+        impl_->config = config;
+        impl_->parent = config.parent;
+        if (impl_->parent != nullptr)
+            impl_->parent->impl_->children.push_back(this);
+        const Size clientSize = impl_->backend->getClientSize();
+        const Size framebufferSize = impl_->backend->getFramebufferSize();
+        impl_->configured = impl_->backend->isConfigured();
+        impl_->state = Impl::State::Created;
+        return Result::Success;
     }
 
-    void Window::SetTitle(const LWS::string_type& title) { impl_->setTitle(title); }
-    LWS::string_type Window::GetTitle() const { return impl_->getTitle(); }
-    void Window::SetWindowIcon(const std::filesystem::path& path) { impl_->setWindowIcon(path); }
-    void Window::SetVisible(bool visible) { visible ? impl_->show() : impl_->hide(); }
-    bool Window::GetVisible() const { return impl_->getVisible(); }
-    void Window::SetDisplayState(WindowDisplayState state) { impl_->setDisplayState(state); }
-    WindowDisplayState Window::GetDisplayState() const { return impl_->getDisplayState(); }
-    void Window::SetPosition(const Point& position) { impl_->setPosition(position); }
-    Point Window::GetPosition() const { return impl_->getPosition(); }
-    void Window::SetSize(const Size& size) { impl_->setSize(size); }
-    Size Window::GetClientSize() const { return impl_->getClientSize(); }
-    Rect Window::GetClientRect() const { return impl_->getClientRect(); }
-    Size Window::GetWindowSize() const { return impl_->getWindowSize(); }
-    void Window::SetPlacement(const WindowPlacement& placement) { impl_->setPlacement(placement); }
-    WindowPlacement Window::GetPlacement() const { return impl_->getPlacement(); }
-    void Window::SetMinMaxSize(Size min_size, Size max_size) { impl_->setMinMaxSize(min_size, max_size); }
-    Size Window::GetMinSize() const { return impl_->getMinSize(); }
-    Size Window::GetMaxSize() const { return impl_->getMaxSize(); }
-
-    void Window::Move(const Point& delta)
+    Result Window::Destroy()
     {
-        Point position = GetPosition();
-        SetPosition({ position.x + delta.x, position.y + delta.y });
-    }
+        platform_.AssertCurrentThread();
+        if (impl_->state == Impl::State::PreCreate || impl_->state == Impl::State::Destroyed)
+            return Result::Success;
+        if (impl_->state != Impl::State::Created)
+            return Result::InvalidState;
 
-    void Window::CenterOnScreen()
-    {
-        Size window_size = GetWindowSize();
-        SetPosition({ (1920 - window_size.x) / 2, (1080 - window_size.y) / 2 });
-    }
-
-    void Window::CenterOnParent()
-    {
-        if (!fParent)
+        impl_->state = Impl::State::Destroying;
+        const auto children = impl_->children;
+        for (Window* child : children)
         {
-            CenterOnScreen();
-            return;
+            if (std::ranges::find(impl_->children, child) != impl_->children.end())
+                std::ignore = child->Destroy();
         }
-
-        Size parent_size = fParent->GetWindowSize();
-        Point parent_position = fParent->GetPosition();
-        Size my_size = GetWindowSize();
-        SetPosition({
-            parent_position.x + (parent_size.x - my_size.x) / 2,
-            parent_position.y + (parent_size.y - my_size.y) / 2,
-        });
+        impl_->backend->destroy();
+        if (impl_->state == Impl::State::Destroying)
+            std::ignore = DispatchEvent(EventWindowDestroyed{});
+        return Result::Success;
     }
 
-    void Window::SetWindowStyles(WindowStyle styles, bool enable) { impl_->setWindowStyles(styles, enable); }
-    WindowStyleFlags Window::GetWindowStyles() const { return WindowStyleFlags(impl_->getWindowStyles()); }
-    void Window::SetForeground() { impl_->setForeground(); }
-    void Window::SetFocused() { impl_->setFocus(); }
-    bool Window::IsInFocus() const { return impl_->isInFocus(); }
-    void Window::SetAlwaysOnTop(bool on_top) { impl_->setAlwaysOnTop(on_top); }
-    bool Window::GetAlwaysOnTop() const { return impl_->getAlwaysOnTop(); }
-    void Window::SetTransparent(bool transparent) { impl_->setTransparent(transparent); }
-    bool Window::GetTransparent() const { return impl_->getTransparent(); }
-    void Window::SetBackgroundColor(LLUtils::Color color) { impl_->setBackgroundColor(color); }
-    void Window::SetEraseBackground(bool erase) { impl_->setEraseBackground(erase); }
-    bool Window::GetEraseBackground() const { return impl_->getEraseBackground(); }
-    void Window::ToggleFullScreen(bool multi_monitor) { impl_->toggleFullScreen(multi_monitor); }
-    void Window::SetFullScreenState(FullScreenState state) { impl_->setFullScreenState(state); }
-    FullScreenState Window::GetFullScreenState() const { return impl_->getFullScreenState(); }
-    bool Window::IsFullScreen() const { return impl_->isFullScreen(); }
-    bool Window::IsMouseInClientRect() const { return impl_->isMouseInClientRect(); }
-    bool Window::IsUnderMouseCursor() const { return impl_->isUnderMouseCursor(); }
-    Point Window::GetMousePosition() const { return impl_->getMousePosition(); }
-    void Window::SetDoubleClickMode(DoubleClickMode mode) { impl_->setDoubleClickMode(mode); }
-    DoubleClickMode Window::GetDoubleClickMode() const { return impl_->getDoubleClickMode(); }
-    void Window::SetLockMouseToWindowMode(LockMouseToWindowMode mode) { impl_->setLockMouseToWindowMode(mode); }
-    LockMouseToWindowMode Window::GetLockMouseToWindowMode() const { return impl_->getLockMouseToWindowMode(); }
-    Result Window::SetPointerLocked(bool locked) { return impl_->setPointerLocked(locked); }
-
-    void Window::SetMouseCursor(Cursor* cursor)
+    bool Window::IsCreated() const
     {
-        fMouseCursor = cursor;
-        if (cursor)
+        platform_.AssertCurrentThread();
+        return impl_->state == Impl::State::Created;
+    }
+
+    PlatformContext& Window::GetPlatformContext()
+    {
+        platform_.AssertCurrentThread();
+        return platform_;
+    }
+    const PlatformContext& Window::GetPlatformContext() const
+    {
+        platform_.AssertCurrentThread();
+        return platform_;
+    }
+    BackendId Window::GetBackendId() const
+    {
+        return *platform_.GetBackendId();
+    }
+
+    Result Window::SetTitle(const string_type& title)
+    {
+        platform_.AssertCurrentThread();
+        if (!IsCreated())
+            return Result::InvalidState;
+        impl_->backend->setTitle(title);
+        impl_->config.title = title;
+        return Result::Success;
+    }
+
+    string_type Window::GetTitle() const
+    {
+        platform_.AssertCurrentThread();
+        return IsCreated() ? impl_->backend->getTitle() : impl_->config.title;
+    }
+
+    Result Window::SetVisible(bool visible)
+    {
+        platform_.AssertCurrentThread();
+        if (!IsCreated())
+            return Result::InvalidState;
+        if (visible == impl_->backend->getVisible())
+            return Result::Success;
+        if (GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
+            impl_->configured = false;
+        visible ? impl_->backend->show() : impl_->backend->hide();
+        impl_->config.visible = visible;
+        return Result::Success;
+    }
+
+    bool Window::GetVisible() const
+    {
+        platform_.AssertCurrentThread();
+        return IsCreated() ? impl_->backend->getVisible() : impl_->config.visible;
+    }
+
+    Result Window::SetPosition(Point position)
+    {
+        platform_.AssertCurrentThread();
+        if (!IsCreated())
+            return Result::InvalidState;
+        if (GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
+            return Result::NotSupported;
+        impl_->backend->setPosition(position);
+        impl_->config.position = position;
+        return Result::Success;
+    }
+
+    std::optional<Point> Window::GetPosition() const
+    {
+        platform_.AssertCurrentThread();
+        if (GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
+            return std::nullopt;
+        return IsCreated() ? std::optional(impl_->backend->getPosition()) : impl_->config.position;
+    }
+
+    Result Window::RequestClientSize(Size size)
+    {
+        platform_.AssertCurrentThread();
+        if (!IsCreated())
+            return Result::InvalidState;
+        if (size.x <= 0 || size.y <= 0)
+            return Result::InvalidArgument;
+        impl_->backend->setSize(static_cast<Size>(size));
+        impl_->config.clientSize = size;
+        return Result::Success;
+    }
+
+    Size Window::GetClientSize() const
+    {
+        platform_.AssertCurrentThread();
+        if (!IsCreated())
+            return impl_->config.clientSize;
+        const Size size = impl_->backend->getClientSize();
+        return {size.x, size.y};
+    }
+
+    Result Window::SetPlacement(const WindowPlacement& placement)
+    {
+        platform_.AssertCurrentThread();
+        if (!IsCreated())
+            return Result::InvalidState;
+        if (placement.clientSize.x <= 0 || placement.clientSize.y <= 0)
+            return Result::InvalidArgument;
+        if (placement.position.has_value() && GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
+            return Result::NotSupported;
+        if (!placement.position.has_value())
+            return RequestClientSize(placement.clientSize);
+
+        impl_->backend->setPlacement(
+            {*placement.position, static_cast<Size>(placement.clientSize), impl_->config.showState});
+        impl_->config.position = placement.position;
+        impl_->config.clientSize = placement.clientSize;
+        return Result::Success;
+    }
+
+    WindowPlacement Window::GetPlacement() const
+    {
+        return {GetPosition(), GetClientSize()};
+    }
+
+    Result Window::SetMinMaxClientSize(Size minimum, Size maximum)
+    {
+        platform_.AssertCurrentThread();
+        if (!IsCreated())
+            return Result::InvalidState;
+        if (!ValidSizeLimits(minimum, maximum))
+            return Result::InvalidArgument;
+        impl_->backend->setMinMaxSize(static_cast<Size>(minimum), static_cast<Size>(maximum));
+        impl_->config.minClientSize = minimum;
+        impl_->config.maxClientSize = maximum;
+        return Result::Success;
+    }
+
+    Size Window::GetMinClientSize() const
+    {
+        if (!IsCreated())
+            return impl_->config.minClientSize;
+        const Size size = impl_->backend->getMinSize();
+        return {size.x, size.y};
+    }
+    Size Window::GetMaxClientSize() const
+    {
+        if (!IsCreated())
+            return impl_->config.maxClientSize;
+        const Size size = impl_->backend->getMaxSize();
+        return {size.x, size.y};
+    }
+
+    Result Window::Center(CenterTarget target)
+    {
+        platform_.AssertCurrentThread();
+        if (!IsCreated())
+            return Result::InvalidState;
+        if (GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
+            return Result::NotSupported;
+
+        Rect area;
+        if (target == CenterTarget::Parent)
         {
-            impl_->setCursor(cursor->getBackendShared());
+            if (impl_->parent == nullptr)
+                return Result::InvalidState;
+            const Size parentSize = impl_->parent->GetClientSize();
+            area = {{0, 0}, {parentSize.x, parentSize.y}};
         }
         else
         {
-            impl_->setCursor(nullptr);
+            const auto monitor = target == CenterTarget::CurrentMonitor
+                                     ? platform_.GetMonitorInfo(impl_->backend->getCurrentMonitorHandle())
+                                     : platform_.GetPrimaryMonitor();
+            if (!monitor.has_value())
+                return monitor.error();
+            area = monitor->workRect;
+
         }
+        const Size size = GetClientSize();
+        const Point origin = area.LeftTop();
+        return SetPosition({origin.x + (area.GetWidth() - size.x) / 2, origin.y + (area.GetHeight() - size.y) / 2});
     }
 
-    Cursor* Window::GetMouseCursor() const { return fMouseCursor; }
-
-    void Window::SetParent(Window* parent)
+    Result Window::SetWindowMode(WindowMode mode)
     {
-        if (fParent)
-        {
-            fParent->RemoveChild(this);
-        }
-
-        fParent = parent;
-        if (fParent)
-        {
-            fParent->AddChild(this);
-        }
-
-        impl_->setParent(parent ? parent->impl_.get() : nullptr);
+        platform_.AssertCurrentThread();
+        if (!IsCreated())
+            return Result::InvalidState;
+        if (mode == WindowMode::FullscreenAllMonitors && GetBackendId() == BackendId::Wayland)
+            return Result::NotSupported;
+        const auto nativeMode = mode == WindowMode::Windowed
+                                    ? internal::FullScreenState::Windowed
+                                    : (mode == WindowMode::Fullscreen ? internal::FullScreenState::SingleScreen
+                                                                      : internal::FullScreenState::MultiScreen);
+        impl_->backend->setFullScreenState(nativeMode);
+        return Result::Success;
     }
 
-    Window* Window::GetParent() const { return fParent; }
+    WindowMode Window::GetWindowMode() const
+    {
+        platform_.AssertCurrentThread();
+        const auto mode = impl_->backend->getFullScreenState();
+        if (mode == internal::FullScreenState::MultiScreen)
+            return WindowMode::FullscreenAllMonitors;
+        return mode == internal::FullScreenState::SingleScreen ? WindowMode::Fullscreen : WindowMode::Windowed;
+    }
+
+    Result Window::RequestShowState(WindowShowState state)
+    {
+        platform_.AssertCurrentThread();
+        if (!IsCreated())
+            return Result::InvalidState;
+        if (state == WindowShowState::Minimized && GetBackendId() == BackendId::Wayland)
+            return Result::NotSupported;
+        impl_->backend->setDisplayState(state);
+        impl_->config.showState = state;
+        return Result::Success;
+    }
+
+    WindowShowState Window::GetShowState() const
+    {
+        return IsCreated() ? impl_->backend->getDisplayState() : impl_->config.showState;
+    }
+
+    bool Window::IsConfigured() const
+    {
+        platform_.AssertCurrentThread();
+        return impl_->state == Impl::State::Created && impl_->configured;
+    }
+
+    Result Window::RequestActivation()
+    {
+        if (!IsCreated())
+            return Result::InvalidState;
+        if (GetBackendId() != BackendId::Win32 || impl_->parent != nullptr)
+            return Result::NotSupported;
+        impl_->backend->setForeground();
+        return Result::Success;
+    }
+
+    bool Window::HasKeyboardFocus() const
+    {
+        return IsCreated() && impl_->backend->isInFocus();
+    }
+
+    Result Window::SetWindowStyles(WindowStyleFlags styles)
+    {
+        if (!IsCreated())
+            return Result::InvalidState;
+        impl_->backend->setWindowStyles(impl_->backend->getWindowStyles(), false);
+        impl_->backend->setWindowStyles(styles.get(), true);
+        impl_->config.styles = styles;
+        return Result::Success;
+    }
+
+    WindowStyleFlags Window::GetWindowStyles() const
+    {
+        return IsCreated() ? WindowStyleFlags(impl_->backend->getWindowStyles()) : impl_->config.styles;
+    }
+
+    Result Window::SetAlwaysOnTop(bool onTop)
+    {
+        if (!IsCreated())
+            return Result::InvalidState;
+        const auto supported = platform_.Supports(PlatformFeature::AlwaysOnTop);
+        if (!supported.has_value())
+            return supported.error();
+        if (!*supported)
+            return Result::NotSupported;
+        impl_->backend->setAlwaysOnTop(onTop);
+        impl_->config.alwaysOnTop = onTop;
+        return Result::Success;
+    }
+
+    bool Window::GetAlwaysOnTop() const
+    {
+        return IsCreated() ? impl_->backend->getAlwaysOnTop() : impl_->config.alwaysOnTop;
+    }
+
+    Result Window::SetTransparent(bool transparent)
+    {
+        if (!IsCreated())
+            return Result::InvalidState;
+        impl_->backend->setTransparent(transparent);
+        impl_->config.transparent = transparent;
+        return Result::Success;
+    }
+
+    bool Window::GetTransparent() const
+    {
+        return IsCreated() ? impl_->backend->getTransparent() : impl_->config.transparent;
+    }
+
+    Result Window::SetBackgroundColor(LLUtils::Color color)
+    {
+        if (!IsCreated())
+            return Result::InvalidState;
+        impl_->backend->setBackgroundColor(color);
+        impl_->config.backgroundColor = color;
+        return Result::Success;
+    }
+
+    Result Window::SetEraseBackground(bool erase)
+    {
+        if (!IsCreated())
+            return Result::InvalidState;
+        impl_->backend->setEraseBackground(erase);
+        impl_->config.eraseBackground = erase;
+        return Result::Success;
+    }
+
+    bool Window::GetEraseBackground() const
+    {
+        return IsCreated() ? impl_->backend->getEraseBackground() : impl_->config.eraseBackground;
+    }
+
     Result Window::EnableDragAndDrop(bool enable)
     {
-        if (!Platform::isInitialized())
-        {
-            return Result::PlatformNotInitialized;
-        }
-        return impl_->enableDragAndDrop(enable);
+        if (!IsCreated())
+            return Result::InvalidState;
+        const Result result = impl_->backend->enableDragAndDrop(enable);
+        if (result == Result::Success)
+            impl_->config.dragAndDropEnabled = enable;
+        return result;
     }
-    void Window::SetDestroyOnClose(bool destroy_on_close) { fDestroyOnClose = destroy_on_close; }
-    EventListenerToken Window::AddEventListener(EventCallback callback) { return impl_->addListener(std::move(callback)); }
-    void Window::RemoveEventListener(EventListenerToken token) { impl_->removeListener(token); }
-    EventListenerGuard Window::MakeListenerGuard(EventListenerToken token) { return { this, token }; }
-    void Window::InjectRawEvent(void* platform_event) { impl_->injectRawEvent(platform_event); }
+
+    bool Window::IsMouseInClientRect() const
+    {
+        return IsCreated() && impl_->backend->isMouseInClientRect();
+    }
+    Point Window::GetMousePosition() const
+    {
+        return IsCreated() ? impl_->backend->getMousePosition() : Point{};
+    }
+
+    Result Window::SetPointerLocked(bool locked)
+    {
+        return IsCreated() ? impl_->backend->setPointerLocked(locked) : Result::InvalidState;
+    }
+
+    Result Window::BeginWindowDrag(WindowDragOperation operation)
+    {
+        if (!IsCreated() || impl_->parent != nullptr)
+            return Result::InvalidState;
+        if (GetBackendId() != BackendId::Win32)
+            return Result::NotSupported;
+        impl_->backend->setLockMouseToWindowMode(operation == WindowDragOperation::Move
+                                                     ? internal::LockMouseToWindowMode::LockMove
+                                                     : internal::LockMouseToWindowMode::LockResize);
+        return Result::Success;
+    }
+
+    Result Window::SetMouseCursor(Cursor* cursor)
+    {
+        platform_.AssertCurrentThread();
+        if (impl_->state == Impl::State::Destroyed || impl_->state == Impl::State::Destroying)
+            return Result::InvalidState;
+        impl_->cursor = cursor;
+        impl_->backend->setCursor(cursor != nullptr ? cursor->getBackendShared() : nullptr);
+        return Result::Success;
+    }
+
+    Cursor* Window::GetMouseCursor() const { return impl_->cursor; }
+
+    Result Window::SetWindowIcon(const std::filesystem::path& iconPath)
+    {
+        if (!IsCreated())
+            return Result::InvalidState;
+        impl_->backend->setWindowIcon(iconPath);
+        return Result::Success;
+    }
+
+    Window* Window::GetParent() const
+    {
+        platform_.AssertCurrentThread();
+        return impl_->parent;
+    }
+
+    EventListenerToken Window::AddEventListener(EventCallback callback)
+    {
+        return AddEventListener(std::move(callback), false);
+    }
+
+    EventListenerToken Window::AddEventListener(EventCallback callback, bool beforeUserCallbacks)
+    {
+        platform_.AssertCurrentThread();
+        if (!callback || impl_->listeners->IsClosed())
+            return 0;
+        return impl_->listeners->Add(std::move(callback), beforeUserCallbacks);
+    }
+
+    void Window::RemoveEventListener(EventListenerToken token)
+    {
+        platform_.AssertCurrentThread();
+        impl_->listeners->Remove(token);
+    }
+
+    EventListenerGuard Window::MakeListenerGuard(EventListenerToken token) { return {this, token}; }
+
     Result Window::PresentBitmap(const BitmapBuffer& bitmap)
     {
-        return impl_->presentBitmap(bitmap);
-    }
-    BackendId Window::GetBackendId() const { return impl_->backend(); }
-    Handle Window::GetHandle() const { return impl_->getHandle(); }
-
-    void Window::AddChild(Window* child) { fChildren.push_back(child); }
-
-    void Window::RemoveChild(Window* child)
-    {
-        std::erase(fChildren, child);
+        if (!IsConfigured())
+            return Result::InvalidState;
+        return impl_->backend->presentBitmap(bitmap);
     }
 
-    void Window::NotifyRemovedFromRelatedWindows()
+    EventResponse Window::DispatchEvent(const AnyEvent& event)
     {
-        if (fParent)
+        if (impl_->state == Impl::State::Creating || impl_->state == Impl::State::PreCreate ||
+            impl_->state == Impl::State::Destroyed)
         {
-            fParent->RemoveChild(this);
-            fParent = nullptr;
+            return EventResponse::Unhandled;
         }
 
-        for (Window* child : fChildren)
+        if (const auto* sizeEvent = std::get_if<EventResize>(&event); sizeEvent != nullptr)
         {
-            child->fParent = nullptr;
+            impl_->config.clientSize = sizeEvent->newClientSize;
+            impl_->configured = true;
         }
+        if (const auto* stateEvent = std::get_if<EventShowStateChanged>(&event); stateEvent != nullptr)
+            impl_->config.showState = stateEvent->state;
 
-        fChildren.clear();
-    }
-
-    EventListenerGuard& EventListenerGuard::operator=(EventListenerGuard&& other) noexcept
-    {
-        if (this != &other)
+        if (std::holds_alternative<EventWindowDestroyed>(event))
+            impl_->state = Impl::State::Destroying;
+        const EventResponse response = impl_->listeners->Dispatch(event);
+        if (std::holds_alternative<EventWindowDestroyed>(event))
         {
-            if (window)
+            impl_->configured = false;
+            impl_->state = Impl::State::Destroyed;
+            impl_->listeners->Close();
+            if (impl_->parent != nullptr)
             {
-                window->RemoveEventListener(token);
+                std::erase(impl_->parent->impl_->children, this);
+                impl_->parent = nullptr;
             }
-
-            window = other.window;
-            token = other.token;
-            other.window = nullptr;
+            for (Window* child : impl_->children)
+                child->impl_->parent = nullptr;
+            impl_->children.clear();
+            impl_->backend->setCursor(nullptr);
+            impl_->cursor = nullptr;
         }
-
-        return *this;
+        return response;
     }
-
-    EventListenerGuard::~EventListenerGuard()
-    {
-        if (window)
-        {
-            window->RemoveEventListener(token);
-        }
-    }
-}
+}  // namespace LWS

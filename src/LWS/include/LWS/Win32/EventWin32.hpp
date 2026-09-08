@@ -1,7 +1,8 @@
 #pragma once
-#ifdef LWS_PLATFORM_WIN32
+#ifdef LWS_HAS_WIN32_BACKEND
 
-    #include <LWS/interfaces/backends.hpp>
+    #include <LWS/Event.hpp>
+    #include <LWS/WindowTypes.hpp>
 
     #include <Windows.h>
 

@@ -4,14 +4,14 @@
 
     #include <LWS/Platform.hpp>
 
+    #include "../../internal/PlatformBackend.hpp"
+
     #include "WaylandDragAndDropController.hpp"
     #include "WaylandOutputManager.hpp"
     #include "WaylandSeatController.hpp"
     #include "WindowFrame.hpp"
 
     #include <cstdint>
-    #include <functional>
-    #include <mutex>
     #include <unordered_map>
     #include <vector>
 
@@ -34,20 +34,29 @@ namespace LWS::internal
         WaylandSurfaceRole role = WaylandSurfaceRole::Content;
     };
 
-    class WaylandPlatformState
+    class WaylandPlatformState final : public PlatformBackend
     {
       public:
 
-        static WaylandPlatformState& current();
+        WaylandPlatformState();
 
-        Result initialize();
-        void shutdown();
+        Result Initialize() override;
+        void Shutdown() override;
         [[nodiscard]] bool isInitialized() const;
-
-        void runMessageLoop();
-        [[nodiscard]] bool processMessages();
-        void requestQuit();
-        void postTask(std::move_only_function<void()> task);
+        void RunMessageLoop(PlatformContext& context) override;
+        [[nodiscard]] bool ProcessMessages(PlatformContext& context) override;
+        [[nodiscard]] Result Wake() override;
+        void ClearWake() override;
+        [[nodiscard]] bool Supports(PlatformFeature feature) const override;
+        [[nodiscard]] bool IsKeyPressed(KeyCode key) const override;
+        [[nodiscard]] bool IsKeyToggled(KeyCode key) const override;
+        [[nodiscard]] Point GetMousePosition() const override;
+        [[nodiscard]] Result MoveMouse(Point delta) override;
+        [[nodiscard]] Result RefreshMonitors() override;
+        [[nodiscard]] MonitorDesc GetMonitorInfo(uintptr_t handle, bool allowRefresh) override;
+        [[nodiscard]] MonitorDesc GetPrimaryMonitor(bool allowRefresh) override;
+        [[nodiscard]] Rect GetBoundingMonitorArea() const override;
+        [[nodiscard]] std::unique_ptr<IWindowBackend> CreateWindowBackend(Window& owner) override;
 
         void registerWindow(wl_surface* surface, WindowBackendWayland& window,
                             WaylandSurfaceRole role = WaylandSurfaceRole::Content);
@@ -71,19 +80,9 @@ namespace LWS::internal
         [[nodiscard]] wl_pointer* pointer() const { return fSeatController.pointer(); }
         [[nodiscard]] wl_seat* seat() const { return fSeatController.seat(); }
         [[nodiscard]] uint32_t pointerButtonSerial() const { return fSeatController.pointerButtonSerial(); }
-        [[nodiscard]] Point pointerPosition() const { return fSeatController.pointerPosition(); }
         [[nodiscard]] bool supportsDragAndDrop() const { return fDragAndDropController.supported(); }
-        [[nodiscard]] bool isKeyPressed(KeyCode key) const { return fSeatController.isKeyPressed(key); }
-        [[nodiscard]] Platform::MonitorDesc monitorInfo(Handle handle) const
-        {
-            return fOutputManager.monitorInfo(handle);
-        }
-        [[nodiscard]] Platform::MonitorDesc primaryMonitor() const { return fOutputManager.primaryMonitor(); }
-        [[nodiscard]] Rect boundingMonitorArea() const { return fOutputManager.boundingMonitorArea(); }
 
       private:
-
-        WaylandPlatformState();
 
         static void registryGlobal(void* data, wl_registry* registry, uint32_t name, const char* interface,
                                    uint32_t version);
@@ -91,11 +90,10 @@ namespace LWS::internal
         static void shellPing(void* data, xdg_wm_base* shell, uint32_t serial);
 
         void releaseObjects();
-        void dispatchTasks();
-        void dispatchOnce(int timeoutMilliseconds);
+        void selectSeat(uint32_t name, uint32_t version);
+        void dispatchOnce(PlatformContext& context, int timeoutMilliseconds);
 
-        uint32_t fInitCount = 0;
-        bool fQuitRequested = false;
+        bool fInitialized = false;
         bool fHasHostWindowFrame = false;
         wl_display* fDisplay = nullptr;
         wl_registry* fRegistry = nullptr;
@@ -107,12 +105,18 @@ namespace LWS::internal
         zwp_pointer_constraints_v1* fPointerConstraints = nullptr;
         zwp_relative_pointer_manager_v1* fRelativePointerManager = nullptr;
         int fWakeDescriptor = -1;
-        std::mutex fTaskMutex;
-        std::vector<std::move_only_function<void()>> fTasks;
         WaylandSeatController fSeatController;
         WaylandDragAndDropController fDragAndDropController;
         WaylandOutputManager fOutputManager;
         std::unordered_map<wl_surface*, WaylandWindowRegistration> fWindows;
+        struct SeatGlobal
+        {
+            uint32_t name;
+            uint32_t version;
+        };
+        std::vector<SeatGlobal> fSeatGlobals;
+        uint32_t fSelectedSeatName{};
+        bool fAdditionalSeatReported{};
     };
 }  // namespace LWS::internal
 

@@ -1,675 +1,392 @@
-// Win32 integration tests — require a live Win32 environment.
-// All tests call Platform::init() / Platform::shutdown() through a shared fixture.
-#include <catch2/catch_test_macros.hpp>
-
 #ifdef LWS_PLATFORM_WIN32
 
-    #define WIN32_LEAN_AND_MEAN
-    #define NOMINMAX
-    #include <windows.h>
+    #include <catch2/catch_test_macros.hpp>
 
-    #include <LWS/Platform.hpp>
-    #include <LWS/Bitmap.hpp>
     #include <LWS/Clipboard.hpp>
     #include <LWS/Cursor.hpp>
+    #include <LWS/FileDialog.hpp>
+    #include <LWS/Platform.hpp>
     #include <LWS/Timer.hpp>
+    #include <LWS/Win32/WindowExtensions.hpp>
     #include <LWS/Window.hpp>
-    #include <LLUtils/Exception.h>
+
+    #define WIN32_LEAN_AND_MEAN
+    #include <Windows.h>
+    #include <Ole2.h>
 
     #include <array>
+    #include <atomic>
+    #include <chrono>
+    #include <cstddef>
+    #include <cmath>
     #include <thread>
+    #include <type_traits>
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 namespace
 {
-    // Pump a few messages so window-creation side-effects (WM_CREATE, WM_SIZE,
-    // WM_PAINT, etc.) are processed before assertions run.
-    void pumpMessages(int iterations = 5)
+    class Context final
     {
-        for (int i = 0; i < iterations; ++i)
-            LWS::Platform::processMessages();
+      public:
+
+        Context()
+        {
+            REQUIRE(value.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::Success);
+        }
+
+        LWS::PlatformContext value;
+    };
+
+    HWND Hwnd(LWS::Window& window)
+    {
+        const auto handle = LWS::Win32::GetHwnd(window);
+        REQUIRE(handle.has_value());
+        return *handle;
     }
 
-    LWS::WindowConfig makeTestConfig()
+    HICON WindowIconHandle(HWND window, WPARAM size)
     {
-        LWS::WindowConfig cfg;
-        cfg.title = L"LWSTest";
-        cfg.size = {640, 480};
-        cfg.position = {50, 50};
-        cfg.visible = false;  // keep hidden — no user interaction required
-        return cfg;
+        return reinterpret_cast<HICON>(SendMessageW(window, WM_GETICON, size, 0));
+    }
+
+    void Pump(LWS::PlatformContext& context)
+    {
+        std::ignore = context.ProcessMessages();
     }
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// Platform lifecycle
-// ---------------------------------------------------------------------------
-TEST_CASE("Platform init and shutdown are idempotent", "[platform][win32]")
+TEST_CASE("Platform context is one-shot", "[platform][win32]")
 {
-    while (LWS::Platform::isInitialized())
-        LWS::Platform::shutdown();
-
-    REQUIRE(LWS::Platform::init() == LWS::Result::Success);
-    REQUIRE(LWS::Platform::init() == LWS::Result::Success);
-    REQUIRE(LWS::Platform::isInitialized());
-
-    LWS::Platform::shutdown();
-    REQUIRE(LWS::Platform::isInitialized());
-
-    LWS::Platform::shutdown();
-    REQUIRE_FALSE(LWS::Platform::isInitialized());
-
-    LWS::Platform::shutdown();
-    REQUIRE_FALSE(LWS::Platform::isInitialized());
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::Success);
+    REQUIRE(context.IsUsable());
+    REQUIRE(context.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::InvalidState);
+    REQUIRE(context.Shutdown() == LWS::Result::Success);
+    REQUIRE_FALSE(context.IsUsable());
+    REQUIRE(context.Shutdown() == LWS::Result::Success);
+    REQUIRE(context.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::InvalidState);
 }
 
-TEST_CASE("Window creation requires platform initialization on the current thread", "[platform][window][win32]")
+TEST_CASE("Platform rejects invalid and unavailable backends", "[platform][win32]")
 {
-    while (LWS::Platform::isInitialized())
-        LWS::Platform::shutdown();
-
-    LWS::Window win;
-    REQUIRE(win.Create(makeTestConfig()) == LWS::Result::PlatformNotInitialized);
-    REQUIRE(win.GetHandle() == 0);
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({}) == LWS::Result::InvalidArgument);
+    REQUIRE(context.Init({.backend = LWS::BackendId::X11}) == LWS::Result::NotSupported);
 }
 
-TEST_CASE("Platform session owns one balanced thread initialization", "[platform][win32]")
+TEST_CASE("Independent contexts run on independent UI threads", "[platform][thread][win32]")
 {
-    while (LWS::Platform::isInitialized())
-        LWS::Platform::shutdown();
-
+    std::atomic_uint successes{};
+    auto run = [&]
     {
-        const LWS::Platform::Session session;
-        REQUIRE(session);
-        REQUIRE(session.GetResult() == LWS::Result::Success);
-        REQUIRE(LWS::Platform::isInitialized());
-    }
-
-    REQUIRE_FALSE(LWS::Platform::isInitialized());
-}
-
-TEST_CASE("Platform initialization is independent for each UI thread", "[platform][thread][win32]")
-{
-    REQUIRE(LWS::Platform::init() == LWS::Result::Success);
-
-    struct ThreadResults
-    {
-        bool initiallyInitialized = true;
-        LWS::Result createBeforeInit = LWS::Result::Failure;
-        LWS::Result init = LWS::Result::Failure;
-        LWS::Result createAfterInit = LWS::Result::Failure;
-        LWS::Result enableDragAndDrop = LWS::Result::Failure;
-        bool initializedAfterShutdown = true;
-    } results;
-
-    std::thread worker(
-        [&results]()
+        LWS::PlatformContext context;
+        if (context.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::Success)
         {
-            results.initiallyInitialized = LWS::Platform::isInitialized();
-            LWS::Window win;
-            results.createBeforeInit = win.Create(makeTestConfig());
-            results.init = LWS::Platform::init();
-            results.createAfterInit = win.Create(makeTestConfig());
-            results.enableDragAndDrop = win.EnableDragAndDrop(true);
-            win.Destroy();
-            LWS::Platform::shutdown();
-            results.initializedAfterShutdown = LWS::Platform::isInitialized();
-        });
-    worker.join();
-
-    REQUIRE_FALSE(results.initiallyInitialized);
-    REQUIRE(results.createBeforeInit == LWS::Result::PlatformNotInitialized);
-    REQUIRE(results.init == LWS::Result::Success);
-    REQUIRE(results.createAfterInit == LWS::Result::Success);
-    REQUIRE(results.enableDragAndDrop == LWS::Result::Success);
-    REQUIRE_FALSE(results.initializedAfterShutdown);
-    REQUIRE(LWS::Platform::isInitialized());
-    LWS::Platform::shutdown();
-}
-
-TEST_CASE("Platform owns a balanced reference to an externally initialized STA", "[platform][com][win32]")
-{
-    struct ThreadResults
-    {
-        HRESULT externalInit = E_UNEXPECTED;
-        LWS::Result platformInit = LWS::Result::Failure;
-        HRESULT probeAfterShutdown = E_UNEXPECTED;
-    } results;
-
-    std::thread worker(
-        [&results]()
-        {
-            results.externalInit = OleInitialize(nullptr);
-            if (SUCCEEDED(results.externalInit))
-            {
-                results.platformInit = LWS::Platform::init();
-                LWS::Platform::shutdown();
-                results.probeAfterShutdown = OleInitialize(nullptr);
-                if (SUCCEEDED(results.probeAfterShutdown))
-                    OleUninitialize();
-                OleUninitialize();
-            }
-        });
-    worker.join();
-
-    REQUIRE(SUCCEEDED(results.externalInit));
-    REQUIRE(results.platformInit == LWS::Result::Success);
-    REQUIRE(results.probeAfterShutdown == S_FALSE);
-}
-
-TEST_CASE("MTA threads can create windows but cannot enable OLE drag and drop", "[platform][com][win32]")
-{
-    struct ThreadResults
-    {
-        HRESULT externalInit = E_UNEXPECTED;
-        LWS::Result platformInit = LWS::Result::Failure;
-        LWS::Result create = LWS::Result::Failure;
-        LWS::Result enableDragAndDrop = LWS::Result::Failure;
-    } results;
-
-    std::thread worker(
-        [&results]()
-        {
-            results.externalInit = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-            if (SUCCEEDED(results.externalInit))
-            {
-                results.platformInit = LWS::Platform::init();
-                LWS::Window win;
-                results.create = win.Create(makeTestConfig());
-                results.enableDragAndDrop = win.EnableDragAndDrop(true);
-                win.Destroy();
-                LWS::Platform::shutdown();
-                CoUninitialize();
-            }
-        });
-    worker.join();
-
-    REQUIRE(SUCCEEDED(results.externalInit));
-    REQUIRE(results.platformInit == LWS::Result::Success);
-    REQUIRE(results.create == LWS::Result::Success);
-    REQUIRE(results.enableDragAndDrop == LWS::Result::IncompatibleThreadApartment);
-}
-
-// ---------------------------------------------------------------------------
-// Window creation / destruction lifecycle
-// ---------------------------------------------------------------------------
-TEST_CASE("Window Create returns Success with valid config", "[window][win32]")
-{
-    LWS::Platform::init();
-    {
-        LWS::Window win;
-        LWS::Result r = win.Create(makeTestConfig());
-        REQUIRE(r == LWS::Result::Success);
-        REQUIRE(win.GetHandle() != 0);
-        pumpMessages();
-    }
-    LWS::Platform::shutdown();
-}
-
-TEST_CASE("Window Create called twice returns AlreadyCreated", "[window][win32]")
-{
-    LWS::Platform::init();
-    {
-        LWS::Window win;
-        REQUIRE(win.Create(makeTestConfig()) == LWS::Result::Success);
-        REQUIRE(win.Create(makeTestConfig()) == LWS::Result::AlreadyCreated);
-        pumpMessages();
-    }
-    LWS::Platform::shutdown();
-}
-
-TEST_CASE("Window destructor auto-destroys live window", "[window][win32]")
-{
-    LWS::Platform::init();
-    LWS::Handle savedHandle = 0;
-    {
-        LWS::Window win;
-        win.Create(makeTestConfig());
-        savedHandle = win.GetHandle();
-        pumpMessages();
-        REQUIRE(savedHandle != 0);
-        // win goes out of scope here; destructor must call Destroy() and not crash
-    }
-    pumpMessages();
-    // IsWindow(savedHandle) should be false after destruction; verify via Win32 directly.
-    REQUIRE(::IsWindow(reinterpret_cast<HWND>(savedHandle)) == FALSE);
-    LWS::Platform::shutdown();
-}
-
-// ---------------------------------------------------------------------------
-// Title
-// ---------------------------------------------------------------------------
-TEST_CASE("SetTitle / GetTitle round-trip", "[window][win32]")
-{
-    LWS::Platform::init();
-    {
-        LWS::Window win;
-        win.Create(makeTestConfig());
-        pumpMessages();
-
-        win.SetTitle(L"Hello LWS");
-        REQUIRE(win.GetTitle() == L"Hello LWS");
-
-        win.SetTitle(L"Another Title");
-        REQUIRE(win.GetTitle() == L"Another Title");
-    }
-    LWS::Platform::shutdown();
-}
-
-// ---------------------------------------------------------------------------
-// Visibility
-// ---------------------------------------------------------------------------
-TEST_CASE("SetVisible / GetVisible round-trip", "[window][win32]")
-{
-    LWS::Platform::init();
-    {
-        LWS::Window win;
-        auto cfg = makeTestConfig();
-        cfg.visible = false;
-        win.Create(cfg);
-        pumpMessages();
-
-        REQUIRE(win.GetVisible() == false);
-
-        win.SetVisible(true);
-        pumpMessages();
-        REQUIRE(win.GetVisible() == true);
-
-        win.SetVisible(false);
-        pumpMessages();
-        REQUIRE(win.GetVisible() == false);
-    }
-    LWS::Platform::shutdown();
-}
-
-// ---------------------------------------------------------------------------
-// Position
-// ---------------------------------------------------------------------------
-TEST_CASE("SetPosition / GetPosition round-trip", "[window][win32]")
-{
-    LWS::Platform::init();
-    {
-        LWS::Window win;
-        win.Create(makeTestConfig());
-        pumpMessages();
-
-        win.SetPosition({200, 150});
-        pumpMessages();
-
-        const LWS::Point pos = win.GetPosition();
-        // Allow a small tolerance in case the OS adjusts for DPI or window borders.
-        REQUIRE(pos.x >= 190);
-        REQUIRE(pos.x <= 210);
-        REQUIRE(pos.y >= 140);
-        REQUIRE(pos.y <= 160);
-    }
-    LWS::Platform::shutdown();
-}
-
-// ---------------------------------------------------------------------------
-// Client size
-// ---------------------------------------------------------------------------
-TEST_CASE("GetClientSize returns configured size", "[window][win32]")
-{
-    LWS::Platform::init();
-    {
-        LWS::Window win;
-        auto cfg = makeTestConfig();
-        // Make the window visible so the OS actually gives it a client area.
-        cfg.visible = true;
-        win.Create(cfg);
-        pumpMessages();
-
-        const LWS::Size sz = win.GetClientSize();
-        // Client area should be non-zero.
-        REQUIRE(sz.x > 0);
-        REQUIRE(sz.y > 0);
-    }
-    LWS::Platform::shutdown();
-}
-
-// ---------------------------------------------------------------------------
-// Always-on-top
-// ---------------------------------------------------------------------------
-TEST_CASE("SetAlwaysOnTop / GetAlwaysOnTop round-trip", "[window][win32]")
-{
-    LWS::Platform::init();
-    {
-        LWS::Window win;
-        win.Create(makeTestConfig());
-        pumpMessages();
-
-        win.SetAlwaysOnTop(true);
-        pumpMessages();
-        REQUIRE(win.GetAlwaysOnTop() == true);
-
-        win.SetAlwaysOnTop(false);
-        pumpMessages();
-        REQUIRE(win.GetAlwaysOnTop() == false);
-    }
-    LWS::Platform::shutdown();
-}
-
-// ---------------------------------------------------------------------------
-// Display state
-// ---------------------------------------------------------------------------
-TEST_CASE("SetDisplayState Maximized / Restored round-trip", "[window][win32]")
-{
-    LWS::Platform::init();
-    {
-        LWS::Window win;
-        auto cfg = makeTestConfig();
-        cfg.visible = true;
-        win.Create(cfg);
-        pumpMessages();
-
-        win.SetDisplayState(LWS::WindowDisplayState::Maximized);
-        pumpMessages();
-        REQUIRE(win.GetDisplayState() == LWS::WindowDisplayState::Maximized);
-
-        win.SetDisplayState(LWS::WindowDisplayState::Restored);
-        pumpMessages();
-        REQUIRE(win.GetDisplayState() == LWS::WindowDisplayState::Restored);
-    }
-    LWS::Platform::shutdown();
-}
-
-// ---------------------------------------------------------------------------
-// AddEventListener / RemoveEventListener with token
-// ---------------------------------------------------------------------------
-TEST_CASE("AddEventListener returns distinct tokens", "[window][event][win32]")
-{
-    LWS::Platform::init();
-    {
-        LWS::Window win;
-        win.Create(makeTestConfig());
-        pumpMessages();
-
-        LWS::EventListenerToken t1 = win.AddEventListener([](const LWS::AnyEvent&) { return false; });
-        LWS::EventListenerToken t2 = win.AddEventListener([](const LWS::AnyEvent&) { return false; });
-        REQUIRE(t1 != t2);
-
-        win.RemoveEventListener(t1);
-        win.RemoveEventListener(t2);
-    }
-    LWS::Platform::shutdown();
-}
-
-TEST_CASE("Win32 window stores one scoped platform paint callback", "[window][event][win32]")
-{
-    LWS::Platform::init();
-    {
-        LWS::Window window;
-        REQUIRE(window.Create(makeTestConfig()) == LWS::Result::Success);
-        REQUIRE(LWS::Win32::SetMenuChar(window, false) == LWS::Result::Success);
-
-        int replacedCallbackCount = 0;
-        int paintCount = 0;
-        std::optional<bool> active;
-        int platformPaintSerial = 0;
-        int semanticPaintSerial = 0;
-        const auto listener = window.AddEventListener(
-            [&](const LWS::AnyEvent& event)
-            {
-                if (std::holds_alternative<LWS::EventPaint>(event))
-                {
-                    REQUIRE(semanticPaintSerial + 1 == platformPaintSerial);
-                    ++semanticPaintSerial;
-                }
-                return false;
-            });
-        REQUIRE(LWS::Win32::SetPlatformCallback(window,
-                                                [&](const LWS::Win32::PlatformEvent&) -> std::optional<LRESULT>
-                                                {
-                                                    ++replacedCallbackCount;
-                                                    return 0;
-                                                }) == LWS::Result::Success);
-        REQUIRE(LWS::Win32::SetPlatformCallback(
-                    window,
-                    [&](const LWS::Win32::PlatformEvent& event) -> std::optional<LRESULT>
-                    {
-                        if (const auto* paint = std::get_if<LWS::Win32::PaintEvent>(&event))
-                        {
-                            REQUIRE(platformPaintSerial == semanticPaintSerial);
-                            ++platformPaintSerial;
-                            REQUIRE(paint->deviceContext != nullptr);
-                            REQUIRE(GetObjectType(paint->deviceContext) == OBJ_DC);
-                            REQUIRE(paint->invalidRect.GetWidth() > 0);
-                            REQUIRE(paint->invalidRect.GetHeight() > 0);
-                            ++paintCount;
-                            return 0;
-                        }
-                        if (const auto* activation = std::get_if<LWS::Win32::ActivationEvent>(&event))
-                        {
-                            active = activation->active;
-                        }
-                        return std::nullopt;
-                    }) == LWS::Result::Success);
-
-        const HWND handle = reinterpret_cast<HWND>(window.GetHandle());
-        window.SetVisible(true);
-        pumpMessages();
-        paintCount = 0;
-        const int previousSemanticPaintSerial = semanticPaintSerial;
-        InvalidateRect(handle, nullptr, TRUE);
-        UpdateWindow(handle);
-        REQUIRE(replacedCallbackCount == 0);
-        REQUIRE(paintCount == 1);
-        REQUIRE(semanticPaintSerial == previousSemanticPaintSerial + 1);
-
-        SendMessage(handle, WM_ACTIVATE, WA_INACTIVE, 0);
-        REQUIRE(active == false);
-        SendMessage(handle, WM_ACTIVATE, WA_ACTIVE, 0);
-        REQUIRE(active == true);
-
-        window.RemoveEventListener(listener);
-        REQUIRE(LWS::Win32::SetPlatformCallback(window, {}) == LWS::Result::Success);
-        InvalidateRect(handle, nullptr, TRUE);
-        UpdateWindow(handle);
-        REQUIRE(paintCount == 1);
-    }
-    LWS::Platform::shutdown();
-}
-
-TEST_CASE("Win32 extensions reject a window without a backend", "[window][event][win32]")
-{
-    LWS::Window window(std::unique_ptr<LWS::IWindowBackend>{});
-
-    REQUIRE(LWS::Win32::SetPlatformCallback(window, {}) == LWS::Result::NotSupported);
-    REQUIRE(LWS::Win32::SetMenuChar(window, false) == LWS::Result::NotSupported);
-}
-
-// ---------------------------------------------------------------------------
-// EventListenerGuard RAII auto-remove
-// ---------------------------------------------------------------------------
-TEST_CASE("EventListenerGuard removes listener on destruction", "[window][event][win32]")
-{
-    LWS::Platform::init();
-    {
-        LWS::Window win;
-        win.Create(makeTestConfig());
-        pumpMessages();
-
-        int callCount = 0;
-        {
-            LWS::EventListenerToken tok = win.AddEventListener(
-                [&](const LWS::AnyEvent& e)
-                {
-                    if (std::holds_alternative<LWS::EventPaint>(e))
-                        ++callCount;
-                    return false;
-                });
-            LWS::EventListenerGuard guard = win.MakeListenerGuard(tok);
-
-            // Force a paint so the listener fires at least once while active.
-            win.SetVisible(true);
-            pumpMessages();
-            // guard destroyed here — listener unregistered
+            ++successes;
+            std::ignore = context.Shutdown();
         }
-
-        const int countAfterGuardDestroyed = callCount;
-
-        // Trigger more events; the listener should no longer be called.
-        win.SetVisible(false);
-        win.SetVisible(true);
-        pumpMessages();
-
-        // callCount must not increase after the guard was destroyed.
-        REQUIRE(callCount == countAfterGuardDestroyed);
-    }
-    LWS::Platform::shutdown();
+    };
+    std::jthread first(run);
+    std::jthread second(run);
+    first.join();
+    second.join();
+    REQUIRE(successes == 2);
 }
 
-// ---------------------------------------------------------------------------
-// BackendId
-// ---------------------------------------------------------------------------
-TEST_CASE("Window backend is Win32 on Windows", "[window][win32]")
+TEST_CASE("MTA context keeps ordinary windowing available", "[platform][com][win32]")
 {
-    LWS::Platform::init();
+    std::jthread thread(
+        []
+        {
+            REQUIRE(SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)));
+            {
+                Context context;
+                LWS::Window window(context.value);
+                REQUIRE(window.Create() == LWS::Result::Success);
+                REQUIRE(window.EnableDragAndDrop(true) != LWS::Result::Success);
+            }
+            CoUninitialize();
+        });
+}
+
+TEST_CASE("Window is stable, final, and one-shot", "[window][win32]")
+{
+    STATIC_REQUIRE(std::is_final_v<LWS::Window>);
+    STATIC_REQUIRE_FALSE(std::is_default_constructible_v<LWS::Window>);
+    STATIC_REQUIRE_FALSE(std::is_copy_constructible_v<LWS::Window>);
+    STATIC_REQUIRE_FALSE(std::is_move_constructible_v<LWS::Window>);
+
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE_FALSE(window.IsCreated());
+    REQUIRE(window.Create() == LWS::Result::Success);
+    REQUIRE(window.Create() == LWS::Result::InvalidState);
+    REQUIRE(window.Destroy() == LWS::Result::Success);
+    REQUIRE(window.Destroy() == LWS::Result::Success);
+    REQUIRE(window.Create() == LWS::Result::InvalidState);
+}
+
+TEST_CASE("Context shutdown rejects a bound C++ window", "[platform][window][win32]")
+{
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::Success);
     {
-        LWS::Window win;
-        win.Create(makeTestConfig());
-        REQUIRE(win.GetBackendId() == LWS::BackendId::Win32);
+        LWS::Window window(context);
+        REQUIRE(context.Shutdown() == LWS::Result::InvalidState);
     }
-    LWS::Platform::shutdown();
+    REQUIRE(context.Shutdown() == LWS::Result::Success);
 }
 
-// ---------------------------------------------------------------------------
-// Min/max size
-// ---------------------------------------------------------------------------
-TEST_CASE("SetMinMaxSize / GetMinSize / GetMaxSize round-trip", "[window][win32]")
+TEST_CASE("Window basic properties round-trip", "[window][win32]")
 {
-    LWS::Platform::init();
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.Create({.title = L"initial", .position = LWS::Point{80, 90}, .clientSize = {640, 480}}) ==
+            LWS::Result::Success);
+
+    REQUIRE(window.SetTitle(L"updated") == LWS::Result::Success);
+    REQUIRE(window.GetTitle() == L"updated");
+    REQUIRE(window.SetVisible(true) == LWS::Result::Success);
+    REQUIRE(window.GetVisible());
+    REQUIRE(window.SetPosition({120, 140}) == LWS::Result::Success);
+    REQUIRE(window.GetPosition().has_value());
+    REQUIRE(window.RequestClientSize({720, 520}) == LWS::Result::Success);
+    REQUIRE(window.GetClientSize() == LWS::Size{720, 520});
+    REQUIRE(window.SetAlwaysOnTop(true) == LWS::Result::Success);
+    REQUIRE(window.GetAlwaysOnTop());
+    REQUIRE(window.SetTransparent(true) == LWS::Result::Success);
+    REQUIRE(window.GetTransparent());
+}
+
+TEST_CASE("Window min and max client sizes round-trip", "[window][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.Create() == LWS::Result::Success);
+    REQUIRE(window.SetMinMaxClientSize({100, 120}, {900, 700}) == LWS::Result::Success);
+    REQUIRE(window.GetMinClientSize() == LWS::Size{100, 120});
+    REQUIRE(window.GetMaxClientSize() == LWS::Size{900, 700});
+}
+
+TEST_CASE("Parent configuration creates a child relationship", "[window][parent][win32]")
+{
+    Context context;
+    LWS::Window parent(context.value);
+    LWS::Window child(context.value);
+    REQUIRE(parent.Create() == LWS::Result::Success);
+    REQUIRE(child.Create({.parent = &parent, .transparent = true}) == LWS::Result::Success);
+    REQUIRE(child.GetParent() == &parent);
+    REQUIRE(parent.Destroy() == LWS::Result::Success);
+    REQUIRE_FALSE(child.IsCreated());
+}
+
+TEST_CASE("Posted tasks execute FIFO on the context thread", "[platform][task][win32]")
+{
+    Context context;
+    std::vector<int> order;
+    REQUIRE(context.value.PostTask([&] { order.push_back(1); }) == LWS::Result::Success);
+    REQUIRE(context.value.PostTask([&] { order.push_back(2); }) == LWS::Result::Success);
+    Pump(context.value);
+    REQUIRE(order == std::vector{1, 2});
+}
+
+TEST_CASE("Task exceptions report and later work continues", "[platform][exception][win32]")
+{
+    Context context;
+    unsigned exceptions{};
+    bool laterRan{};
+    context.value.SetUnhandledExceptionHandler([&](std::exception_ptr) noexcept { ++exceptions; });
+    REQUIRE(context.value.PostTask([] { throw 7; }) == LWS::Result::Success);
+    REQUIRE(context.value.PostTask([&] { laterRan = true; }) == LWS::Result::Success);
+    Pump(context.value);
+    REQUIRE(exceptions == 1);
+    REQUIRE(laterRan);
+}
+
+TEST_CASE("Timer can target windows in its context", "[timer][win32]")
+{
+    Context context;
+    LWS::Window first(context.value);
+    LWS::Window second(context.value);
+    LWS::Window uncreated(context.value);
+    REQUIRE(first.Create() == LWS::Result::Success);
+    REQUIRE(second.Create() == LWS::Result::Success);
+    LWS::Timer timer(context.value);
+    REQUIRE(timer.SetTargetWindow(&uncreated) == LWS::Result::InvalidState);
+    REQUIRE(timer.SetTargetWindow(&first) == LWS::Result::Success);
+    timer.SetInterval(25);
+    REQUIRE(timer.SetTargetWindow(nullptr) == LWS::Result::Success);
+    REQUIRE(timer.GetInterval() == 25);
+    REQUIRE(timer.SetTargetWindow(&second) == LWS::Result::Success);
+    REQUIRE(timer.GetInterval() == 25);
+}
+
+TEST_CASE("Clipboard operations require an owned window", "[clipboard][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    LWS::Window uncreated(context.value);
+    REQUIRE(window.Create() == LWS::Result::Success);
+    LWS::Clipboard clipboard(context.value);
+    const std::array<std::byte, 1> data{};
+    REQUIRE(clipboard.SetClipboardData(uncreated, 1, data.data(), data.size()) != LWS::ClipboardResult::Success);
+    REQUIRE(clipboard.SetClipboardData(window, 0, data.data(), data.size()) != LWS::ClipboardResult::Success);
+
+    LWS::ListFileDialogFileNames files;
+    REQUIRE(LWS::FileDialog::Show(LWS::FileDialogType::OpenFile, {}, {}, uncreated, {}, 1, {}, files) ==
+            LWS::FileDialogResult::UnknownError);
+}
+
+TEST_CASE("Clipboard service ownership cannot be copied", "[clipboard][win32]")
+{
+    STATIC_REQUIRE_FALSE(std::is_copy_constructible_v<LWS::Clipboard>);
+    STATIC_REQUIRE_FALSE(std::is_move_constructible_v<LWS::Clipboard>);
+}
+
+TEST_CASE("Retrieved timer messages cannot invoke a replacement timer", "[timer][lifetime][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.Create() == LWS::Result::Success);
+    auto timer = std::make_unique<LWS::Timer>(context.value);
+    REQUIRE(timer->SetTargetWindow(&window) == LWS::Result::Success);
+    timer->SetInterval(1);
+    MSG tick{};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!PeekMessageW(&tick, Hwnd(window), WM_TIMER, WM_TIMER, PM_REMOVE) &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    REQUIRE(tick.message == WM_TIMER);
+    timer.reset();
+    unsigned calls{};
+    LWS::Timer replacement(context.value);
+    REQUIRE(replacement.SetTargetWindow(&window) == LWS::Result::Success);
+    replacement.SetCallback([&] { ++calls; });
+    replacement.SetInterval(1);
+    DispatchMessageW(&tick);
+    REQUIRE(calls == 0);
+}
+
+TEST_CASE("Timer callbacks can destroy their timer", "[timer][lifetime][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.Create() == LWS::Result::Success);
+    auto timer = std::make_unique<LWS::Timer>(context.value);
+    REQUIRE(timer->SetTargetWindow(&window) == LWS::Result::Success);
+    timer->SetCallback([&] { timer.reset(); });
+    timer->SetInterval(1);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (timer && std::chrono::steady_clock::now() < deadline)
     {
-        LWS::Window win;
-        win.Create(makeTestConfig());
-        pumpMessages();
-
-        win.SetMinMaxSize({320, 240}, {1920, 1080});
-        REQUIRE(win.GetMinSize().x == 320);
-        REQUIRE(win.GetMinSize().y == 240);
-        REQUIRE(win.GetMaxSize().x == 1920);
-        REQUIRE(win.GetMaxSize().y == 1080);
+        Pump(context.value);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    LWS::Platform::shutdown();
+    REQUIRE_FALSE(timer);
 }
 
-// ---------------------------------------------------------------------------
-// Transparent flag
-// ---------------------------------------------------------------------------
-TEST_CASE("SetTransparent / GetTransparent round-trip", "[window][win32]")
+TEST_CASE("High precision callbacks can destroy their timer", "[timer][precision][lifetime][win32]")
 {
-    LWS::Platform::init();
+    Context context;
+    std::unique_ptr<LWS::HighPrecisionTimer> timer;
+    timer = std::make_unique<LWS::HighPrecisionTimer>(context.value, [&] { timer.reset(); });
+    timer->SetDueTime(0);
+    timer->SetRepeatInterval(1);
+    timer->Enable(true);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (timer && std::chrono::steady_clock::now() < deadline)
     {
-        LWS::Window win;
-        win.Create(makeTestConfig());
-        pumpMessages();
-
-        win.SetTransparent(true);
-        pumpMessages();
-        REQUIRE(win.GetTransparent() == true);
-
-        win.SetTransparent(false);
-        pumpMessages();
-        REQUIRE(win.GetTransparent() == false);
+        Pump(context.value);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    LWS::Platform::shutdown();
+    REQUIRE_FALSE(timer);
 }
 
-// ---------------------------------------------------------------------------
-// Child / parent relationship
-// ---------------------------------------------------------------------------
-TEST_CASE("Child window has correct parent pointer", "[window][win32]")
+TEST_CASE("Disabling a high precision timer discards pending ticks", "[timer][precision][win32]")
 {
-    LWS::Platform::init();
+    Context context;
+    unsigned calls{};
+    LWS::HighPrecisionTimer timer(context.value, [&] { ++calls; });
+    timer.SetDueTime(0);
+    timer.SetRepeatInterval(1);
+    timer.Enable(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    timer.Enable(false);
+    Pump(context.value);
+    REQUIRE(calls == 0);
+    timer.SetRepeatInterval(0);
+    timer.Enable(true);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!calls && std::chrono::steady_clock::now() < deadline)
     {
-        LWS::Window parent;
-        auto parentCfg = makeTestConfig();
-        parentCfg.title = L"Parent";
-        parent.Create(parentCfg);
-        pumpMessages();
-
-        LWS::Window child;
-        auto childCfg = makeTestConfig();
-        childCfg.title = L"Child";
-        childCfg.styles = LWS::WindowStyle::ChildWindow;
-        child.SetParent(&parent);
-        child.Create(childCfg);
-        pumpMessages();
-
-        REQUIRE(child.GetParent() == &parent);
+        Pump(context.value);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    LWS::Platform::shutdown();
+    REQUIRE(calls == 1);
+    REQUIRE_FALSE(timer.GetEnabled());
 }
 
-// ---------------------------------------------------------------------------
-// processMessages returns true only on WM_QUIT
-// ---------------------------------------------------------------------------
-TEST_CASE("processMessages returns false when no WM_QUIT is pending", "[platform][win32]")
+TEST_CASE("Independent UI threads own independent timer registrations", "[timer][thread][win32]")
 {
-    REQUIRE(LWS::Platform::init() == LWS::Result::Success);
-    // Other window tests may have posted WM_QUIT on this thread.
-    while (LWS::Platform::processMessages())
+    std::atomic_uint successes{};
+    auto run = [&]
     {
-    }
-
-    bool result = LWS::Platform::processMessages();
-    REQUIRE(result == false);
-    LWS::Platform::shutdown();
+        LWS::PlatformContext context;
+        if (context.Init({.backend = LWS::BackendId::Win32}) != LWS::Result::Success)
+            return;
+        LWS::Window window(context);
+        if (window.Create() != LWS::Result::Success)
+            return;
+        unsigned calls{};
+        for (unsigned iteration = 0; iteration < 100; ++iteration)
+        {
+            LWS::Timer timer(context);
+            if (timer.SetTargetWindow(&window) != LWS::Result::Success)
+                return;
+            timer.SetCallback([&] { ++calls; });
+            timer.SetInterval(1);
+            if (iteration == 99)
+            {
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+                while (!calls && std::chrono::steady_clock::now() < deadline)
+                {
+                    std::ignore = context.ProcessMessages();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+        }
+        if (calls > 0)
+            ++successes;
+    };
+    std::jthread first(run);
+    std::jthread second(run);
+    first.join();
+    second.join();
+    REQUIRE(successes == 2);
 }
 
-TEST_CASE("Custom cursor rejects an invalid bitmap layout", "[cursor][bitmap][win32]")
+TEST_CASE("Destroying a timer target detaches it and invalidates retrieved ticks", "[timer][lifetime][win32]")
 {
-    const std::array<std::byte, 4> pixels{};
-    LWS::Cursor cursor;
-    REQUIRE(cursor.setCustomCursor({
-                .pixels = pixels,
-                .format = LWS::BitmapPixelFormat::Bgra8,
-                .width = 2,
-                .height = 2,
-                .rowPitch = 8,
-            }) == LWS::Result::Failure);
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.Create() == LWS::Result::Success);
+    LWS::Timer timer(context.value);
+    REQUIRE(timer.SetTargetWindow(&window) == LWS::Result::Success);
+    unsigned calls{};
+    timer.SetCallback([&] { ++calls; });
+    timer.SetInterval(1);
+    MSG tick{};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!PeekMessageW(&tick, Hwnd(window), WM_TIMER, WM_TIMER, PM_REMOVE) &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    REQUIRE(tick.message == WM_TIMER);
+    REQUIRE(window.Destroy() == LWS::Result::Success);
+    DispatchMessageW(&tick);
+    REQUIRE(calls == 0);
+    REQUIRE_NOTHROW(timer.SetInterval(2));
+    REQUIRE(timer.GetInterval() == 2);
 }
 
-TEST_CASE("Custom cursor accepts straight-alpha pixels", "[cursor][bitmap][win32]")
-{
-    const std::array pixels{std::byte{255}, std::byte{0}, std::byte{0}, std::byte{128}};
-    LWS::Cursor cursor;
-    REQUIRE(cursor.setCustomCursor({
-                .pixels = pixels,
-                .format = LWS::BitmapPixelFormat::Bgra8,
-                .width = 1,
-                .height = 1,
-                .rowPitch = 4,
-            }) == LWS::Result::Success);
-}
+// These process-DPI scenarios must run in separate test processes before any normal context bootstrap.
 
-TEST_CASE("Clipboard rejects writes without an owner window", "[clipboard][win32]")
-{
-    const std::array data{std::byte{}};
-    LWS::Clipboard clipboard;
-    REQUIRE(clipboard.SetClipboardData(0, CF_TEXT, data.data(), data.size()) == LWS::ClipboardResult::UnknownError);
-}
-
-TEST_CASE("Timer preserves its interval when moved to another window", "[timer][win32]")
-{
-    LWS::Platform::init();
-    {
-        LWS::Window firstWindow;
-        LWS::Window secondWindow;
-        REQUIRE(firstWindow.Create(makeTestConfig()) == LWS::Result::Success);
-        REQUIRE(secondWindow.Create(makeTestConfig()) == LWS::Result::Success);
-
-        LWS::Timer timer;
-        timer.SetTargetWindow(firstWindow.GetHandle());
-        timer.SetInterval(50);
-        timer.SetTargetWindow(secondWindow.GetHandle());
-        REQUIRE(timer.GetInterval() == 50);
-        timer.SetInterval(0);
-    }
-    LWS::Platform::shutdown();
-}
-
-#endif  // LWS_PLATFORM_WIN32
+#endif

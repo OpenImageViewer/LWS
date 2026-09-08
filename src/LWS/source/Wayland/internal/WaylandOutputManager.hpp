@@ -17,9 +17,10 @@ namespace LWS::internal
 
         void bindOutput(wl_registry* registry, uint32_t name, uint32_t version);
         void removeGlobal(uint32_t name);
-        [[nodiscard]] Platform::MonitorDesc monitorInfo(Handle handle) const;
-        [[nodiscard]] Platform::MonitorDesc primaryMonitor() const;
+        [[nodiscard]] MonitorDesc monitorInfo(Handle handle) const;
+        [[nodiscard]] MonitorDesc primaryMonitor() const;
         [[nodiscard]] Rect boundingMonitorArea() const;
+        [[nodiscard]] int32_t scale(wl_output* output) const;
         void reset();
 
       private:
@@ -28,7 +29,7 @@ namespace LWS::internal
         {
             uint32_t registryName = 0;
             wl_output* object = nullptr;
-            Platform::MonitorDesc description;
+            MonitorDesc description;
             int32_t scale = 1;
         };
 

@@ -21,8 +21,7 @@ namespace LWS::internal
 
     class MonitorInfo
     {
-    public:
-        static MonitorInfo& instance();
+      public:
 
         MonitorInfo();
 
@@ -33,7 +32,8 @@ namespace LWS::internal
         size_t getMonitorsCount() const;
         RECT getBoundingMonitorArea();
 
-    private:
+      private:
+
         using MonitorMap = std::map<HMONITOR, MonitorDesc>;
 
         RECT getBoundingMonitorAreaInternal();
@@ -46,4 +46,4 @@ namespace LWS::internal
         bool fBoundAreaDirty = true;
         RECT fBoundArea{};
     };
-}
+}  // namespace LWS::internal

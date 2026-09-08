@@ -4,6 +4,7 @@
     #include <ShlObj.h>
 
     #include <LWS/FileDialog.hpp>
+    #include <LWS/Win32/WindowExtensions.hpp>
     #include <LLUtils/Warnings.h>
 
     #include <sstream>
@@ -56,7 +57,7 @@ namespace LWS
 
     FileDialogResult FileDialog::Show(FileDialogType dialogType,
                                       const FileDialogFilterBuilder::ListFileDialogFilters& filters,
-                                      const file_dialog_string_type& title, Handle ownerWindow,
+                                      const file_dialog_string_type& title, Window& ownerWindow,
                                       const file_dialog_string_type& defaultExtension, uint32_t filterIndex,
                                       file_dialog_string_type defaultFileName, file_dialog_string_type& outFilename)
     {
@@ -73,10 +74,13 @@ namespace LWS
 
     FileDialogResult FileDialog::Show(FileDialogType dialogType,
                                       const FileDialogFilterBuilder::ListFileDialogFilters& filters,
-                                      const file_dialog_string_type& title, Handle ownerWindow,
+                                      const file_dialog_string_type& title, Window& ownerWindow,
                                       const file_dialog_string_type& defaultExtension, uint32_t filterIndex,
                                       file_dialog_string_type defaultFileName, ListFileDialogFileNames& outFilenames)
     {
+        const auto owner = Win32::GetHwnd(ownerWindow);
+        if (!owner.has_value())
+            return FileDialogResult::UnknownError;
         FileDialogResult result = FileDialogResult::UnknownError;
         IFileDialog* pfd = nullptr;
         const CLSID& dialogClassID = dialogType == FileDialogType::OpenFile   ? CLSID_FileOpenDialog
@@ -127,7 +131,7 @@ namespace LWS
                     }
                     if (SUCCEEDED(hr))
                     {
-                        hr = pfd->Show(reinterpret_cast<HWND>(ownerWindow));
+                        hr = pfd->Show(*owner);
                     }
 
                     if (SUCCEEDED(hr))

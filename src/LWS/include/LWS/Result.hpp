@@ -5,6 +5,7 @@ namespace LWS
     {
         Success = 0,
         Failure,
+        InvalidArgument,
         InvalidState,
         NotSupported,
         AlreadyCreated,

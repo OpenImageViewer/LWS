@@ -1,6 +1,6 @@
 #pragma once
 
-#include <LWS/interfaces/backends.hpp>
+#include <LWS/Bitmap.hpp>
 
 #include <limits>
 #include <optional>

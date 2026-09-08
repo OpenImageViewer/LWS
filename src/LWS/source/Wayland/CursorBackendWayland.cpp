@@ -233,7 +233,7 @@ namespace LWS
         }
     }
 
-    Result CursorBackendWayland::setCustomCursor(const BitmapBuffer&)
+    Result CursorBackendWayland::setCustomCursor(const BitmapBuffer&, Point)
     {
         // Custom cursor buffers require explicit hotspot and lifetime information, which
         // BitmapBuffer does not currently carry. Keep the current named cursor intact.
@@ -257,4 +257,14 @@ namespace LWS
     }
 }  // namespace LWS
 
+#endif
+
+#ifdef LWS_PLATFORM_WAYLAND
+namespace LWS::internal
+{
+    std::unique_ptr<ICursorBackend> createDefaultCursorBackend()
+    {
+        return std::make_unique<CursorBackendWayland>();
+    }
+}
 #endif

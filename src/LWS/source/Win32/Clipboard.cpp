@@ -1,20 +1,22 @@
 #ifdef LWS_PLATFORM_WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
+    #define WIN32_LEAN_AND_MEAN
+    #include <Windows.h>
 
-#include <LWS/Clipboard.hpp>
-#include <LLUtils/StringUtility.h>
+    #include <LWS/Clipboard.hpp>
+    #include <LWS/Win32/WindowExtensions.hpp>
+    #include <LLUtils/StringUtility.h>
 
-#include <array>
-#include <string_view>
-#include <utility>
-#include <vector>
+    #include <array>
+    #include <string_view>
+    #include <utility>
+    #include <vector>
 
 namespace
 {
     class ClipboardSession
     {
-    public:
+      public:
+
         explicit ClipboardSession(HWND owner) : open_(OpenClipboard(owner) != FALSE) {}
         ~ClipboardSession()
         {
@@ -29,16 +31,19 @@ namespace
 
         explicit operator bool() const { return open_; }
 
-    private:
+      private:
+
         bool open_ = false;
     };
 
     class GlobalMemory
     {
-    public:
+      public:
+
         class ScopedLock
         {
-        public:
+          public:
+
             explicit ScopedLock(HGLOBAL handle) : handle_(handle), data_(GlobalLock(handle)) {}
             ~ScopedLock()
             {
@@ -54,7 +59,8 @@ namespace
             explicit operator bool() const { return data_ != nullptr; }
             void* data() const { return data_; }
 
-        private:
+          private:
+
             HGLOBAL handle_ = nullptr;
             void* data_ = nullptr;
         };
@@ -96,7 +102,8 @@ namespace
         ScopedLock lock() const { return ScopedLock(handle_); }
         static ScopedLock LockBorrowed(HGLOBAL handle) { return ScopedLock(handle); }
 
-    private:
+      private:
+
         void reset()
         {
             if (handle_ != nullptr)
@@ -108,43 +115,51 @@ namespace
 
         HGLOBAL handle_ = nullptr;
     };
-}
+}  // namespace
 
 namespace LWS
 {
     void Clipboard::RegisterFormat(ClipboardFormatType format)
     {
+        platform_.AssertCurrentThread();
         fListFormats.push_back(format);
     }
 
     ClipboardFormatType Clipboard::RegisterFormat(const string_type& format)
     {
+        platform_.AssertCurrentThread();
         auto formatID = RegisterClipboardFormat(format.c_str());
         RegisterFormat(formatID);
         return formatID;
     }
 
-    ClipboardResult Clipboard::SetClipboardData(Handle ownerWindow, ClipboardFormatType format,
-                                                 const LLUtils::Buffer& data)
+    ClipboardResult Clipboard::SetClipboardData(Window& ownerWindow, ClipboardFormatType format,
+                                                const LLUtils::Buffer& data)
     {
         return SetClipboardData(ownerWindow, format, data.data(), data.size());
     }
 
-    ClipboardResult Clipboard::SetClipboardData(Handle ownerWindow, ClipboardFormatType format,
-                                                 const std::byte* data, size_t size)
+    ClipboardResult Clipboard::SetClipboardData(Window& ownerWindow, ClipboardFormatType format, const std::byte* data,
+                                                size_t size)
     {
         if (data == nullptr || size == 0)
         {
             return ClipboardResult::UnknownError;
         }
 
-        const ClipboardDataView entry{ .format = format, .data = { data, size } };
+        const ClipboardDataView entry{.format = format, .data = {data, size}};
         return SetClipboardData(ownerWindow, std::span(&entry, 1));
     }
 
-    ClipboardResult Clipboard::SetClipboardData(Handle ownerWindow, std::span<const ClipboardDataView> data)
+    ClipboardResult Clipboard::SetClipboardData(Window& ownerWindow, std::span<const ClipboardDataView> data)
     {
-        if (ownerWindow == 0 || data.empty())
+        platform_.AssertCurrentThread();
+        if (&ownerWindow.GetPlatformContext() != &platform_)
+            return ClipboardResult::UnknownError;
+        const auto owner = Win32::GetHwnd(ownerWindow);
+        if (!owner.has_value())
+            return ClipboardResult::UnknownError;
+        if (data.empty())
         {
             return ClipboardResult::UnknownError;
         }
@@ -165,7 +180,7 @@ namespace LWS
             }
         }
 
-        ClipboardSession session(reinterpret_cast<HWND>(ownerWindow));
+        ClipboardSession session(*owner);
         if (!session)
         {
             return GetClipboardError();
@@ -190,7 +205,7 @@ namespace LWS
         return ClipboardResult::Success;
     }
 
-    ClipboardResult Clipboard::SetClipboardText(Handle ownerWindow, const char_type* text)
+    ClipboardResult Clipboard::SetClipboardText(Window& ownerWindow, const char_type* text)
     {
         if (text == nullptr)
         {
@@ -202,17 +217,17 @@ namespace LWS
         const std::array entries{
             ClipboardDataView{
                 .format = CF_UNICODETEXT,
-                .data = { reinterpret_cast<const std::byte*>(text), (textView.length() + 1) * sizeof(char_type) },
+                .data = {reinterpret_cast<const std::byte*>(text), (textView.length() + 1) * sizeof(char_type)},
             },
             ClipboardDataView{
                 .format = CF_TEXT,
-                .data = { reinterpret_cast<const std::byte*>(ansi.data()), (ansi.length() + 1) * sizeof(char) },
+                .data = {reinterpret_cast<const std::byte*>(ansi.data()), (ansi.length() + 1) * sizeof(char)},
             },
         };
         return SetClipboardData(ownerWindow, entries);
     }
 
-    ClipboardResult Clipboard::SetClipboardText(Handle ownerWindow, const char* text)
+    ClipboardResult Clipboard::SetClipboardText(Window& ownerWindow, const char* text)
     {
         if (text == nullptr)
         {
@@ -227,15 +242,16 @@ namespace LWS
     {
         switch (GetLastError())
         {
-        case ERROR_ACCESS_DENIED:
-            return ClipboardResult::AccessDenied;
-        default:
-            return ClipboardResult::UnknownError;
+            case ERROR_ACCESS_DENIED:
+                return ClipboardResult::AccessDenied;
+            default:
+                return ClipboardResult::UnknownError;
         }
     }
 
     ClipboardData Clipboard::GetClipboardData()
     {
+        platform_.AssertCurrentThread();
         ClipboardData result;
         ClipboardFormatType selectedFormatID{};
 
@@ -278,5 +294,5 @@ namespace LWS
         std::get<ClipboardFormatType>(result) = selectedFormatID;
         return result;
     }
-}
+}  // namespace LWS
 #endif

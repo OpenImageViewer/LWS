@@ -84,10 +84,10 @@ namespace LWS::internal
                    : WaylandCaptionMode::None;
     }
 
-    [[nodiscard]] constexpr bool isWaylandResizeEnabled(WindowStyle styles, WindowDisplayState displayState,
+    [[nodiscard]] constexpr bool isWaylandResizeEnabled(WindowStyle styles, WindowShowState displayState,
                                                         bool fullscreen, bool childWindow)
     {
-        return !fullscreen && !childWindow && displayState == WindowDisplayState::Restored &&
+        return !fullscreen && !childWindow && displayState == WindowShowState::Restored &&
                (std::to_underlying(styles) & std::to_underlying(WindowStyle::ResizableBorder)) != 0;
     }
 

@@ -5,7 +5,7 @@ namespace LWS
 {
     Cursor::Cursor() : impl_(internal::createDefaultCursorBackend()) {}
 
-    Cursor::Cursor(std::unique_ptr<ICursorBackend> impl) : impl_(std::move(impl)) {}
+    Cursor::Cursor(std::unique_ptr<internal::ICursorBackend> impl) : impl_(std::move(impl)) {}
 
     void Cursor::setVisible(bool visible)
     {
@@ -17,14 +17,14 @@ namespace LWS
     }
     Result Cursor::setCustomCursor(const BitmapBuffer& bitmap)
     {
-        return impl_->setCustomCursor(bitmap);
+        return impl_->setCustomCursor(bitmap, {});
     }
     BackendId Cursor::backendId() const
     {
         return impl_->backend();
     }
 
-    std::shared_ptr<ICursorBackend> Cursor::getBackendShared() const
+    std::shared_ptr<internal::ICursorBackend> Cursor::getBackendShared() const
     {
         return impl_;
     }

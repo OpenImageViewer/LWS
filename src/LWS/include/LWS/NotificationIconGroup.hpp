@@ -1,6 +1,6 @@
 #pragma once
 
-#include <LWS/interfaces/backends.hpp>
+#include <LWS/Platform.hpp>
 #include <LLUtils/Event.h>
 #include <LLUtils/Rect.h>
 
@@ -39,7 +39,7 @@ namespace LWS
         NotificationIconGroup(NotificationIconGroup&&) noexcept = delete;
         NotificationIconGroup& operator=(NotificationIconGroup&&) noexcept = delete;
 
-        NotificationIconGroup();
+        explicit NotificationIconGroup(PlatformContext& platform);
 
         [[nodiscard]] Rect GetIconRect(IconID iconid) const;
 
@@ -48,6 +48,7 @@ namespace LWS
       private:
 
         class Impl;
+        PlatformContext& platform_;
         std::unique_ptr<Impl> impl_;
     };
 }  // namespace LWS

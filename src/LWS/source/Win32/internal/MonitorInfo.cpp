@@ -5,12 +5,6 @@
 
 namespace LWS::internal
 {
-    MonitorInfo& MonitorInfo::instance()
-    {
-        static MonitorInfo s_instance;
-        return s_instance;
-    }
-
     MonitorInfo::MonitorInfo()
     {
         refresh();
@@ -23,7 +17,7 @@ namespace LWS::internal
         mHMonitorToDesc.clear();
         fPrimaryMonitorIt = mHMonitorToDesc.end();
 
-        for (DWORD device_index = 0; ; ++device_index)
+        for (DWORD device_index = 0;; ++device_index)
         {
             DISPLAY_DEVICE display_device{};
             display_device.cb = sizeof(display_device);
@@ -106,19 +100,14 @@ namespace LWS::internal
             return {};
         }
 
-        return std::ranges::fold_left(
-            mDisplayDevices | std::views::drop(1U),
-            mDisplayDevices.front().monitorInfo.rcMonitor,
-            [](RECT acc, const MonitorDesc& d) -> RECT
-            {
-                const RECT& r = d.monitorInfo.rcMonitor;
-                return {
-                    (std::min)(acc.left, r.left),
-                    (std::min)(acc.top, r.top),
-                    (std::max)(acc.right, r.right),
-                    (std::max)(acc.bottom, r.bottom)
-                };
-            });
+        return std::ranges::fold_left(mDisplayDevices | std::views::drop(1U),
+                                      mDisplayDevices.front().monitorInfo.rcMonitor,
+                                      [](RECT acc, const MonitorDesc& d) -> RECT
+                                      {
+                                          const RECT& r = d.monitorInfo.rcMonitor;
+                                          return {(std::min) (acc.left, r.left), (std::min) (acc.top, r.top),
+                                                  (std::max) (acc.right, r.right), (std::max) (acc.bottom, r.bottom)};
+                                      });
     }
 
     BOOL CALLBACK MonitorInfo::monitorEnumProc(HMONITOR hMonitor, HDC, LPRECT, LPARAM data)
@@ -158,7 +147,7 @@ namespace LWS::internal
             desc.dpiX = static_cast<uint16_t>(dpi_x);
             desc.dpiY = static_cast<uint16_t>(dpi_y);
 
-            auto [it, _] = self->mHMonitorToDesc.insert({ hMonitor, desc });
+            auto [it, _] = self->mHMonitorToDesc.insert({hMonitor, desc});
             if ((monitor_info.dwFlags & MONITORINFOF_PRIMARY) == MONITORINFOF_PRIMARY)
             {
                 self->fPrimaryMonitorIt = it;
@@ -169,4 +158,4 @@ namespace LWS::internal
 
         return TRUE;
     }
-}
+}  // namespace LWS::internal

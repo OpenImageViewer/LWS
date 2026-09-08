@@ -7,10 +7,11 @@
     #include <LWS/StringDefs.hpp>
 
     #include <mutex>
+    #include <cmath>
     #include <optional>
     #include <stdexcept>
     #include <utility>
-    #include <vector>
+    #include <tuple>
 
     #include <LWS/Win32/CursorBackendWin32.hpp>
     #include <LWS/Win32/EventWin32.hpp>
@@ -20,11 +21,19 @@
     #include "internal/MonitorInfo.hpp"
     #include "internal/PlatformState.hpp"
     #include "internal/WindowPosHelper.hpp"
+    #include "../internal/WindowBackendAccess.hpp"
+    #include "../internal/BitmapValidation.hpp"
 
 namespace
 {
     static constexpr LWS::char_type g_windowClassName[] = L"LWS_WINDOW_CLASS";
     static constexpr LWS::char_type g_windowPropName[] = L"LWSBackend";
+    LWS::Size outerSizeForClient(LWS::Size size, DWORD style, DWORD extendedStyle)
+    {
+        RECT rectangle{0, 0, size.x, size.y};
+        AdjustWindowRectEx(&rectangle, style, FALSE, extendedStyle);
+        return {rectangle.right - rectangle.left, rectangle.bottom - rectangle.top};
+    }
 
     static LWS::KeyCode keyCodeFromVirtualKey(WPARAM virtual_key, LPARAM lparam)
     {
@@ -239,7 +248,10 @@ namespace
 
 namespace LWS
 {
-    WindowBackendWin32::WindowBackendWin32() = default;
+    WindowBackendWin32::WindowBackendWin32(Window& owner, internal::MonitorInfo& monitors)
+        : internal::IWindowBackend(owner), fMonitors(monitors)
+    {
+    }
 
     WindowBackendWin32::~WindowBackendWin32()
     {
@@ -251,7 +263,7 @@ namespace LWS
         }
     }
 
-    Result WindowBackendWin32::create(const WindowConfig& config)
+    Result WindowBackendWin32::create(const internal::NativeWindowConfig& config)
     {
         if (fHwnd != nullptr)
         {
@@ -292,7 +304,7 @@ namespace LWS
         {
             ex_style |= WS_EX_TOPMOST;
         }
-        if (fTransparent)
+        if (fTransparent && fParentBackend == nullptr)
         {
             ex_style |= WS_EX_LAYERED;
         }
@@ -303,10 +315,11 @@ namespace LWS
             parent_hwnd = reinterpret_cast<HWND>(fParentBackend->getHandle());
         }
 
-        HWND hwnd = CreateWindowEx(ex_style, g_windowClassName, config.title.c_str(),
-                                   static_cast<DWORD>(WS_CLIPCHILDREN | WS_CLIPSIBLINGS | composeWindowStyles()),
-                                   config.position.x, config.position.y, config.size.x, config.size.y, parent_hwnd,
-                                   nullptr, instance, this);
+        const DWORD style = static_cast<DWORD>(WS_CLIPCHILDREN | WS_CLIPSIBLINGS | composeWindowStyles());
+        const Point position = config.position;
+        const Size outerSize = outerSizeForClient(config.size, style, ex_style);
+        HWND hwnd = CreateWindowEx(ex_style, g_windowClassName, config.title.c_str(), style, position.x, position.y,
+                                   outerSize.x, outerSize.y, parent_hwnd, nullptr, instance, this);
 
         if (hwnd == nullptr || fHwnd == nullptr)
         {
@@ -315,6 +328,19 @@ namespace LWS
                 DestroyWindow(hwnd);
             }
             return Result::Failure;
+        }
+
+        // Creation can select another monitor DPI or add native frame styles; honor the requested client size.
+        if (getClientSize() != config.size)
+            setSize(config.size);
+        applyWindowIcon();
+
+        if (fTransparent && fParentBackend != nullptr)
+        {
+            // Layered child creation is rejected when the host manifest is not Windows-8-aware. Applying the style
+            // after creation preserves hit-test transparency for every host and enables visual transparency when the
+            // host supports layered children.
+            setTransparent(true);
         }
 
         if (fAlwaysOnTop)
@@ -334,13 +360,13 @@ namespace LWS
 
         switch (config.displayState)
         {
-            case WindowDisplayState::Minimized:
+            case WindowShowState::Minimized:
                 ShowWindow(fHwnd, SW_MINIMIZE);
                 break;
-            case WindowDisplayState::Maximized:
+            case WindowShowState::Maximized:
                 ShowWindow(fHwnd, SW_MAXIMIZE);
                 break;
-            case WindowDisplayState::Restored:
+            case WindowShowState::Restored:
             default:
                 break;
         }
@@ -364,6 +390,8 @@ namespace LWS
         {
             DestroyWindow(fHwnd);
         }
+        if (fWindowIcon != nullptr)
+            DestroyIcon(std::exchange(fWindowIcon, nullptr));
     }
 
     void WindowBackendWin32::show()
@@ -389,7 +417,7 @@ namespace LWS
         return fHwnd != nullptr ? IsWindowVisible(fHwnd) != FALSE : fVisible;
     }
 
-    void WindowBackendWin32::setDisplayState(WindowDisplayState state)
+    void WindowBackendWin32::setDisplayState(WindowShowState state)
     {
         if (fHwnd == nullptr)
         {
@@ -399,13 +427,13 @@ namespace LWS
 
         switch (state)
         {
-            case WindowDisplayState::Restored:
+            case WindowShowState::Restored:
                 ShowWindow(fHwnd, SW_RESTORE);
                 break;
-            case WindowDisplayState::Minimized:
+            case WindowShowState::Minimized:
                 ShowWindow(fHwnd, SW_MINIMIZE);
                 break;
-            case WindowDisplayState::Maximized:
+            case WindowShowState::Maximized:
                 ShowWindow(fHwnd, SW_MAXIMIZE);
                 break;
             default:
@@ -413,7 +441,7 @@ namespace LWS
         }
     }
 
-    WindowDisplayState WindowBackendWin32::getDisplayState() const
+    WindowShowState WindowBackendWin32::getDisplayState() const
     {
         return fDisplayState;
     }
@@ -461,11 +489,21 @@ namespace LWS
         }
     }
 
+    void WindowBackendWin32::applyWindowIcon() const
+    {
+        if (fHwnd != nullptr)
+        {
+            SendMessageW(fHwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(fWindowIcon));
+            SendMessageW(fHwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(fWindowIcon));
+        }
+    }
+
     void WindowBackendWin32::setPosition(Point pos)
     {
         if (fHwnd != nullptr)
         {
-            internal::WindowPosHelper::setPosition(fHwnd, pos.x, pos.y);
+            const Point position = pos;
+            internal::WindowPosHelper::setPosition(fHwnd, position.x, position.y);
         }
     }
 
@@ -476,17 +514,32 @@ namespace LWS
             return {};
         }
 
-        WINDOWPLACEMENT placement{};
-        placement.length = sizeof(placement);
-        GetWindowPlacement(fHwnd, &placement);
-        return {placement.rcNormalPosition.left, placement.rcNormalPosition.top};
+        POINT position{};
+        if (fParentBackend != nullptr)
+        {
+            RECT rectangle{};
+            GetWindowRect(fHwnd, &rectangle);
+            position = {rectangle.left, rectangle.top};
+            ScreenToClient(reinterpret_cast<HWND>(fParentBackend->getHandle()), &position);
+        }
+        else
+        {
+            WINDOWPLACEMENT placement{};
+            placement.length = sizeof(placement);
+            GetWindowPlacement(fHwnd, &placement);
+            position = {placement.rcNormalPosition.left, placement.rcNormalPosition.top};
+        }
+        return Point{position.x, position.y};
     }
 
     void WindowBackendWin32::setSize(Size sz)
     {
         if (fHwnd != nullptr)
         {
-            internal::WindowPosHelper::setSize(fHwnd, sz.x, sz.y);
+            const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE));
+            const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
+            const Size outerSize = outerSizeForClient(sz, style, extendedStyle);
+            internal::WindowPosHelper::setSize(fHwnd, outerSize.x, outerSize.y);
         }
     }
 
@@ -502,16 +555,13 @@ namespace LWS
         return {rect.right - rect.left, rect.bottom - rect.top};
     }
 
-    Rect WindowBackendWin32::getClientRect() const
+    Size WindowBackendWin32::getFramebufferSize() const
     {
         if (fHwnd == nullptr)
-        {
             return {};
-        }
-
         RECT rect{};
         GetClientRect(fHwnd, &rect);
-        return {{rect.left, rect.top}, {rect.right, rect.bottom}};
+        return {rect.right - rect.left, rect.bottom - rect.top};
     }
 
     Size WindowBackendWin32::getWindowSize() const
@@ -526,22 +576,20 @@ namespace LWS
         return {rect.right - rect.left, rect.bottom - rect.top};
     }
 
-    void WindowBackendWin32::setPlacement(const WindowPlacement& placement)
+    void WindowBackendWin32::setPlacement(const internal::NativeWindowPlacement& placement)
     {
         if (fHwnd == nullptr)
         {
             return;
         }
 
-        internal::WindowPosHelper::setPlacement(fHwnd, placement.position.x, placement.position.y, placement.size.x,
-                                                placement.size.y);
+        const Point position = placement.position;
+        const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE));
+        const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
+        const Size outerSize = outerSizeForClient(placement.size, style, extendedStyle);
+        internal::WindowPosHelper::setPlacement(fHwnd, position.x, position.y, outerSize.x, outerSize.y);
         if (placement.displayState != fDisplayState)
             setDisplayState(placement.displayState);
-    }
-
-    WindowPlacement WindowBackendWin32::getPlacement() const
-    {
-        return {getPosition(), getWindowSize(), fDisplayState};
     }
 
     void WindowBackendWin32::setMinMaxSize(Size minSize, Size maxSize)
@@ -578,14 +626,6 @@ namespace LWS
         if (fHwnd != nullptr)
         {
             SetForegroundWindow(fHwnd);
-        }
-    }
-
-    void WindowBackendWin32::setFocus()
-    {
-        if (fHwnd != nullptr)
-        {
-            ::SetFocus(fHwnd);
         }
     }
 
@@ -647,11 +687,6 @@ namespace LWS
         }
     }
 
-    LLUtils::Color WindowBackendWin32::getBackgroundColor() const
-    {
-        return fBackgroundColor;
-    }
-
     void WindowBackendWin32::setEraseBackground(bool erase)
     {
         fEraseBackground = erase;
@@ -662,52 +697,28 @@ namespace LWS
         return fEraseBackground;
     }
 
-    void WindowBackendWin32::setFullScreenState(FullScreenState state)
+    void WindowBackendWin32::setFullScreenState(internal::FullScreenState state)
     {
         switch (state)
         {
-            case FullScreenState::Windowed:
+            case internal::FullScreenState::Windowed:
                 setWindowed();
                 break;
-            case FullScreenState::SingleScreen:
+            case internal::FullScreenState::SingleScreen:
                 setFullScreen(false);
                 break;
-            case FullScreenState::MultiScreen:
+            case internal::FullScreenState::MultiScreen:
                 setFullScreen(true);
                 break;
-            case FullScreenState::None:
+            case internal::FullScreenState::None:
             default:
                 break;
         }
     }
 
-    FullScreenState WindowBackendWin32::getFullScreenState() const
+    internal::FullScreenState WindowBackendWin32::getFullScreenState() const
     {
         return fFullScreenState;
-    }
-
-    bool WindowBackendWin32::isFullScreen() const
-    {
-        return fFullScreenState != FullScreenState::Windowed;
-    }
-
-    void WindowBackendWin32::toggleFullScreen(bool multiMonitor)
-    {
-        switch (fFullScreenState)
-        {
-            case FullScreenState::Windowed:
-                setFullScreen(multiMonitor);
-                break;
-            case FullScreenState::SingleScreen:
-                multiMonitor ? setFullScreen(true) : setWindowed();
-                break;
-            case FullScreenState::MultiScreen:
-                setWindowed();
-                break;
-            case FullScreenState::None:
-            default:
-                break;
-        }
     }
 
     bool WindowBackendWin32::isMouseInClientRect() const
@@ -725,18 +736,6 @@ namespace LWS
         return PtInRect(&rect, point) != FALSE;
     }
 
-    bool WindowBackendWin32::isUnderMouseCursor() const
-    {
-        if (fHwnd == nullptr)
-        {
-            return false;
-        }
-
-        POINT point{};
-        GetCursorPos(&point);
-        return WindowFromPoint(point) == fHwnd;
-    }
-
     Point WindowBackendWin32::getMousePosition() const
     {
         if (fHwnd == nullptr)
@@ -747,34 +746,32 @@ namespace LWS
         POINT point{};
         GetCursorPos(&point);
         ScreenToClient(fHwnd, &point);
-        return {point.x, point.y};
+        return Point{point.x, point.y};
     }
 
-    void WindowBackendWin32::setLockMouseToWindowMode(LockMouseToWindowMode mode)
+    void WindowBackendWin32::setLockMouseToWindowMode(internal::LockMouseToWindowMode mode)
     {
-        fLockMode = mode;
+        if (fHwnd != nullptr && mode != internal::LockMouseToWindowMode::NoLock)
+        {
+            POINT cursor{};
+            if (GetCursorPos(&cursor) != FALSE)
+            {
+                const LPARAM position = MAKELPARAM(cursor.x, cursor.y);
+                const LRESULT hitTest = mode == internal::LockMouseToWindowMode::LockMove
+                                            ? HTCAPTION
+                                            : getCorner(MAKEPOINTS(position));
+                ReleaseCapture();
+                SendMessageW(fHwnd, WM_NCLBUTTONDOWN, hitTest, position);
+            }
+        }
     }
 
-    LockMouseToWindowMode WindowBackendWin32::getLockMouseToWindowMode() const
-    {
-        return fLockMode;
-    }
     Result WindowBackendWin32::setPointerLocked(bool)
     {
         return Result::NotSupported;
     }
 
-    void WindowBackendWin32::setDoubleClickMode(DoubleClickMode mode)
-    {
-        fDoubleClickMode = mode;
-    }
-
-    DoubleClickMode WindowBackendWin32::getDoubleClickMode() const
-    {
-        return fDoubleClickMode;
-    }
-
-    void WindowBackendWin32::setCursor(std::shared_ptr<ICursorBackend> cursor)
+    void WindowBackendWin32::setCursor(std::shared_ptr<internal::ICursorBackend> cursor)
     {
         fCursor = std::move(cursor);
         if (fCursor != nullptr && fCursor->backend() == BackendId::Win32)
@@ -783,22 +780,18 @@ namespace LWS
         }
     }
 
-    void WindowBackendWin32::setParent(IWindowBackend* parent)
+    void WindowBackendWin32::setParent(internal::IWindowBackend* parent)
     {
         fParentBackend = parent;
-        if (fHwnd != nullptr)
-        {
-            HWND parent_hwnd = parent != nullptr ? reinterpret_cast<HWND>(parent->getHandle()) : nullptr;
-            ::SetParent(fHwnd, parent_hwnd);
-            setWindowStyles(WindowStyle::ChildWindow, parent_hwnd != nullptr);
-        }
+    }
+
+    void WindowBackendWin32::dispatchClientAreaSizeChanged(Size framebufferSize)
+    {
+        dispatchEvent(EventResize{framebufferSize});
     }
 
     Result WindowBackendWin32::enableDragAndDrop(bool enable)
     {
-        if (!Platform::isInitialized())
-            return Result::PlatformNotInitialized;
-
         if (!enable)
         {
             fDndEnabled = false;
@@ -811,7 +804,7 @@ namespace LWS
         }
 
         if (!internal::isOleInitializedForCurrentThread())
-            return Result::IncompatibleThreadApartment;
+            return Result::NotSupported;
 
         fDndEnabled = true;
         if (fHwnd == nullptr || fDragAndDrop != nullptr)
@@ -830,40 +823,19 @@ namespace LWS
         return Result::Success;
     }
 
-    EventListenerToken WindowBackendWin32::addListener(EventCallback cb)
-    {
-        EventListenerToken token = fNextToken++;
-        fListeners[token] = std::move(cb);
-        return token;
-    }
-
-    void WindowBackendWin32::removeListener(EventListenerToken token)
-    {
-        fListeners.erase(token);
-    }
-
-    void WindowBackendWin32::injectRawEvent(void* platformEvent)
-    {
-        if (platformEvent != nullptr)
-        {
-            MSG* message = reinterpret_cast<MSG*>(platformEvent);
-            windowProc(message->hwnd, message->message, message->wParam, message->lParam);
-        }
-    }
-
     Handle WindowBackendWin32::getHandle() const
     {
         return reinterpret_cast<Handle>(fHwnd);
     }
 
+    uintptr_t WindowBackendWin32::getCurrentMonitorHandle() const
+    {
+        return reinterpret_cast<uintptr_t>(MonitorFromWindow(fHwnd, MONITOR_DEFAULTTOPRIMARY));
+    }
+
     BackendId WindowBackendWin32::backend() const
     {
         return BackendId::Win32;
-    }
-
-    void WindowBackendWin32::setPlatformCallback(Win32::PlatformCallback callback)
-    {
-        fPlatformCallback = std::move(callback);
     }
 
     void WindowBackendWin32::setMenuChar(bool suppress)
@@ -902,25 +874,11 @@ namespace LWS
                 {
                     use_default = false;
                     return_value = HTTRANSPARENT;
-                    break;
-                }
-                if (DefWindowProc(hWnd, message, wParam, lParam) == HTCLIENT)
-                {
-                    if (fLockMode == LockMouseToWindowMode::LockResize)
-                    {
-                        use_default = false;
-                        return_value = getCorner(MAKEPOINTS(lParam));
-                    }
-                    else if (fLockMode == LockMouseToWindowMode::LockMove)
-                    {
-                        use_default = false;
-                        return_value = HTCAPTION;
-                    }
                 }
                 break;
 
             case WM_SETCURSOR:
-                if (fCursor != nullptr && fCursor->backend() == BackendId::Win32)
+                if (LOWORD(lParam) == HTCLIENT && fCursor != nullptr && fCursor->backend() == BackendId::Win32)
                 {
                     SetCursor(static_cast<CursorBackendWin32*>(fCursor.get())->getCursorHandle());
                     use_default = false;
@@ -1010,7 +968,8 @@ namespace LWS
                 break;
 
             case WM_CLOSE:
-                dispatchEvent(EventClose{});
+                if (dispatchEvent(EventCloseRequested{}) == EventResponse::Handled)
+                    use_default = false;
                 break;
 
             case WM_DESTROY:
@@ -1021,26 +980,22 @@ namespace LWS
                 }
                 RemoveProp(hWnd, g_windowPropName);
                 fHwnd = nullptr;
-                dispatchEvent(EventWindowDestroyed{});
-                if (fParentBackend == nullptr)
-                {
-                    PostQuitMessage(0);
-                }
+                std::ignore = dispatchEvent(EventWindowDestroyed{});
                 break;
 
             case WM_SIZE:
             {
-                WindowDisplayState new_state = fDisplayState;
+                WindowShowState new_state = fDisplayState;
                 switch (wParam)
                 {
                     case SIZE_RESTORED:
-                        new_state = WindowDisplayState::Restored;
+                        new_state = WindowShowState::Restored;
                         break;
                     case SIZE_MINIMIZED:
-                        new_state = WindowDisplayState::Minimized;
+                        new_state = WindowShowState::Minimized;
                         break;
                     case SIZE_MAXIMIZED:
-                        new_state = WindowDisplayState::Maximized;
+                        new_state = WindowShowState::Maximized;
                         break;
                     default:
                         break;
@@ -1049,16 +1004,20 @@ namespace LWS
                 if (new_state != fDisplayState)
                 {
                     fDisplayState = new_state;
-                    dispatchEvent(EventDisplayStateChanged{fDisplayState});
+                    std::ignore = dispatchEvent(EventShowStateChanged{fDisplayState});
                 }
 
-                dispatchEvent(
-                    EventResize{{static_cast<int32_t>(LOWORD(lParam)), static_cast<int32_t>(HIWORD(lParam))}});
+                const Size framebufferSize{static_cast<int32_t>(LOWORD(lParam)), static_cast<int32_t>(HIWORD(lParam))};
+                dispatchClientAreaSizeChanged(framebufferSize);
                 break;
             }
 
+            case WM_DPICHANGED_AFTERPARENT:
+                dispatchClientAreaSizeChanged(getFramebufferSize());
+                break;
+
             case WM_MOVE:
-                dispatchEvent(EventMove{{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}});
+                dispatchEvent(EventMove{getPosition()});
                 break;
 
             case WM_SETFOCUS:
@@ -1078,7 +1037,7 @@ namespace LWS
 
             case WM_MOUSEMOVE:
             {
-                Point position{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                const Point position = Point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 Point delta{position.x - fLastMousePos.x, position.y - fLastMousePos.y};
                 fLastMousePos = position;
                 dispatchEvent(EventMouseMove{position, delta});
@@ -1110,7 +1069,8 @@ namespace LWS
                     button = GET_XBUTTON_WPARAM(wParam) == XBUTTON1 ? MouseButton::X1 : MouseButton::X2;
                 }
 
-                dispatchEvent(EventMouseButton{button, pressed, {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}});
+                const Point position = Point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                dispatchEvent(EventMouseButton{button, pressed, position});
                 break;
             }
 
@@ -1118,7 +1078,10 @@ namespace LWS
             {
                 POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 ScreenToClient(hWnd, &point);
-                dispatchEvent(EventMouseWheel{GET_WHEEL_DELTA_WPARAM(wParam), {point.x, point.y}});
+                dispatchEvent(EventMouseWheel{
+                    GET_WHEEL_DELTA_WPARAM(wParam),
+                    Point{point.x, point.y},
+                });
                 break;
             }
 
@@ -1169,17 +1132,6 @@ namespace LWS
                 fVisible = wParam != 0;
                 break;
 
-            case WM_NCLBUTTONDBLCLK:
-                if (fDoubleClickMode == DoubleClickMode::Default)
-                {
-                    if (static_cast<WPARAM>(DefWindowProc(hWnd, WM_NCHITTEST, wParam, lParam)) != wParam)
-                    {
-                        use_default = false;
-                        return_value = 0;
-                    }
-                }
-                break;
-
             case WM_GETMINMAXINFO:
                 if (fMinSize.x > 0 || fMinSize.y > 0 || fMaxSize.x > 0 || fMaxSize.y > 0)
                 {
@@ -1206,7 +1158,7 @@ namespace LWS
 
     LONG WindowBackendWin32::composeWindowStyles() const
     {
-        if (fFullScreenState != FullScreenState::Windowed)
+        if (fFullScreenState != internal::FullScreenState::Windowed)
         {
             return 0;
         }
@@ -1216,7 +1168,7 @@ namespace LWS
         auto has_style = [window_styles](WindowStyle style)
         { return (window_styles & std::to_underlying(style)) != 0; };
 
-        if (has_style(WindowStyle::ChildWindow))
+        if (fParentBackend != nullptr)
             styles |= WS_CHILD;
         if (has_style(WindowStyle::Caption))
             styles |= WS_CAPTION;
@@ -1259,11 +1211,11 @@ namespace LWS
     {
         if (fHwnd == nullptr)
         {
-            fFullScreenState = FullScreenState::Windowed;
+            fFullScreenState = internal::FullScreenState::Windowed;
             return;
         }
 
-        fFullScreenState = FullScreenState::Windowed;
+        fFullScreenState = internal::FullScreenState::Windowed;
         updateWindowStyles();
         if (fSavedFullScreenPlacement.length == sizeof(WINDOWPLACEMENT))
         {
@@ -1278,25 +1230,25 @@ namespace LWS
             return;
         }
 
-        if (fFullScreenState == FullScreenState::Windowed)
+        if (fFullScreenState == internal::FullScreenState::Windowed)
         {
             fSavedFullScreenPlacement.length = sizeof(WINDOWPLACEMENT);
             GetWindowPlacement(fHwnd, &fSavedFullScreenPlacement);
         }
 
-        internal::MonitorInfo& monitor_info = internal::MonitorInfo::instance();
+        internal::MonitorInfo& monitor_info = fMonitors;
         monitor_info.refresh();
 
         RECT rect{};
         if (multiMonitor)
         {
             rect = monitor_info.getBoundingMonitorArea();
-            fFullScreenState = FullScreenState::MultiScreen;
+            fFullScreenState = internal::FullScreenState::MultiScreen;
         }
         else
         {
             rect = monitor_info.getMonitorInfo(MonitorFromWindow(fHwnd, MONITOR_DEFAULTTOPRIMARY)).monitorInfo.rcMonitor;
-            fFullScreenState = FullScreenState::SingleScreen;
+            fFullScreenState = internal::FullScreenState::SingleScreen;
         }
 
         updateWindowStyles();
@@ -1336,40 +1288,9 @@ namespace LWS
         return corners[closest_index];
     }
 
-    void WindowBackendWin32::dispatchEvent(const AnyEvent& event_data)
-    {
-        std::vector<EventListenerToken> tokens;
-        tokens.reserve(fListeners.size());
-        for (const auto& [token, _] : fListeners)
-        {
-            tokens.push_back(token);
-        }
-
-        for (EventListenerToken token : tokens)
-        {
-            auto it = fListeners.find(token);
-            if (it != fListeners.end() && it->second(event_data))
-            {
-                break;
-            }
-        }
-    }
-
     bool WindowBackendWin32::dispatchPlatformEvent(const Win32::PlatformEvent& event, LRESULT& result)
     {
-        if (!fPlatformCallback)
-        {
-            return false;
-        }
-
-        const std::optional<LRESULT> callback_result = fPlatformCallback(event);
-        if (!callback_result)
-        {
-            return false;
-        }
-
-        result = *callback_result;
-        return true;
+        return internal::WindowBackendAccess::DispatchPlatform(owner(), event, result);
     }
 }  // namespace LWS
 #endif  // LWS_PLATFORM_WIN32

@@ -7,6 +7,7 @@
     #include <algorithm>
     #include <cerrno>
     #include <cstring>
+    #include <cstdio>
     #include <poll.h>
     #include <sys/eventfd.h>
     #include <tuple>
@@ -14,21 +15,15 @@
 
 namespace LWS::internal
 {
-    WaylandPlatformState::WaylandPlatformState() : fSeatController(*this), fDragAndDropController(*this) {}
-
-    WaylandPlatformState& WaylandPlatformState::current()
+    WaylandPlatformState::WaylandPlatformState()
+        : fSeatController(*this), fDragAndDropController(*this)
     {
-        static WaylandPlatformState state;
-        return state;
     }
 
-    Result WaylandPlatformState::initialize()
+    Result WaylandPlatformState::Initialize()
     {
-        if (fInitCount != 0)
-        {
-            ++fInitCount;
-            return Result::Success;
-        }
+        if (fInitialized)
+            return Result::InvalidState;
 
         fDisplay = wl_display_connect(nullptr);
         if (fDisplay == nullptr)
@@ -56,63 +51,112 @@ namespace LWS::internal
             return Result::NotSupported;
         }
 
-        fQuitRequested = false;
-        fInitCount = 1;
+        fInitialized = true;
         return Result::Success;
     }
 
-    void WaylandPlatformState::shutdown()
+    void WaylandPlatformState::Shutdown()
     {
-        if (fInitCount != 0)
-        {
-            --fInitCount;
-            if (fInitCount == 0)
-            {
-                while (!fWindows.empty())
-                    fWindows.begin()->second.window->destroy();
-                releaseObjects();
-            }
-        }
+        if (fInitialized)
+            releaseObjects();
     }
 
     bool WaylandPlatformState::isInitialized() const
     {
-        return fInitCount != 0;
+        return fInitialized;
     }
 
-    void WaylandPlatformState::runMessageLoop()
+    void WaylandPlatformState::RunMessageLoop(PlatformContext& context)
     {
-        while (!fQuitRequested && fDisplay != nullptr)
-            dispatchOnce(-1);
+        while (!PlatformContextAccess::QuitRequested(context) && fDisplay != nullptr)
+            dispatchOnce(context, -1);
     }
 
-    bool WaylandPlatformState::processMessages()
+    bool WaylandPlatformState::ProcessMessages(PlatformContext& context)
     {
-        dispatchOnce(0);
-        return fQuitRequested;
+        dispatchOnce(context, 0);
+        return PlatformContextAccess::QuitRequested(context);
     }
 
-    void WaylandPlatformState::requestQuit()
+    Result WaylandPlatformState::Wake()
     {
-        fQuitRequested = true;
+        if (fWakeDescriptor < 0)
+            return Result::InvalidState;
+        const uint64_t value = 1;
+        ssize_t written;
+        do
+        {
+            written = write(fWakeDescriptor, &value, sizeof(value));
+        } while (written < 0 && errno == EINTR);
+        return written == sizeof(value) || (written < 0 && errno == EAGAIN) ? Result::Success : Result::Failure;
+    }
+
+    void WaylandPlatformState::ClearWake()
+    {
         if (fWakeDescriptor >= 0)
         {
-            const uint64_t value = 1;
-            std::ignore = write(fWakeDescriptor, &value, sizeof(value));
+            uint64_t value{};
+            while (read(fWakeDescriptor, &value, sizeof(value)) > 0)
+            {
+            }
         }
     }
 
-    void WaylandPlatformState::postTask(std::move_only_function<void()> task)
+    bool WaylandPlatformState::Supports(PlatformFeature feature) const
     {
-        {
-            const std::scoped_lock lock(fTaskMutex);
-            fTasks.push_back(std::move(task));
-        }
-        if (fWakeDescriptor >= 0)
-        {
-            const uint64_t value = 1;
-            std::ignore = write(fWakeDescriptor, &value, sizeof(value));
-        }
+        if (feature == PlatformFeature::ServerSideDecorations)
+            return fDecorationManager != nullptr;
+        if (feature == PlatformFeature::PointerLock)
+            return fPointerConstraints != nullptr && fRelativePointerManager != nullptr;
+        if (feature == PlatformFeature::DragAndDrop)
+            return supportsDragAndDrop();
+        return feature == PlatformFeature::HostWindowFrame && fHasHostWindowFrame;
+    }
+
+    bool WaylandPlatformState::IsKeyPressed(KeyCode key) const
+    {
+        return fSeatController.isKeyPressed(key);
+    }
+    bool WaylandPlatformState::IsKeyToggled(KeyCode) const
+    {
+        return false;
+    }
+    Point WaylandPlatformState::GetMousePosition() const
+    {
+        return fSeatController.pointerPosition();
+    }
+    Result WaylandPlatformState::MoveMouse(Point)
+    {
+        return Result::NotSupported;
+    }
+
+    Result WaylandPlatformState::RefreshMonitors()
+    {
+        return wl_display_roundtrip(fDisplay) >= 0 ? Result::Success : Result::Failure;
+    }
+
+    MonitorDesc WaylandPlatformState::GetMonitorInfo(uintptr_t handle, bool allowRefresh)
+    {
+        if (allowRefresh)
+            std::ignore = RefreshMonitors();
+        return fOutputManager.monitorInfo(handle);
+    }
+
+    MonitorDesc WaylandPlatformState::GetPrimaryMonitor(bool allowRefresh)
+    {
+        if (allowRefresh)
+            std::ignore = RefreshMonitors();
+        return fOutputManager.primaryMonitor();
+    }
+
+    Rect WaylandPlatformState::GetBoundingMonitorArea() const
+    {
+        return fOutputManager.boundingMonitorArea();
+    }
+
+    std::unique_ptr<IWindowBackend> WaylandPlatformState::CreateWindowBackend(Window& owner)
+    {
+        return std::make_unique<WindowBackendWayland>(owner, *this);
     }
 
     void WaylandPlatformState::registerWindow(wl_surface* surface, WindowBackendWayland& window,
@@ -129,8 +173,6 @@ namespace LWS::internal
             fDragAndDropController.windowRemoved(*window);
         }
         fWindows.erase(surface);
-        if (fWindows.empty())
-            requestQuit();
     }
 
     const WaylandWindowRegistration* WaylandPlatformState::findWindowRegistration(wl_surface* surface) const
@@ -191,6 +233,7 @@ namespace LWS::internal
             state.fRelativePointerManager = static_cast<zwp_relative_pointer_manager_v1*>(
                 wl_registry_bind(registry, name, &zwp_relative_pointer_manager_v1_interface, 1));
         }
+
         else if (std::strcmp(interface, wl_data_device_manager_interface.name) == 0)
         {
             state.fDragAndDropController.bindManager(registry, name, version);
@@ -199,10 +242,16 @@ namespace LWS::internal
         {
             state.fHasHostWindowFrame = true;
         }
-        else if (std::strcmp(interface, wl_seat_interface.name) == 0 && state.fSeatController.seat() == nullptr)
+        else if (std::strcmp(interface, wl_seat_interface.name) == 0)
         {
-            state.fSeatController.bindSeat(registry, name, version);
-            state.fDragAndDropController.setSeat(state.fSeatController.seat());
+            state.fSeatGlobals.push_back({name, version});
+            if (state.fSelectedSeatName == 0)
+                state.selectSeat(name, version);
+            else if (!state.fAdditionalSeatReported)
+            {
+                std::fputs("LWS: additional Wayland seats are ignored\n", stderr);
+                state.fAdditionalSeatReported = true;
+            }
         }
         else if (std::strcmp(interface, wl_output_interface.name) == 0)
         {
@@ -212,7 +261,31 @@ namespace LWS::internal
 
     void WaylandPlatformState::registryGlobalRemove(void* data, wl_registry*, uint32_t name)
     {
-        static_cast<WaylandPlatformState*>(data)->fOutputManager.removeGlobal(name);
+        auto& state = *static_cast<WaylandPlatformState*>(data);
+        state.fOutputManager.removeGlobal(name);
+        const auto seat = std::ranges::find(state.fSeatGlobals, name, &SeatGlobal::name);
+        if (seat == state.fSeatGlobals.end())
+            return;
+        const bool selected = name == state.fSelectedSeatName;
+        state.fSeatGlobals.erase(seat);
+        if (selected)
+        {
+            state.fDragAndDropController.setSeat(nullptr);
+            state.fSeatController.reset();
+            state.fSelectedSeatName = 0;
+            if (!state.fSeatGlobals.empty())
+            {
+                state.fSeatController.initialize();
+                state.selectSeat(state.fSeatGlobals.front().name, state.fSeatGlobals.front().version);
+            }
+        }
+    }
+
+    void WaylandPlatformState::selectSeat(uint32_t name, uint32_t version)
+    {
+        fSeatController.bindSeat(fRegistry, name, version);
+        fSelectedSeatName = name;
+        fDragAndDropController.setSeat(fSeatController.seat());
     }
 
     void WaylandPlatformState::shellPing(void*, xdg_wm_base* shell, uint32_t serial)
@@ -220,22 +293,11 @@ namespace LWS::internal
         xdg_wm_base_pong(shell, serial);
     }
 
-    void WaylandPlatformState::dispatchTasks()
-    {
-        std::vector<std::move_only_function<void()>> tasks;
-        {
-            const std::scoped_lock lock(fTaskMutex);
-            tasks.swap(fTasks);
-        }
-        for (auto& task : tasks)
-            task();
-    }
-
-    void WaylandPlatformState::dispatchOnce(int timeoutMilliseconds)
+    void WaylandPlatformState::dispatchOnce(PlatformContext& context, int timeoutMilliseconds)
     {
         if (fDisplay == nullptr)
         {
-            fQuitRequested = true;
+            context.RequestQuit();
             return;
         }
 
@@ -244,7 +306,7 @@ namespace LWS::internal
             result = wl_display_dispatch_pending(fDisplay);
         if (result < 0)
         {
-            fQuitRequested = true;
+            context.RequestQuit();
             return;
         }
 
@@ -252,7 +314,7 @@ namespace LWS::internal
         if (flushResult < 0 && errno != EAGAIN)
         {
             wl_display_cancel_read(fDisplay);
-            fQuitRequested = true;
+            context.RequestQuit();
             return;
         }
 
@@ -272,7 +334,7 @@ namespace LWS::internal
         if (pollResult > 0 && (descriptors[DisplayDescriptor].revents & POLLIN) != 0)
         {
             if (wl_display_read_events(fDisplay) < 0)
-                fQuitRequested = true;
+                context.RequestQuit();
         }
         else
         {
@@ -281,20 +343,19 @@ namespace LWS::internal
         if (pollResult > 0 && (descriptors[DisplayDescriptor].revents & POLLOUT) != 0 &&
             wl_display_flush(fDisplay) < 0 && errno != EAGAIN)
         {
-            fQuitRequested = true;
+            context.RequestQuit();
         }
+
+        if (pollResult > 0 && (descriptors[DisplayDescriptor].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+            context.RequestQuit();
 
         if (pollResult > 0 && (descriptors[WakeDescriptor].revents & POLLIN) != 0)
         {
-            uint64_t value = 0;
-            while (read(fWakeDescriptor, &value, sizeof(value)) > 0)
-            {
-            }
-            dispatchTasks();
+            PlatformContextAccess::DrainTasks(context);
         }
         else if (pollResult < 0 && errno != EINTR)
         {
-            fQuitRequested = true;
+            context.RequestQuit();
         }
 
         if (pollResult > 0 && (descriptors[KeyRepeatDescriptor].revents & POLLIN) != 0)
@@ -302,8 +363,8 @@ namespace LWS::internal
         if (pollResult > 0)
             fDragAndDropController.processEvents(descriptors[DropDescriptor].revents);
 
-        if (!fQuitRequested && wl_display_dispatch_pending(fDisplay) < 0)
-            fQuitRequested = true;
+        if (!PlatformContextAccess::QuitRequested(context) && wl_display_dispatch_pending(fDisplay) < 0)
+            context.RequestQuit();
     }
 
     void WaylandPlatformState::releaseObjects()
@@ -343,10 +404,10 @@ namespace LWS::internal
         fDisplay = nullptr;
         fWakeDescriptor = -1;
         fHasHostWindowFrame = false;
-        {
-            const std::scoped_lock lock(fTaskMutex);
-            fTasks.clear();
-        }
+        fSeatGlobals.clear();
+        fSelectedSeatName = 0;
+        fAdditionalSeatReported = false;
+        fInitialized = false;
     }
 }  // namespace LWS::internal
 

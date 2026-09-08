@@ -252,7 +252,7 @@ namespace LWS::internal
         {
             for (const std::filesystem::path& path : paths)
             {
-                if (window->getHandle() == 0 || !window->fDragAndDropEnabled)
+                if (window->surface() == nullptr || !window->fDragAndDropEnabled)
                     break;
                 window->dispatchEvent(EventDragDropFile{path});
             }

@@ -9,7 +9,7 @@ namespace LWS
       public:
 
         Cursor();
-        explicit Cursor(std::unique_ptr<ICursorBackend> impl);
+        explicit Cursor(std::unique_ptr<internal::ICursorBackend> impl);
         virtual ~Cursor() = default;
 
         Cursor(const Cursor&) = delete;
@@ -22,10 +22,10 @@ namespace LWS
         [[nodiscard]] Result setCustomCursor(const BitmapBuffer& bmp);
         BackendId backendId() const;
 
-        std::shared_ptr<ICursorBackend> getBackendShared() const;
+        std::shared_ptr<internal::ICursorBackend> getBackendShared() const;
 
       protected:
 
-        std::shared_ptr<ICursorBackend> impl_;
+        std::shared_ptr<internal::ICursorBackend> impl_;
     };
 }  // namespace LWS

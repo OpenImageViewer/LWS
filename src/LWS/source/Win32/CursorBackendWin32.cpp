@@ -81,7 +81,7 @@ namespace LWS
         SetCursor(getCursorHandle());
     }
 
-    Result CursorBackendWin32::setCustomCursor(const BitmapBuffer& bmp)
+    Result CursorBackendWin32::setCustomCursor(const BitmapBuffer& bmp, Point hotspot)
     {
         const auto layout = internal::validateBitmapBuffer(bmp);
         if (!layout.has_value() ||
@@ -160,8 +160,8 @@ namespace LWS
 
         ICONINFO icon_info{};
         icon_info.fIcon = FALSE;
-        icon_info.xHotspot = 0;
-        icon_info.yHotspot = 0;
+        icon_info.xHotspot = static_cast<DWORD>(hotspot.x);
+        icon_info.yHotspot = static_cast<DWORD>(hotspot.y);
         icon_info.hbmMask = mask_bitmap;
         icon_info.hbmColor = color_bitmap;
 
@@ -204,4 +204,12 @@ namespace LWS
         return LoadCursor(nullptr, IDC_ARROW);
     }
 }  // namespace LWS
+
+namespace LWS::internal
+{
+    std::unique_ptr<ICursorBackend> createDefaultCursorBackend()
+    {
+        return std::make_unique<CursorBackendWin32>();
+    }
+}  // namespace LWS::internal
 #endif

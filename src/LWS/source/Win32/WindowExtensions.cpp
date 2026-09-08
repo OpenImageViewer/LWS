@@ -13,7 +13,8 @@ namespace LWS::Win32
     {
         WindowBackendWin32* GetBackend(Window& window)
         {
-            IWindowBackend* backend = internal::WindowBackendAccess::Get(window);
+            window.GetPlatformContext().AssertCurrentThread();
+            internal::IWindowBackend* backend = internal::WindowBackendAccess::Get(window);
             if (backend == nullptr || backend->backend() != BackendId::Win32)
                 return nullptr;
 
@@ -22,14 +23,24 @@ namespace LWS::Win32
         }
     }  // namespace
 
-    Result SetPlatformCallback(Window& window, PlatformCallback callback)
+    std::expected<HWND, Result> GetHwnd(Window& window)
     {
         WindowBackendWin32* backend = GetBackend(window);
         if (backend == nullptr)
-            return Result::NotSupported;
+            return std::unexpected(Result::NotSupported);
+        if (!window.IsCreated())
+            return std::unexpected(Result::InvalidState);
+        return reinterpret_cast<HWND>(backend->getHandle());
+    }
 
-        backend->setPlatformCallback(std::move(callback));
-        return Result::Success;
+    std::expected<HWND, Result> GetHwnd(const Window& window)
+    {
+        return GetHwnd(const_cast<Window&>(window));
+    }
+
+    Result SetPlatformCallback(Window& window, PlatformCallback callback)
+    {
+        return internal::WindowBackendAccess::SetPlatformCallback(window, std::move(callback));
     }
 
     Result SetMenuChar(Window& window, bool suppress)

@@ -1,6 +1,7 @@
 #include <LWS/Wayland/WindowBackendWayland.hpp>
 #include <LWS/Wayland/CursorBackendWayland.hpp>
 #include <LWS/source/internal/BitmapValidation.hpp>
+#include <LWS/Window.hpp>
 
 #ifdef LWS_PLATFORM_WAYLAND
 
@@ -112,6 +113,49 @@ namespace LWS
         {
             releasePointerLock();
             releaseBuffer();
+            captionBuffers.clear();
+            presentedBuffers.clear();
+            pendingBitmap.reset();
+            if (transparentBuffer != nullptr)
+                wl_buffer_destroy(transparentBuffer);
+            if (decoration != nullptr)
+                zxdg_toplevel_decoration_v1_destroy(decoration);
+            if (subsurface != nullptr)
+                wl_subsurface_destroy(subsurface);
+            if (captionSubsurface != nullptr)
+                wl_subsurface_destroy(captionSubsurface);
+            if (captionSurface != nullptr)
+                wl_surface_destroy(captionSurface);
+            if (toplevel != nullptr)
+                xdg_toplevel_destroy(toplevel);
+            if (shellSurface != nullptr)
+                xdg_surface_destroy(shellSurface);
+            if (surface != nullptr)
+                wl_surface_destroy(surface);
+        }
+
+        wl_buffer* getTransparentBuffer()
+        {
+            if (transparentBuffer != nullptr)
+                return transparentBuffer;
+
+            constexpr size_t bufferSize = sizeof(uint32_t);
+            const int fd = createAnonymousFile();
+            if (fd < 0 || ftruncate(fd, bufferSize) != 0)
+            {
+                if (fd >= 0)
+                    close(fd);
+                return nullptr;
+            }
+            // ftruncate zero-fills the new storage, yielding one transparent ARGB pixel.
+            wl_shm_pool* pool = wl_shm_create_pool(owner.fPlatform.sharedMemory(), fd, bufferSize);
+            transparentBuffer = pool != nullptr
+                                    ? wl_shm_pool_create_buffer(pool, 0, 1, 1, bufferSize, WL_SHM_FORMAT_ARGB8888)
+                                    : nullptr;
+            if (pool != nullptr)
+                wl_shm_pool_destroy(pool);
+            close(fd);
+            return transparentBuffer;
         }
 
         void releasePointerLock()
@@ -173,6 +217,7 @@ namespace LWS
         static void surfaceConfigure(void* data, xdg_surface* surface, uint32_t serial)
         {
             auto& state = *static_cast<NativeState*>(data);
+            WindowBackendWayland& owner = state.owner;
             xdg_surface_ack_configure(surface, serial);
             state.configured = true;
             if (state.pendingToplevelConfigure.has_value())
@@ -181,11 +226,13 @@ namespace LWS
                 state.pendingToplevelConfigure.reset();
                 state.owner.handleToplevelConfigure(configure.size, configure.maximized, configure.fullscreen);
             }
-            if (state.owner.fEraseBackground)
-                state.owner.paintBackground();
+            if (owner.fNativeState == nullptr)
+                return;
+            if (owner.fEraseBackground)
+                owner.paintBackground();
             else
-                state.owner.dispatchEvent(EventPaint{});
-            state.owner.paintCaption();
+                owner.dispatchEvent(EventPaint{});
+            owner.paintCaption();
         }
 
         static void toplevelConfigure(void* data, xdg_toplevel*, int32_t width, int32_t height, wl_array* states)
@@ -211,9 +258,9 @@ namespace LWS
         static void toplevelClose(void* data, xdg_toplevel*)
         {
             auto& owner = static_cast<NativeState*>(data)->owner;
-            if (!owner.dispatchEvent(EventClose{}))
+            if (owner.dispatchEvent(EventCloseRequested{}) == EventResponse::Unhandled)
             {
-                owner.destroy();
+                std::ignore = owner.owner().Destroy();
             }
         }
 
@@ -225,10 +272,11 @@ namespace LWS
             state.decorationMode = mode == ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
                                        ? internal::WaylandDecorationMode::ServerSide
                                        : internal::WaylandDecorationMode::ClientSide;
-            state.owner.updateWindowGeometry();
-            state.owner.paintBackground();
-            state.owner.paintCaption();
-            state.owner.updateChildInputRegions();
+            WindowBackendWayland& owner = state.owner;
+            owner.updateWindowGeometry();
+            owner.paintBackground();
+            owner.paintCaption();
+            owner.updateChildInputRegions();
         }
 
         static void bufferRelease(void* data, wl_buffer*)
@@ -266,9 +314,13 @@ namespace LWS
         std::optional<CursorShape> frameCursorShape;
         std::optional<Rect> inputRect;
         int32_t captionWidth = 0;
+        wl_buffer* transparentBuffer = nullptr;
     };
 
-    WindowBackendWayland::WindowBackendWayland() = default;
+    WindowBackendWayland::WindowBackendWayland(Window& owner, internal::WaylandPlatformState& platform)
+        : internal::IWindowBackend(owner), fPlatform(platform)
+    {
+    }
 
     WindowBackendWayland::~WindowBackendWayland()
     {
@@ -277,14 +329,14 @@ namespace LWS
             cursor->detach(*this);
     }
 
-    Result WindowBackendWayland::create(const WindowConfig& config)
+    Result WindowBackendWayland::create(const internal::NativeWindowConfig& config)
     {
         if (fNativeState != nullptr)
         {
             return Result::AlreadyCreated;
         }
 
-        auto& platform = internal::WaylandPlatformState::current();
+        auto& platform = fPlatform;
         if (!platform.isInitialized())
         {
             return Result::PlatformNotInitialized;
@@ -308,15 +360,11 @@ namespace LWS
         {
             return Result::Failure;
         }
-
         if (isChildWindow())
         {
             const Result result = createSubsurface(*native);
             if (result != Result::Success)
-            {
-                wl_surface_destroy(native->surface);
                 return result;
-            }
         }
         else
         {
@@ -324,34 +372,19 @@ namespace LWS
             native->toplevel = native->shellSurface != nullptr ? xdg_surface_get_toplevel(native->shellSurface)
                                                                : nullptr;
             if (native->shellSurface == nullptr || native->toplevel == nullptr)
-            {
-                if (native->toplevel != nullptr)
-                    xdg_toplevel_destroy(native->toplevel);
-                if (native->shellSurface != nullptr)
-                    xdg_surface_destroy(native->shellSurface);
-                wl_surface_destroy(native->surface);
                 return Result::Failure;
-            }
 
             if (captionMode() == internal::WaylandCaptionMode::Detached)
             {
                 native->captionSurface = wl_compositor_create_surface(platform.compositor());
+
                 native->captionSubsurface = native->captionSurface != nullptr
                                                 ? wl_subcompositor_get_subsurface(platform.subcompositor(),
                                                                                   native->captionSurface,
                                                                                   native->surface)
                                                 : nullptr;
                 if (native->captionSurface == nullptr || native->captionSubsurface == nullptr)
-                {
-                    if (native->captionSubsurface != nullptr)
-                        wl_subsurface_destroy(native->captionSubsurface);
-                    if (native->captionSurface != nullptr)
-                        wl_surface_destroy(native->captionSurface);
-                    xdg_toplevel_destroy(native->toplevel);
-                    xdg_surface_destroy(native->shellSurface);
-                    wl_surface_destroy(native->surface);
                     return Result::Failure;
-                }
                 wl_subsurface_set_position(native->captionSubsurface, 0, -internal::waylandCaptionHeight);
                 wl_subsurface_set_desync(native->captionSubsurface);
             }
@@ -367,11 +400,8 @@ namespace LWS
             xdg_toplevel_add_listener(native->toplevel, &toplevelListener, native.get());
         }
 
-        fWlSurface = native->surface;
-        fXdgSurface = native->shellSurface;
-        fXdgToplevel = native->toplevel;
         fNativeState = std::move(native);
-        platform.registerWindow(static_cast<wl_surface*>(fWlSurface), *this);
+        platform.registerWindow(fNativeState->surface, *this);
         if (fNativeState->captionSurface != nullptr)
             platform.registerWindow(fNativeState->captionSurface, *this, internal::WaylandSurfaceRole::Caption);
 
@@ -379,6 +409,11 @@ namespace LWS
         {
             fNativeState->decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(platform.decorationManager(),
                                                                                           fNativeState->toplevel);
+            if (fNativeState->decoration == nullptr)
+            {
+                destroy();
+                return Result::Failure;
+            }
             fNativeState->decorationMode = internal::WaylandDecorationMode::Pending;
             static constexpr zxdg_toplevel_decoration_v1_listener decorationListener{
                 .configure = NativeState::decorationConfigure,
@@ -402,10 +437,13 @@ namespace LWS
             {
                 wl_surface_commit(fNativeState->surface);
             }
+            wl_surface_commit(fParentBackend->fNativeState->surface);
         }
         else
         {
             setTitle(fTitle);
+            if (!fAppId.empty())
+                setAppId(fAppId);
             setMinMaxSize(fMinSize, fMaxSize);
             setDisplayState(fDisplayState);
             wl_surface_commit(fNativeState->surface);
@@ -432,26 +470,10 @@ namespace LWS
         std::ignore = setPointerLocked(false);
         auto native = std::move(fNativeState);
         if (native->captionSurface != nullptr)
-            internal::WaylandPlatformState::current().unregisterWindow(native->captionSurface);
-        internal::WaylandPlatformState::current().unregisterWindow(native->surface);
-        native->releaseBuffer();
-        if (native->decoration != nullptr)
-            zxdg_toplevel_decoration_v1_destroy(native->decoration);
-        if (native->subsurface != nullptr)
-            wl_subsurface_destroy(native->subsurface);
-        if (native->captionSubsurface != nullptr)
-            wl_subsurface_destroy(native->captionSubsurface);
-        if (native->captionSurface != nullptr)
-            wl_surface_destroy(native->captionSurface);
-        if (native->toplevel != nullptr)
-            xdg_toplevel_destroy(native->toplevel);
-        if (native->shellSurface != nullptr)
-            xdg_surface_destroy(native->shellSurface);
-        wl_surface_destroy(native->surface);
-        fXdgToplevel = nullptr;
-        fXdgSurface = nullptr;
-        fWlSurface = nullptr;
+            fPlatform.unregisterWindow(native->captionSurface);
+        fPlatform.unregisterWindow(native->surface);
         fVisible = false;
+        native.reset();
         dispatchEvent(EventWindowDestroyed{});
     }
 
@@ -459,15 +481,15 @@ namespace LWS
     {
         if (fNativeState != nullptr && !fVisible)
         {
-            if (isChildWindow() && fNativeState->subsurface == nullptr)
+            fVisible = true;
+            if (isChildWindow())
             {
-                if (createSubsurface(*fNativeState) != Result::Success)
-                    return;
+
                 fNativeState->inputRect.reset();
                 updateSubsurfacePosition();
                 updateSubsurfaceInputRegion();
+                wl_surface_commit(fParentBackend->fNativeState->surface);
             }
-            fVisible = true;
             updateWindowGeometry();
             if (fNativeState->configured)
             {
@@ -490,35 +512,33 @@ namespace LWS
         {
             fVisible = false;
             fNativeState->pendingBitmap.reset();
-            wl_surface_attach(fNativeState->surface, nullptr, 0, 0);
-            wl_surface_commit(fNativeState->surface);
+            const bool hostFramedChild = fNativeState->subsurface != nullptr && fPlatform.hasHostWindowFrame();
+            // WSLg keeps the last host buffer visible after a null-buffer commit. Keep the borrowed wl_surface
+            // stable, but replace its visible content and input with one transparent pixel until show().
+            wl_buffer* transparent = hostFramedChild ? fNativeState->getTransparentBuffer() : nullptr;
+            if (transparent != nullptr)
+                wl_surface_damage(fNativeState->surface, 0, 0, 1, 1);
+            if (!hostFramedChild)
+                wl_surface_commit(fNativeState->surface);
             if (fNativeState->captionSurface != nullptr)
             {
                 wl_surface_attach(fNativeState->captionSurface, nullptr, 0, 0);
                 wl_surface_commit(fNativeState->captionSurface);
             }
-            if (fNativeState->subsurface != nullptr && internal::WaylandPlatformState::current().hasHostWindowFrame())
+            if (hostFramedChild)
             {
-                auto& platform = internal::WaylandPlatformState::current();
-                wl_surface* replacementSurface = wl_compositor_create_surface(platform.compositor());
-                if (replacementSurface == nullptr)
-                    return;
-
-                // WSLg's RDPRAIL shell keeps a detached subsurface visible and hit-testable after a null-buffer
-                // commit. Replacing the child wl_surface removes that host surface; ordinary compositors keep the
-                // stable surface and use the standard unmap path above.
-                wl_subsurface_destroy(fNativeState->subsurface);
-                fNativeState->subsurface = nullptr;
-                platform.unregisterWindow(fNativeState->surface);
-                wl_surface_destroy(fNativeState->surface);
-                fNativeState->surface = replacementSurface;
-                fWlSurface = replacementSurface;
-                platform.registerWindow(replacementSurface, *this);
                 fNativeState->inputRect.reset();
+                updateSubsurfaceInputRegion();
+                wl_surface_commit(fParentBackend->fNativeState->surface);
             }
             if (!isChildWindow())
                 fNativeState->configured = false;
         }
+    }
+
+    bool WindowBackendWayland::isConfigured() const
+    {
+        return fNativeState != nullptr && fNativeState->configured;
     }
 
     bool WindowBackendWayland::getVisible() const
@@ -526,9 +546,9 @@ namespace LWS
         return fVisible;
     }
 
-    void WindowBackendWayland::setDisplayState(WindowDisplayState state)
+    void WindowBackendWayland::setDisplayState(WindowShowState state)
     {
-        if (state == WindowDisplayState::Maximized && fDisplayState == WindowDisplayState::Restored && !fFullScreen &&
+        if (state == WindowShowState::Maximized && fDisplayState == WindowShowState::Restored && !fFullScreen &&
             !fRestoredClientSize.has_value())
         {
             fRestoredClientSize = fSize;
@@ -542,19 +562,19 @@ namespace LWS
 
         switch (state)
         {
-            case WindowDisplayState::Minimized:
+            case WindowShowState::Minimized:
                 xdg_toplevel_set_minimized(fNativeState->toplevel);
                 break;
-            case WindowDisplayState::Maximized:
+            case WindowShowState::Maximized:
                 xdg_toplevel_set_maximized(fNativeState->toplevel);
                 break;
-            case WindowDisplayState::Restored:
+            case WindowShowState::Restored:
                 xdg_toplevel_unset_maximized(fNativeState->toplevel);
                 break;
         }
     }
 
-    WindowDisplayState WindowBackendWayland::getDisplayState() const
+    WindowShowState WindowBackendWayland::getDisplayState() const
     {
         return fDisplayState;
     }
@@ -602,7 +622,11 @@ namespace LWS
             paintBackground();
             paintCaption();
             if (fNativeState != nullptr)
-                dispatchEvent(EventResize{fSize});
+            {
+                const Size framebuffer = getClientSize();
+                std::ignore = dispatchEvent(
+                    EventResize{fSize});
+            }
             updateChildInputRegions();
         }
     }
@@ -611,16 +635,8 @@ namespace LWS
     {
         return fSize;
     }
-    Rect WindowBackendWayland::getClientRect() const
-    {
-        return {{0, 0}, fSize};
-    }
-    Size WindowBackendWayland::getWindowSize() const
-    {
-        return fSize;
-    }
 
-    void WindowBackendWayland::setPlacement(const WindowPlacement& placement)
+    void WindowBackendWayland::setPlacement(const internal::NativeWindowPlacement& placement)
     {
         const bool positionChanged = isChildWindow() && placement.position != fPosition;
         const bool sizeChanged = placement.size.x > 0 && placement.size.y > 0 && placement.size != fSize;
@@ -634,11 +650,6 @@ namespace LWS
             updateSubsurfaceInputRegion();
         if (placement.displayState != fDisplayState)
             setDisplayState(placement.displayState);
-    }
-
-    WindowPlacement WindowBackendWayland::getPlacement() const
-    {
-        return {getPosition(), fSize, fDisplayState};
     }
 
     void WindowBackendWayland::setMinMaxSize(Size minSize, Size maxSize)
@@ -691,7 +702,6 @@ namespace LWS
         return fWindowStyles;
     }
     void WindowBackendWayland::setForeground() {}
-    void WindowBackendWayland::setFocus() {}
     bool WindowBackendWayland::isInFocus() const
     {
         return fFocused;
@@ -725,10 +735,6 @@ namespace LWS
         paintBackground();
     }
 
-    LLUtils::Color WindowBackendWayland::getBackgroundColor() const
-    {
-        return fBackgroundColor;
-    }
     void WindowBackendWayland::setEraseBackground(bool erase)
     {
         fEraseBackground = erase;
@@ -740,12 +746,12 @@ namespace LWS
 
     void WindowBackendWayland::handleToplevelConfigure(Size size, bool maximized, bool fullscreen)
     {
-        const Size previousSize = fSize;
-        const WindowDisplayState displayState = maximized ? WindowDisplayState::Maximized
-                                                          : WindowDisplayState::Restored;
+        if (fNativeState == nullptr)
+            return;
+        const WindowShowState displayState = maximized ? WindowShowState::Maximized : WindowShowState::Restored;
         const bool displayStateChanged = displayState != fDisplayState;
         const bool constrained = fullscreen || maximized;
-        if (constrained && !fFullScreen && fDisplayState == WindowDisplayState::Restored &&
+        if (constrained && !fFullScreen && fDisplayState == WindowShowState::Restored &&
             !fRestoredClientSize.has_value())
         {
             fRestoredClientSize = fSize;
@@ -754,14 +760,9 @@ namespace LWS
 
         fFullScreen = fullscreen;
         if (fullscreen)
-        {
-            fFullScreenState = FullScreenState::SingleScreen;
-        }
-        else if (fFullScreenState != FullScreenState::None)
-        {
-            fFullScreenState = FullScreenState::Windowed;
-        }
-
+            fFullScreenState = internal::FullScreenState::SingleScreen;
+        else if (fFullScreenState != internal::FullScreenState::None)
+            fFullScreenState = internal::FullScreenState::Windowed;
         const bool hasConfiguredSize = size.x > 0 && size.y > 0;
         if (!constrained && fRestoredClientSize.has_value() && !hasConfiguredSize)
         {
@@ -780,15 +781,20 @@ namespace LWS
 
         updateWindowGeometry();
         if (displayStateChanged)
-            dispatchEvent(EventDisplayStateChanged{displayState});
-        if (fSize != previousSize)
-            dispatchEvent(EventResize{fSize});
+            std::ignore = dispatchEvent(EventShowStateChanged{displayState});
+        if (fNativeState != nullptr)
+        {
+            const Size framebuffer = getClientSize();
+            std::ignore = dispatchEvent(
+                EventResize{fSize});
+        }
         updateChildInputRegions();
     }
 
-    void WindowBackendWayland::setFullScreenState(FullScreenState state)
+    void WindowBackendWayland::setFullScreenState(internal::FullScreenState state)
     {
-        const bool fullscreen = state != FullScreenState::None && state != FullScreenState::Windowed;
+        const bool fullscreen = state != internal::FullScreenState::None &&
+                                state != internal::FullScreenState::Windowed;
         if (fullscreen && !fFullScreen && !fRestoredClientSize.has_value())
             fRestoredClientSize = fSize;
         fFullScreenState = state;
@@ -810,25 +816,12 @@ namespace LWS
         }
     }
 
-    FullScreenState WindowBackendWayland::getFullScreenState() const
+    internal::FullScreenState WindowBackendWayland::getFullScreenState() const
     {
         return fFullScreenState;
     }
-    bool WindowBackendWayland::isFullScreen() const
-    {
-        return fFullScreen;
-    }
-
-    void WindowBackendWayland::toggleFullScreen(bool)
-    {
-        setFullScreenState(fFullScreen ? FullScreenState::Windowed : FullScreenState::SingleScreen);
-    }
 
     bool WindowBackendWayland::isMouseInClientRect() const
-    {
-        return fMouseInside;
-    }
-    bool WindowBackendWayland::isUnderMouseCursor() const
     {
         return fMouseInside;
     }
@@ -836,14 +829,7 @@ namespace LWS
     {
         return fMousePosition;
     }
-    void WindowBackendWayland::setLockMouseToWindowMode(LockMouseToWindowMode mode)
-    {
-        fLockMode = mode;
-    }
-    LockMouseToWindowMode WindowBackendWayland::getLockMouseToWindowMode() const
-    {
-        return fLockMode;
-    }
+    void WindowBackendWayland::setLockMouseToWindowMode(internal::LockMouseToWindowMode) {}
     Result WindowBackendWayland::setPointerLocked(bool locked)
     {
         if (fNativeState == nullptr)
@@ -851,7 +837,7 @@ namespace LWS
         if (locked == fPointerLockRequested)
             return Result::Success;
 
-        auto& platform = internal::WaylandPlatformState::current();
+        auto& platform = fPlatform;
         if (locked && (platform.pointer() == nullptr || platform.pointerConstraints() == nullptr ||
                        platform.relativePointerManager() == nullptr))
             return Result::NotSupported;
@@ -891,15 +877,7 @@ namespace LWS
         }
         return Result::Success;
     }
-    void WindowBackendWayland::setDoubleClickMode(DoubleClickMode mode)
-    {
-        fDoubleClickMode = mode;
-    }
-    DoubleClickMode WindowBackendWayland::getDoubleClickMode() const
-    {
-        return fDoubleClickMode;
-    }
-    void WindowBackendWayland::setCursor(std::shared_ptr<ICursorBackend> cursor)
+    void WindowBackendWayland::setCursor(std::shared_ptr<internal::ICursorBackend> cursor)
     {
         if (auto* previous = dynamic_cast<CursorBackendWayland*>(fCursor.get()); previous != nullptr)
             previous->detach(*this);
@@ -907,12 +885,12 @@ namespace LWS
         if (auto* current = dynamic_cast<CursorBackendWayland*>(fCursor.get()); current != nullptr)
             current->attach(*this);
         if (fNativeState != nullptr && fNativeState->frameCursorShape.has_value())
-            internal::WaylandPlatformState::current().applyCursor(*this, *fNativeState->frameCursorShape, true);
+            fPlatform.applyCursor(*this, *fNativeState->frameCursorShape, true);
         else
             applyClientCursor();
     }
 
-    void WindowBackendWayland::setParent(IWindowBackend* parent)
+    void WindowBackendWayland::setParent(internal::IWindowBackend* parent)
     {
         if (fParentBackend != nullptr)
             std::erase(fParentBackend->fChildBackends, this);
@@ -932,7 +910,7 @@ namespace LWS
 
     Result WindowBackendWayland::enableDragAndDrop(bool enable)
     {
-        auto& platform = internal::WaylandPlatformState::current();
+        auto& platform = fPlatform;
         if (!platform.isInitialized())
             return Result::PlatformNotInitialized;
         if (enable && !platform.supportsDragAndDrop())
@@ -941,36 +919,20 @@ namespace LWS
         return Result::Success;
     }
 
-    EventListenerToken WindowBackendWayland::addListener(EventCallback callback)
-    {
-        const EventListenerToken token = fNextListenerToken++;
-        fListeners.emplace_back(token, std::move(callback));
-        return token;
-    }
-
-    void WindowBackendWayland::removeListener(EventListenerToken token)
-    {
-        std::erase_if(fListeners, [token](const auto& listener) { return listener.first == token; });
-    }
-
-    void WindowBackendWayland::injectRawEvent(void* platformEvent)
-    {
-        dispatchEvent(EventRawPlatform{std::to_underlying(BackendId::Wayland), platformEvent});
-    }
-
     Result WindowBackendWayland::presentBitmap(const BitmapBuffer& bitmap)
     {
         if (fNativeState == nullptr)
             return Result::NotCreated;
         if (!fVisible || !fNativeState->configured)
             return Result::InvalidState;
-        if (fSize.x <= 0 || fSize.y <= 0 || fSize.x > std::numeric_limits<int32_t>::max() / 4)
+        const Size framebuffer = getClientSize();
+        if (framebuffer.x <= 0 || framebuffer.y <= 0 || framebuffer.x > std::numeric_limits<int32_t>::max() / 4)
             return Result::Failure;
         const auto layout = internal::validateBitmapBuffer(bitmap);
-        const size_t tightPitch = static_cast<size_t>(fSize.x) * 4U;
+        const size_t tightPitch = static_cast<size_t>(framebuffer.x) * 4U;
         if (!layout.has_value() || bitmap.format != BitmapPixelFormat::Bgra8Premultiplied ||
-            bitmap.rowOrder != BitmapRowOrder::TopDown || bitmap.width != static_cast<uint32_t>(fSize.x) ||
-            bitmap.height != static_cast<uint32_t>(fSize.y) || layout->rowPitch != tightPitch)
+            bitmap.rowOrder != BitmapRowOrder::TopDown || bitmap.width != static_cast<uint32_t>(framebuffer.x) ||
+            bitmap.height != static_cast<uint32_t>(framebuffer.y) || layout->rowPitch != tightPitch)
         {
             return Result::Failure;
         }
@@ -1020,9 +982,8 @@ namespace LWS
                 return Result::Failure;
             }
 
-            wl_shm_pool* pool = wl_shm_create_pool(internal::WaylandPlatformState::current().sharedMemory(), fd,
-                                                   static_cast<int32_t>(bufferSize));
-            wl_buffer* buffer = pool != nullptr ? wl_shm_pool_create_buffer(pool, 0, fSize.x, fSize.y,
+            wl_shm_pool* pool = wl_shm_create_pool(fPlatform.sharedMemory(), fd, static_cast<int32_t>(bufferSize));
+            wl_buffer* buffer = pool != nullptr ? wl_shm_pool_create_buffer(pool, 0, framebuffer.x, framebuffer.y,
                                                                             static_cast<int32_t>(tightPitch),
                                                                             WL_SHM_FORMAT_ARGB8888)
                                                 : nullptr;
@@ -1051,7 +1012,7 @@ namespace LWS
         presented->busy = true;
         wl_surface_attach(fNativeState->surface, presented->buffer, 0, 0);
         if (wl_surface_get_version(fNativeState->surface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
-            wl_surface_damage_buffer(fNativeState->surface, 0, 0, fSize.x, fSize.y);
+            wl_surface_damage_buffer(fNativeState->surface, 0, 0, framebuffer.x, framebuffer.y);
         else
             wl_surface_damage(fNativeState->surface, 0, 0, fSize.x, fSize.y);
         wl_surface_commit(fNativeState->surface);
@@ -1075,7 +1036,12 @@ namespace LWS
 
     Handle WindowBackendWayland::getHandle() const
     {
-        return reinterpret_cast<Handle>(fWlSurface);
+        return reinterpret_cast<Handle>(surface());
+    }
+
+    void* WindowBackendWayland::surface() const
+    {
+        return fNativeState != nullptr ? fNativeState->surface : nullptr;
     }
 
     void WindowBackendWayland::handlePointerEnter(Point position, internal::WaylandSurfaceRole surfaceRole)
@@ -1154,20 +1120,19 @@ namespace LWS
                 switch (hit.action)
                 {
                     case internal::WaylandFrameAction::Close:
-                        if (!dispatchEvent(EventClose{}))
-                            destroy();
+                        if (dispatchEvent(EventCloseRequested{}) == EventResponse::Unhandled)
+                            std::ignore = owner().Destroy();
                         break;
                     case internal::WaylandFrameAction::Move:
                     {
-                        if (fDoubleClickMode == DoubleClickMode::Default && isCaptionDoubleClick(time, position))
+                        if (isCaptionDoubleClick(time, position))
                         {
-                            setDisplayState(fDisplayState == WindowDisplayState::Maximized
-                                                ? WindowDisplayState::Restored
-                                                : WindowDisplayState::Maximized);
+                            setDisplayState(fDisplayState == WindowShowState::Maximized ? WindowShowState::Restored
+                                                                                        : WindowShowState::Maximized);
                         }
                         else if (fNativeState != nullptr && fNativeState->toplevel != nullptr)
                         {
-                            auto& platform = internal::WaylandPlatformState::current();
+                            auto& platform = fPlatform;
                             xdg_toplevel_move(fNativeState->toplevel, platform.seat(), platform.pointerButtonSerial());
                         }
                         break;
@@ -1225,10 +1190,14 @@ namespace LWS
 
     void WindowBackendWayland::setAppId(const std::string& appId)
     {
+        fAppId = appId;
         if (fNativeState != nullptr && fNativeState->toplevel != nullptr)
-        {
-            xdg_toplevel_set_app_id(fNativeState->toplevel, appId.c_str());
-        }
+            xdg_toplevel_set_app_id(fNativeState->toplevel, fAppId.c_str());
+    }
+
+    wl_display* WindowBackendWayland::display() const
+    {
+        return fPlatform.display();
     }
 
     WindowBackendWayland* WindowBackendWayland::dragDropTarget()
@@ -1239,32 +1208,10 @@ namespace LWS
         return window;
     }
 
-    bool WindowBackendWayland::dispatchEvent(const AnyEvent& event)
-    {
-        std::vector<EventListenerToken> tokens;
-        tokens.reserve(fListeners.size());
-        for (const auto& [token, callback] : fListeners)
-        {
-            tokens.push_back(token);
-        }
-
-        bool handled = false;
-        for (EventListenerToken token : tokens)
-        {
-            const auto item = std::ranges::find(fListeners, token, &decltype(fListeners)::value_type::first);
-            if (item != fListeners.end() && item->second(event))
-            {
-                handled = true;
-                break;
-            }
-        }
-        return handled;
-    }
-
     void WindowBackendWayland::applyCursor(CursorShape shape, bool visible)
     {
         if (fNativeState == nullptr || !fNativeState->frameCursorShape.has_value())
-            internal::WaylandPlatformState::current().applyCursor(*this, shape, visible);
+            fPlatform.applyCursor(*this, shape, visible);
     }
 
     void WindowBackendWayland::applyClientCursor()
@@ -1272,7 +1219,7 @@ namespace LWS
         if (auto* waylandCursor = dynamic_cast<CursorBackendWayland*>(fCursor.get()); waylandCursor != nullptr)
             waylandCursor->apply();
         else
-            internal::WaylandPlatformState::current().applyCursor(*this, CursorShape::Arrow, true);
+            fPlatform.applyCursor(*this, CursorShape::Arrow, true);
     }
 
     void WindowBackendWayland::applyFrameCursor(const internal::WaylandFrameHit& hit)
@@ -1310,7 +1257,7 @@ namespace LWS
             if (fNativeState->frameCursorShape != shape)
             {
                 fNativeState->frameCursorShape = shape;
-                internal::WaylandPlatformState::current().applyCursor(*this, *shape, true);
+                fPlatform.applyCursor(*this, *shape, true);
             }
         }
         else if (fNativeState->frameCursorShape.has_value())
@@ -1325,7 +1272,7 @@ namespace LWS
         if (edge == internal::WaylandResizeEdge::None || !canResize())
             return false;
 
-        auto& platform = internal::WaylandPlatformState::current();
+        auto& platform = fPlatform;
         if (platform.seat() == nullptr || platform.pointerButtonSerial() == 0)
             return false;
 
@@ -1342,7 +1289,7 @@ namespace LWS
 
     Result WindowBackendWayland::createSubsurface(NativeState& nativeState)
     {
-        auto& platform = internal::WaylandPlatformState::current();
+        auto& platform = fPlatform;
         if (platform.subcompositor() == nullptr)
             return Result::NotSupported;
         if (fParentBackend == nullptr || fParentBackend->fNativeState == nullptr)
@@ -1365,18 +1312,16 @@ namespace LWS
     internal::WaylandCaptionMode WindowBackendWayland::captionMode() const
     {
         const bool captionStyle = (std::to_underlying(fWindowStyles) & std::to_underlying(WindowStyle::Caption)) != 0;
-        return internal::waylandCaptionMode(isChildWindow(),
-                                            internal::WaylandPlatformState::current().hasHostWindowFrame(),
-                                            decorationMode(), captionStyle);
+        return internal::waylandCaptionMode(isChildWindow(), fPlatform.hasHostWindowFrame(), decorationMode(),
+                                            captionStyle);
     }
 
     internal::WaylandDecorationMode WindowBackendWayland::decorationMode() const
     {
         if (fNativeState != nullptr && fNativeState->decoration != nullptr)
             return fNativeState->decorationMode;
-        return internal::WaylandPlatformState::current().decorationManager() == nullptr
-                   ? internal::WaylandDecorationMode::None
-                   : internal::WaylandDecorationMode::Pending;
+        return fPlatform.decorationManager() == nullptr ? internal::WaylandDecorationMode::None
+                                                        : internal::WaylandDecorationMode::Pending;
     }
 
     internal::WaylandFrameHit WindowBackendWayland::frameHit(Point position,
@@ -1404,7 +1349,7 @@ namespace LWS
 
     bool WindowBackendWayland::isChildWindow() const
     {
-        return (std::to_underlying(fWindowStyles) & std::to_underlying(WindowStyle::ChildWindow)) != 0;
+        return fParentBackend != nullptr;
     }
 
     void WindowBackendWayland::updateSubsurfacePosition()
@@ -1428,7 +1373,9 @@ namespace LWS
                                                (fParentBackend->showsClientSideDecorations() ||
                                                 fParentBackend->showsDetachedCaption());
         const Size parentSize = fParentBackend != nullptr ? fParentBackend->fSize : Size{};
-        const Rect inputRect = internal::waylandChildInputRect(fPosition, fSize, parentSize, preserveParentResizeFrame);
+        const Rect inputRect = fVisible ? internal::waylandChildInputRect(fPosition, fSize, parentSize,
+                                                                          preserveParentResizeFrame)
+                                        : Rect{};
         const Point topLeft = inputRect.GetCorner(LLUtils::TopLeft);
         const Point bottomRight = inputRect.GetCorner(LLUtils::BottomRight);
         if (fNativeState->inputRect.has_value() && fNativeState->inputRect->GetCorner(LLUtils::TopLeft) == topLeft &&
@@ -1437,7 +1384,7 @@ namespace LWS
             return;
         }
 
-        wl_region* region = wl_compositor_create_region(internal::WaylandPlatformState::current().compositor());
+        wl_region* region = wl_compositor_create_region(fPlatform.compositor());
         if (region == nullptr)
             return;
         if (!inputRect.IsEmpty())
@@ -1522,7 +1469,7 @@ namespace LWS
             return;
         }
 
-        wl_shm_pool* pool = wl_shm_create_pool(internal::WaylandPlatformState::current().sharedMemory(), fd,
+        wl_shm_pool* pool = wl_shm_create_pool(fPlatform.sharedMemory(), fd,
                                                static_cast<int32_t>(bufferSize));
         wl_buffer* buffer = pool != nullptr
                                 ? wl_shm_pool_create_buffer(pool, 0, fSize.x, bufferHeight,
@@ -1618,7 +1565,7 @@ namespace LWS
             return;
         }
 
-        wl_shm_pool* pool = wl_shm_create_pool(internal::WaylandPlatformState::current().sharedMemory(), fd,
+        wl_shm_pool* pool = wl_shm_create_pool(fPlatform.sharedMemory(), fd,
                                                static_cast<int32_t>(bufferSize));
         wl_buffer* buffer = pool != nullptr
                                 ? wl_shm_pool_create_buffer(pool, 0, fSize.x, internal::waylandCaptionHeight,

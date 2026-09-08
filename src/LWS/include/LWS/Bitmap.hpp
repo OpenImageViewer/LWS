@@ -1,12 +1,37 @@
 #pragma once
 
-#include <LWS/interfaces/backends.hpp>
 #include <LLUtils/Color.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <span>
 
 namespace LWS
 {
+    enum class BitmapPixelFormat
+    {
+        Bgr8,
+        Bgra8,
+        Bgra8Premultiplied
+    };
+
+    enum class BitmapRowOrder
+    {
+        TopDown,
+        BottomUp
+    };
+
+    struct BitmapBuffer
+    {
+        std::span<const std::byte> pixels;
+        BitmapPixelFormat format = BitmapPixelFormat::Bgra8Premultiplied;
+        BitmapRowOrder rowOrder = BitmapRowOrder::TopDown;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t rowPitch = 0;
+    };
+
     class Bitmap;
     using BitmapSharedPtr = std::shared_ptr<Bitmap>;
 
