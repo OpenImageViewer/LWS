@@ -3,11 +3,18 @@
 #include <LWS/Window.hpp>
 #include <LLUtils/StringDefs.h>
 #include <LLUtils/Colors.h>
+#ifdef LWS_HAS_WIN32_BACKEND
+    #include <LWS/Win32/Platform.hpp>
+#endif
 
 int main()
 {
     using namespace LWS;
 
+#ifdef LWS_HAS_WIN32_BACKEND
+    if (Win32::BootstrapProcess() != Result::Success)
+        return 1;
+#endif
     PlatformContext platform;
     const PlatformConfig platformConfig{
 #ifdef LWS_HAS_WIN32_BACKEND

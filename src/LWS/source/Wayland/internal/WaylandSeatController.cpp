@@ -324,7 +324,8 @@ namespace LWS::internal
         if (fPointerWindow == &window)
         {
             fCursorController.apply(shape, visible, fPointer, fPointerEnterSerial, fPlatform.compositor(),
-                                    fPlatform.sharedMemory());
+                                    fPlatform.sharedMemory(),
+                                    std::max(1, static_cast<int32_t>(std::ceil(window.contentScale()))));
         }
     }
 

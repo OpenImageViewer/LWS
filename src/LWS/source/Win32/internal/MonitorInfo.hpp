@@ -1,8 +1,6 @@
 #pragma once
 
 #include <Windows.h>
-#include <ShellScalingApi.h>
-
 #include <cstdint>
 #include <map>
 #include <vector>

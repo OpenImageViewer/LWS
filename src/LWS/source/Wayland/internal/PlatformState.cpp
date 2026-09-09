@@ -16,7 +16,7 @@
 namespace LWS::internal
 {
     WaylandPlatformState::WaylandPlatformState()
-        : fSeatController(*this), fDragAndDropController(*this)
+        : fSeatController(*this), fDragAndDropController(*this), fOutputManager(*this)
     {
     }
 
@@ -192,6 +192,21 @@ namespace LWS::internal
         fSeatController.applyCursor(window, shape, visible);
     }
 
+    void WaylandPlatformState::outputChanged(wl_output* output, bool removed)
+    {
+        std::vector<wl_surface*> surfaces;
+        for (const auto& [surface, registration] : fWindows)
+        {
+            if (registration.role == WaylandSurfaceRole::Content)
+                surfaces.push_back(surface);
+        }
+        for (wl_surface* surface : surfaces)
+        {
+            if (WindowBackendWayland* window = findWindow(surface); window != nullptr)
+                window->handleOutputChange(output, removed);
+        }
+    }
+
     void WaylandPlatformState::registryGlobal(void* data, wl_registry* registry, uint32_t name, const char* interface,
                                               uint32_t version)
     {
@@ -233,7 +248,16 @@ namespace LWS::internal
             state.fRelativePointerManager = static_cast<zwp_relative_pointer_manager_v1*>(
                 wl_registry_bind(registry, name, &zwp_relative_pointer_manager_v1_interface, 1));
         }
-
+        else if (std::strcmp(interface, wp_fractional_scale_manager_v1_interface.name) == 0)
+        {
+            state.fFractionalScaleManager = static_cast<wp_fractional_scale_manager_v1*>(
+                wl_registry_bind(registry, name, &wp_fractional_scale_manager_v1_interface, 1));
+        }
+        else if (std::strcmp(interface, wp_viewporter_interface.name) == 0)
+        {
+            state.fViewporter = static_cast<wp_viewporter*>(
+                wl_registry_bind(registry, name, &wp_viewporter_interface, 1));
+        }
         else if (std::strcmp(interface, wl_data_device_manager_interface.name) == 0)
         {
             state.fDragAndDropController.bindManager(registry, name, version);
@@ -381,6 +405,10 @@ namespace LWS::internal
             zwp_relative_pointer_manager_v1_destroy(fRelativePointerManager);
         if (fPointerConstraints != nullptr)
             zwp_pointer_constraints_v1_destroy(fPointerConstraints);
+        if (fFractionalScaleManager != nullptr)
+            wp_fractional_scale_manager_v1_destroy(fFractionalScaleManager);
+        if (fViewporter != nullptr)
+            wp_viewporter_destroy(fViewporter);
         if (fSharedMemory != nullptr)
             wl_shm_destroy(fSharedMemory);
         if (fSubcompositor != nullptr)
@@ -397,6 +425,8 @@ namespace LWS::internal
         fDecorationManager = nullptr;
         fRelativePointerManager = nullptr;
         fPointerConstraints = nullptr;
+        fFractionalScaleManager = nullptr;
+        fViewporter = nullptr;
         fSharedMemory = nullptr;
         fSubcompositor = nullptr;
         fCompositor = nullptr;

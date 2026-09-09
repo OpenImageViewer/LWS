@@ -13,6 +13,7 @@
     #include <cstdlib>
     #include <span>
     #include <string_view>
+    #include <utility>
 
     #include <wayland-client.h>
 
@@ -127,16 +128,26 @@ namespace LWS::internal
     #endif
         }
 
-        void initialize(wl_compositor* compositor, wl_shm* sharedMemory)
+        void initialize(wl_compositor* compositor, wl_shm* sharedMemory, int32_t requestedScale)
         {
             if (surface == nullptr)
                 surface = wl_compositor_create_surface(compositor);
+            if (surface == nullptr)
+                return;
     #ifdef LWS_HAS_WAYLAND_CURSOR
-            if (!themeLoaded)
+            if (!themeLoaded || scale != requestedScale)
             {
-                size = cursorSize();
+                if (theme != nullptr)
+                    wl_cursor_theme_destroy(std::exchange(theme, nullptr));
+                if (fallbackTheme != nullptr)
+                    wl_cursor_theme_destroy(std::exchange(fallbackTheme, nullptr));
+                fallbackThemeLoaded = false;
+                scale = requestedScale;
+                size = cursorSize() * scale;
                 theme = wl_cursor_theme_load(cursorTheme(), size, sharedMemory);
                 themeLoaded = true;
+                if (wl_surface_get_version(surface) >= WL_SURFACE_SET_BUFFER_SCALE_SINCE_VERSION)
+                    wl_surface_set_buffer_scale(surface, scale);
             }
     #endif
         }
@@ -163,6 +174,7 @@ namespace LWS::internal
         wl_cursor_theme* theme = nullptr;
         wl_cursor_theme* fallbackTheme = nullptr;
         int32_t size = defaultCursorSize;
+        int32_t scale = 1;
         bool themeLoaded = false;
         bool fallbackThemeLoaded = false;
     #endif
@@ -172,7 +184,7 @@ namespace LWS::internal
     WaylandCursorController::~WaylandCursorController() = default;
 
     void WaylandCursorController::apply(CursorShape shape, bool visible, wl_pointer* pointer, uint32_t enterSerial,
-                                        wl_compositor* compositor, wl_shm* sharedMemory)
+                                        wl_compositor* compositor, wl_shm* sharedMemory, int32_t scale)
     {
         if (pointer == nullptr || enterSerial == 0)
             return;
@@ -186,7 +198,7 @@ namespace LWS::internal
         if (compositor == nullptr || sharedMemory == nullptr)
             return;
 
-        fNativeState->initialize(compositor, sharedMemory);
+        fNativeState->initialize(compositor, sharedMemory, scale);
         wl_cursor* cursor = fNativeState->selectCursor(shape, sharedMemory);
         if (fNativeState->surface == nullptr || cursor == nullptr || cursor->image_count == 0)
             return;
@@ -194,8 +206,9 @@ namespace LWS::internal
         wl_cursor_image* image = cursor->images[0];
         if (wl_buffer* buffer = wl_cursor_image_get_buffer(image); buffer != nullptr)
         {
-            wl_pointer_set_cursor(pointer, enterSerial, fNativeState->surface, static_cast<int32_t>(image->hotspot_x),
-                                  static_cast<int32_t>(image->hotspot_y));
+            wl_pointer_set_cursor(pointer, enterSerial, fNativeState->surface,
+                                  static_cast<int32_t>(image->hotspot_x) / scale,
+                                  static_cast<int32_t>(image->hotspot_y) / scale);
             wl_surface_attach(fNativeState->surface, buffer, 0, 0);
             wl_surface_damage(fNativeState->surface, 0, 0, static_cast<int32_t>(image->width),
                               static_cast<int32_t>(image->height));
@@ -235,8 +248,7 @@ namespace LWS
 
     Result CursorBackendWayland::setCustomCursor(const BitmapBuffer&, Point)
     {
-        // Custom cursor buffers require explicit hotspot and lifetime information, which
-        // BitmapBuffer does not currently carry. Keep the current named cursor intact.
+        // Uploading custom cursor images is not implemented by the Wayland backend.
         return Result::NotSupported;
     }
 
@@ -257,14 +269,12 @@ namespace LWS
     }
 }  // namespace LWS
 
-#endif
-
-#ifdef LWS_PLATFORM_WAYLAND
 namespace LWS::internal
 {
     std::unique_ptr<ICursorBackend> createDefaultCursorBackend()
     {
         return std::make_unique<CursorBackendWayland>();
     }
-}
+}  // namespace LWS::internal
+
 #endif

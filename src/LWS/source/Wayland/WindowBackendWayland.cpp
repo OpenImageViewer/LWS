@@ -120,6 +120,12 @@ namespace LWS
                 wl_buffer_destroy(transparentBuffer);
             if (decoration != nullptr)
                 zxdg_toplevel_decoration_v1_destroy(decoration);
+            if (fractionalScale != nullptr)
+                wp_fractional_scale_v1_destroy(fractionalScale);
+            if (viewport != nullptr)
+                wp_viewport_destroy(viewport);
+            if (captionViewport != nullptr)
+                wp_viewport_destroy(captionViewport);
             if (subsurface != nullptr)
                 wl_subsurface_destroy(subsurface);
             if (captionSubsurface != nullptr)
@@ -290,6 +296,35 @@ namespace LWS
             }
         }
 
+        static void surfaceEnter(void* data, wl_surface*, wl_output* output)
+        {
+            auto& state = *static_cast<NativeState*>(data);
+            if (std::ranges::find(state.outputs, output) == state.outputs.end())
+                state.outputs.push_back(output);
+            state.owner.updateContentScale();
+        }
+
+        static void surfaceLeave(void* data, wl_surface*, wl_output* output)
+        {
+            auto& state = *static_cast<NativeState*>(data);
+            std::erase(state.outputs, output);
+            state.owner.updateContentScale();
+        }
+
+        static void preferredBufferScale(void* data, wl_surface*, int32_t scale)
+        {
+            auto& state = *static_cast<NativeState*>(data);
+            state.preferredBufferScaleValue = std::max(scale, 1);
+            state.owner.updateContentScale();
+        }
+
+        static void preferredBufferTransform(void*, wl_surface*, uint32_t) {}
+
+        static void preferredScale(void* data, wp_fractional_scale_v1*, uint32_t scale)
+        {
+            static_cast<NativeState*>(data)->owner.setContentScale(static_cast<double>(scale) / 120.0);
+        }
+
         WindowBackendWayland& owner;
         wl_surface* surface = nullptr;
         xdg_surface* shellSurface = nullptr;
@@ -314,6 +349,12 @@ namespace LWS
         std::optional<CursorShape> frameCursorShape;
         std::optional<Rect> inputRect;
         int32_t captionWidth = 0;
+        std::vector<wl_output*> outputs;
+        double scale = 1.0;
+        std::optional<int32_t> preferredBufferScaleValue;
+        wp_fractional_scale_v1* fractionalScale = nullptr;
+        wp_viewport* viewport = nullptr;
+        wp_viewport* captionViewport = nullptr;
         wl_buffer* transparentBuffer = nullptr;
     };
 
@@ -360,6 +401,26 @@ namespace LWS
         {
             return Result::Failure;
         }
+        static constexpr wl_surface_listener surfaceListener{
+            .enter = NativeState::surfaceEnter,
+            .leave = NativeState::surfaceLeave,
+            .preferred_buffer_scale = NativeState::preferredBufferScale,
+            .preferred_buffer_transform = NativeState::preferredBufferTransform,
+        };
+        wl_surface_add_listener(native->surface, &surfaceListener, native.get());
+        if (platform.fractionalScaleManager() != nullptr && platform.viewporter() != nullptr)
+        {
+            native->fractionalScale = wp_fractional_scale_manager_v1_get_fractional_scale(
+                platform.fractionalScaleManager(), native->surface);
+            native->viewport = wp_viewporter_get_viewport(platform.viewporter(), native->surface);
+            if (native->fractionalScale == nullptr || native->viewport == nullptr)
+                return Result::Failure;
+            static constexpr wp_fractional_scale_v1_listener fractionalListener{
+                .preferred_scale = NativeState::preferredScale,
+            };
+            wp_fractional_scale_v1_add_listener(native->fractionalScale, &fractionalListener, native.get());
+        }
+
         if (isChildWindow())
         {
             const Result result = createSubsurface(*native);
@@ -377,7 +438,12 @@ namespace LWS
             if (captionMode() == internal::WaylandCaptionMode::Detached)
             {
                 native->captionSurface = wl_compositor_create_surface(platform.compositor());
-
+                if (native->captionSurface != nullptr && platform.viewporter() != nullptr)
+                {
+                    native->captionViewport = wp_viewporter_get_viewport(platform.viewporter(), native->captionSurface);
+                    if (native->captionViewport == nullptr)
+                        return Result::Failure;
+                }
                 native->captionSubsurface = native->captionSurface != nullptr
                                                 ? wl_subcompositor_get_subsurface(platform.subcompositor(),
                                                                                   native->captionSurface,
@@ -484,7 +550,10 @@ namespace LWS
             fVisible = true;
             if (isChildWindow())
             {
-
+                if (fNativeState->viewport == nullptr &&
+                    wl_surface_get_version(fNativeState->surface) >= WL_SURFACE_SET_BUFFER_SCALE_SINCE_VERSION)
+                    wl_surface_set_buffer_scale(fNativeState->surface,
+                                                std::max(1, static_cast<int32_t>(std::lround(fNativeState->scale))));
                 fNativeState->inputRect.reset();
                 updateSubsurfacePosition();
                 updateSubsurfaceInputRegion();
@@ -516,6 +585,12 @@ namespace LWS
             // WSLg keeps the last host buffer visible after a null-buffer commit. Keep the borrowed wl_surface
             // stable, but replace its visible content and input with one transparent pixel until show().
             wl_buffer* transparent = hostFramedChild ? fNativeState->getTransparentBuffer() : nullptr;
+            if (transparent != nullptr && fNativeState->viewport != nullptr)
+                wp_viewport_set_destination(fNativeState->viewport, 1, 1);
+            else if (transparent != nullptr &&
+                     wl_surface_get_version(fNativeState->surface) >= WL_SURFACE_SET_BUFFER_SCALE_SINCE_VERSION)
+                wl_surface_set_buffer_scale(fNativeState->surface, 1);
+            wl_surface_attach(fNativeState->surface, transparent, 0, 0);
             if (transparent != nullptr)
                 wl_surface_damage(fNativeState->surface, 0, 0, 1, 1);
             if (!hostFramedChild)
@@ -626,9 +701,9 @@ namespace LWS
             paintCaption();
             if (fNativeState != nullptr)
             {
-                const Size framebuffer = getClientSize();
+                const Size framebuffer = getFramebufferSize();
                 std::ignore = dispatchEvent(
-                    EventResize{fSize});
+                    EventClientAreaSizeChanged{{{fSize.x, fSize.y}, {framebuffer.x, framebuffer.y}}});
             }
             updateChildInputRegions();
         }
@@ -638,7 +713,15 @@ namespace LWS
     {
         return fSize;
     }
-
+    Size WindowBackendWayland::getFramebufferSize() const
+    {
+        const double scale = fNativeState != nullptr ? fNativeState->scale : 1.0;
+        const double width = std::ceil(fSize.x * scale);
+        const double height = std::ceil(fSize.y * scale);
+        if (width > std::numeric_limits<int32_t>::max() || height > std::numeric_limits<int32_t>::max())
+            return {};
+        return {static_cast<int32_t>(width), static_cast<int32_t>(height)};
+    }
     void WindowBackendWayland::setPlacement(const internal::NativeWindowPlacement& placement)
     {
         const bool positionChanged = isChildWindow() && placement.position != fPosition;
@@ -749,6 +832,7 @@ namespace LWS
 
     void WindowBackendWayland::handleToplevelConfigure(Size size, bool maximized, bool fullscreen)
     {
+        updateContentScale();
         if (fNativeState == nullptr)
             return;
         const WindowShowState displayState = maximized ? WindowShowState::Maximized : WindowShowState::Restored;
@@ -787,9 +871,9 @@ namespace LWS
             std::ignore = dispatchEvent(EventShowStateChanged{displayState});
         if (fNativeState != nullptr)
         {
-            const Size framebuffer = getClientSize();
+            const Size framebuffer = getFramebufferSize();
             std::ignore = dispatchEvent(
-                EventResize{fSize});
+                EventClientAreaSizeChanged{{{fSize.x, fSize.y}, {framebuffer.x, framebuffer.y}}});
         }
         updateChildInputRegions();
     }
@@ -928,7 +1012,7 @@ namespace LWS
             return Result::NotCreated;
         if (!fVisible || !fNativeState->configured)
             return Result::InvalidState;
-        const Size framebuffer = getClientSize();
+        const Size framebuffer = getFramebufferSize();
         if (framebuffer.x <= 0 || framebuffer.y <= 0 || framebuffer.x > std::numeric_limits<int32_t>::max() / 4)
             return Result::Failure;
         const auto layout = internal::validateBitmapBuffer(bitmap);
@@ -1203,6 +1287,11 @@ namespace LWS
         return fPlatform.display();
     }
 
+    double WindowBackendWayland::contentScale() const
+    {
+        return fNativeState != nullptr ? fNativeState->scale : 1.0;
+    }
+
     WindowBackendWayland* WindowBackendWayland::dragDropTarget()
     {
         WindowBackendWayland* window = this;
@@ -1416,16 +1505,81 @@ namespace LWS
 
     void WindowBackendWayland::updateWindowGeometry()
     {
-        if (fNativeState == nullptr || fNativeState->shellSurface == nullptr || fSize.x <= 0 || fSize.y <= 0)
+        if (fNativeState == nullptr || fSize.x <= 0 || fSize.y <= 0)
             return;
 
-        const bool clientCaptionVisible = showsClientSideDecorations();
-        const bool detachedCaptionVisible = fVisible && showsDetachedCaption();
-        const int32_t captionHeight = clientCaptionVisible || detachedCaptionVisible ? internal::waylandCaptionHeight
-                                                                                     : 0;
-        xdg_surface_set_window_geometry(fNativeState->shellSurface, 0,
-                                        detachedCaptionVisible ? -internal::waylandCaptionHeight : 0, fSize.x,
-                                        fSize.y + captionHeight);
+        if (fSize.y > std::numeric_limits<int32_t>::max() - internal::waylandCaptionHeight)
+            return;
+        const int32_t contentCaptionHeight = showsClientSideDecorations() ? internal::waylandCaptionHeight : 0;
+        if (fNativeState->viewport != nullptr)
+            wp_viewport_set_destination(fNativeState->viewport, fSize.x, fSize.y + contentCaptionHeight);
+        if (fNativeState->captionViewport != nullptr)
+            wp_viewport_set_destination(fNativeState->captionViewport, fSize.x, internal::waylandCaptionHeight);
+        if (fNativeState->shellSurface != nullptr)
+        {
+            const bool detachedCaptionVisible = fVisible && showsDetachedCaption();
+            const int32_t captionHeight = detachedCaptionVisible ? internal::waylandCaptionHeight : contentCaptionHeight;
+            xdg_surface_set_window_geometry(fNativeState->shellSurface, 0,
+                                            detachedCaptionVisible ? -internal::waylandCaptionHeight : 0, fSize.x,
+                                            fSize.y + captionHeight);
+        }
+    }
+
+    void WindowBackendWayland::handleOutputChange(wl_output* output, bool removed)
+    {
+        if (fNativeState == nullptr || std::ranges::find(fNativeState->outputs, output) == fNativeState->outputs.end())
+            return;
+        if (removed)
+            std::erase(fNativeState->outputs, output);
+        updateContentScale();
+    }
+
+    void WindowBackendWayland::updateContentScale()
+    {
+        if (fNativeState == nullptr || fNativeState->fractionalScale != nullptr ||
+            wl_surface_get_version(fNativeState->surface) < WL_SURFACE_SET_BUFFER_SCALE_SINCE_VERSION)
+            return;
+        int32_t scale = fNativeState->preferredBufferScaleValue.value_or(1);
+        if (!fNativeState->preferredBufferScaleValue.has_value())
+        {
+            for (wl_output* output : fNativeState->outputs)
+                scale = std::max(scale, fPlatform.outputScale(output));
+        }
+        setContentScale(static_cast<double>(scale));
+    }
+
+    void WindowBackendWayland::setContentScale(double scale)
+    {
+        if (fNativeState == nullptr || !std::isfinite(scale) || scale <= 0.0 || scale == fNativeState->scale)
+            return;
+        fNativeState->scale = scale;
+        if (wl_surface_get_version(fNativeState->surface) >= WL_SURFACE_SET_BUFFER_SCALE_SINCE_VERSION)
+        {
+            const int32_t bufferScale = fNativeState->viewport != nullptr ? 1 :
+                                           std::max(1, static_cast<int32_t>(std::lround(scale)));
+            wl_surface_set_buffer_scale(fNativeState->surface, bufferScale);
+        }
+        if (fNativeState->captionSurface != nullptr &&
+            wl_surface_get_version(fNativeState->captionSurface) >= WL_SURFACE_SET_BUFFER_SCALE_SINCE_VERSION)
+        {
+            const int32_t bufferScale = fNativeState->captionViewport != nullptr ? 1 :
+                                           std::max(1, static_cast<int32_t>(std::lround(scale)));
+            wl_surface_set_buffer_scale(fNativeState->captionSurface, bufferScale);
+        }
+        updateWindowGeometry();
+        if (fPointerLockActive)
+            fPlatform.applyCursor(*this, CursorShape::Arrow, false);
+        else if (fNativeState->frameCursorShape.has_value())
+            fPlatform.applyCursor(*this, *fNativeState->frameCursorShape, true);
+        else
+            applyClientCursor();
+        const Size framebuffer = getFramebufferSize();
+        std::ignore = dispatchEvent(EventClientAreaSizeChanged{{{fSize.x, fSize.y}, {framebuffer.x, framebuffer.y}}});
+        if (fNativeState != nullptr && fVisible && fNativeState->configured)
+        {
+            paintBackground();
+            paintCaption();
+        }
     }
 
     void WindowBackendWayland::paintBackground()
@@ -1443,8 +1597,14 @@ namespace LWS
 
         fNativeState->releaseBuffer();
         constexpr size_t bytesPerPixel = 4;
-        const size_t width = static_cast<size_t>(fSize.x);
-        const int32_t bufferHeight = fSize.y + (showsClientSideDecorations() ? internal::waylandCaptionHeight : 0);
+        const double scale = fNativeState->scale;
+        const double scaledWidth = std::ceil(fSize.x * scale);
+        const double scaledHeight = std::ceil((static_cast<double>(fSize.y) +
+                                               (showsClientSideDecorations() ? internal::waylandCaptionHeight : 0)) * scale);
+        if (scaledWidth > std::numeric_limits<int32_t>::max() || scaledHeight > std::numeric_limits<int32_t>::max())
+            return;
+        const size_t width = static_cast<size_t>(scaledWidth);
+        const int32_t bufferHeight = static_cast<int32_t>(scaledHeight);
         const size_t height = static_cast<size_t>(bufferHeight);
         if (width > std::numeric_limits<size_t>::max() / bytesPerPixel / height)
         {
@@ -1452,7 +1612,7 @@ namespace LWS
         }
         const size_t stride = width * bytesPerPixel;
         const size_t bufferSize = stride * height;
-        if (bufferSize > static_cast<size_t>(std::numeric_limits<off_t>::max()))
+        if (bufferSize > static_cast<size_t>(std::numeric_limits<int32_t>::max()))
         {
             return;
         }
@@ -1472,10 +1632,9 @@ namespace LWS
             return;
         }
 
-        wl_shm_pool* pool = wl_shm_create_pool(fPlatform.sharedMemory(), fd,
-                                               static_cast<int32_t>(bufferSize));
+        wl_shm_pool* pool = wl_shm_create_pool(fPlatform.sharedMemory(), fd, static_cast<int32_t>(bufferSize));
         wl_buffer* buffer = pool != nullptr
-                                ? wl_shm_pool_create_buffer(pool, 0, fSize.x, bufferHeight,
+                                ? wl_shm_pool_create_buffer(pool, 0, static_cast<int32_t>(width), bufferHeight,
                                                             static_cast<int32_t>(stride), WL_SHM_FORMAT_ARGB8888)
                                 : nullptr;
         if (pool != nullptr)
@@ -1497,18 +1656,28 @@ namespace LWS
             constexpr uint32_t captionColor = 0xff303030U;
             constexpr uint32_t closeColor = 0xffc42b1cU;
             constexpr uint32_t glyphColor = 0xffffffffU;
-            std::fill_n(pixels, width * internal::waylandCaptionHeight, captionColor);
+            const int32_t captionHeight = static_cast<int32_t>(std::lround(internal::waylandCaptionHeight * scale));
+            std::fill_n(pixels, width * captionHeight, captionColor);
             if ((std::to_underlying(fWindowStyles) & std::to_underlying(WindowStyle::CloseButton)) != 0)
             {
-                const int32_t closeLeft = std::max(fSize.x - internal::waylandCloseButtonWidth, 0);
-                for (int32_t y = 0; y < internal::waylandCaptionHeight; ++y)
-                    std::fill_n(pixels + static_cast<size_t>(y) * width + closeLeft, fSize.x - closeLeft, closeColor);
-                const int32_t centerX = closeLeft + (fSize.x - closeLeft) / 2;
-                const int32_t centerY = internal::waylandCaptionHeight / 2;
-                for (int32_t offset = -5; offset <= 5; ++offset)
+                const int32_t closeLeft = static_cast<int32_t>(
+                    std::lround(std::max(fSize.x - internal::waylandCloseButtonWidth, 0) * scale));
+                for (int32_t y = 0; y < captionHeight; ++y)
+                    std::fill_n(pixels + static_cast<size_t>(y) * width + closeLeft,
+                                static_cast<int32_t>(width) - closeLeft, closeColor);
+                const int32_t centerX = closeLeft + (static_cast<int32_t>(width) - closeLeft) / 2;
+                const int32_t centerY = captionHeight / 2;
+                const int32_t glyphRadius = std::max(1, static_cast<int32_t>(std::lround(5.0 * scale)));
+                for (int32_t offset = -glyphRadius; offset <= glyphRadius; ++offset)
                 {
-                    pixels[static_cast<size_t>(centerY + offset) * width + centerX + offset] = glyphColor;
-                    pixels[static_cast<size_t>(centerY + offset) * width + centerX - offset] = glyphColor;
+                    const int32_t y = centerY + offset;
+                    if (y >= 0 && y < captionHeight)
+                    {
+                        if (centerX + offset >= 0 && centerX + offset < static_cast<int32_t>(width))
+                            pixels[static_cast<size_t>(y) * width + centerX + offset] = glyphColor;
+                        if (centerX - offset >= 0 && centerX - offset < static_cast<int32_t>(width))
+                            pixels[static_cast<size_t>(y) * width + centerX - offset] = glyphColor;
+                    }
                 }
             }
         }
@@ -1521,7 +1690,7 @@ namespace LWS
         wl_surface_attach(fNativeState->surface, buffer, 0, 0);
         if (wl_surface_get_version(fNativeState->surface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
         {
-            wl_surface_damage_buffer(fNativeState->surface, 0, 0, fSize.x, bufferHeight);
+            wl_surface_damage_buffer(fNativeState->surface, 0, 0, static_cast<int32_t>(width), bufferHeight);
         }
         else
         {
@@ -1549,9 +1718,16 @@ namespace LWS
         }
 
         constexpr size_t bytesPerPixel = 4;
-        const size_t width = static_cast<size_t>(fSize.x);
+        const double scale = fNativeState->scale;
+        const double scaledWidth = std::ceil(fSize.x * scale);
+        const double scaledHeight = std::ceil(internal::waylandCaptionHeight * scale);
+        if (scaledWidth > std::numeric_limits<int32_t>::max() || scaledHeight > std::numeric_limits<int32_t>::max() ||
+            scaledWidth * bytesPerPixel * scaledHeight > std::numeric_limits<int32_t>::max())
+            return;
+        const size_t width = static_cast<size_t>(scaledWidth);
+        const int32_t captionHeight = static_cast<int32_t>(scaledHeight);
         const size_t stride = width * bytesPerPixel;
-        const size_t bufferSize = stride * internal::waylandCaptionHeight;
+        const size_t bufferSize = stride * captionHeight;
         const int fd = createAnonymousFile();
         if (fd < 0 || bufferSize > static_cast<size_t>(std::numeric_limits<off_t>::max()) ||
             ftruncate(fd, static_cast<off_t>(bufferSize)) != 0)
@@ -1568,10 +1744,9 @@ namespace LWS
             return;
         }
 
-        wl_shm_pool* pool = wl_shm_create_pool(fPlatform.sharedMemory(), fd,
-                                               static_cast<int32_t>(bufferSize));
+        wl_shm_pool* pool = wl_shm_create_pool(fPlatform.sharedMemory(), fd, static_cast<int32_t>(bufferSize));
         wl_buffer* buffer = pool != nullptr
-                                ? wl_shm_pool_create_buffer(pool, 0, fSize.x, internal::waylandCaptionHeight,
+                                ? wl_shm_pool_create_buffer(pool, 0, static_cast<int32_t>(width), captionHeight,
                                                             static_cast<int32_t>(stride), WL_SHM_FORMAT_ARGB8888)
                                 : nullptr;
         if (pool != nullptr)
@@ -1587,22 +1762,33 @@ namespace LWS
         constexpr uint32_t captionColor = 0xff303030U;
         constexpr uint32_t closeColor = 0xffc42b1cU;
         constexpr uint32_t glyphColor = 0xffffffffU;
-        std::fill_n(pixels, width * internal::waylandCaptionHeight, captionColor);
+        std::fill_n(pixels, width * captionHeight, captionColor);
         const bool closeButton = (std::to_underlying(fWindowStyles) & std::to_underlying(WindowStyle::CloseButton)) !=
                                  0;
-        const int32_t titleRight = closeButton ? std::max(fSize.x - internal::waylandCloseButtonWidth, 0) : fSize.x;
-        internal::renderCaptionTitle({pixels, width * internal::waylandCaptionHeight}, fSize.x, fTitle, titleRight);
+        const int32_t titleRight = static_cast<int32_t>(
+            std::lround((closeButton ? std::max(fSize.x - internal::waylandCloseButtonWidth, 0) : fSize.x) * scale));
+        internal::renderCaptionTitle({pixels, width * captionHeight}, static_cast<int32_t>(width), captionHeight,
+                                     fTitle, titleRight, scale);
         if (closeButton)
         {
-            const int32_t closeLeft = std::max(fSize.x - internal::waylandCloseButtonWidth, 0);
-            for (int32_t y = 0; y < internal::waylandCaptionHeight; ++y)
-                std::fill_n(pixels + static_cast<size_t>(y) * width + closeLeft, fSize.x - closeLeft, closeColor);
-            const int32_t centerX = closeLeft + (fSize.x - closeLeft) / 2;
-            const int32_t centerY = internal::waylandCaptionHeight / 2;
-            for (int32_t offset = -5; offset <= 5; ++offset)
+            const int32_t closeLeft = static_cast<int32_t>(
+                std::lround(std::max(fSize.x - internal::waylandCloseButtonWidth, 0) * scale));
+            for (int32_t y = 0; y < captionHeight; ++y)
+                std::fill_n(pixels + static_cast<size_t>(y) * width + closeLeft,
+                            static_cast<int32_t>(width) - closeLeft, closeColor);
+            const int32_t centerX = closeLeft + (static_cast<int32_t>(width) - closeLeft) / 2;
+            const int32_t centerY = captionHeight / 2;
+            const int32_t glyphRadius = std::max(1, static_cast<int32_t>(std::lround(5.0 * scale)));
+            for (int32_t offset = -glyphRadius; offset <= glyphRadius; ++offset)
             {
-                pixels[static_cast<size_t>(centerY + offset) * width + centerX + offset] = glyphColor;
-                pixels[static_cast<size_t>(centerY + offset) * width + centerX - offset] = glyphColor;
+                const int32_t y = centerY + offset;
+                if (y >= 0 && y < captionHeight)
+                {
+                    if (centerX + offset >= 0 && centerX + offset < static_cast<int32_t>(width))
+                        pixels[static_cast<size_t>(y) * width + centerX + offset] = glyphColor;
+                    if (centerX - offset >= 0 && centerX - offset < static_cast<int32_t>(width))
+                        pixels[static_cast<size_t>(y) * width + centerX - offset] = glyphColor;
+                }
             }
         }
 
@@ -1614,7 +1800,7 @@ namespace LWS
         wl_buffer_add_listener(buffer, &bufferListener, captionBuffer.get());
         wl_surface_attach(fNativeState->captionSurface, buffer, 0, 0);
         if (wl_surface_get_version(fNativeState->captionSurface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
-            wl_surface_damage_buffer(fNativeState->captionSurface, 0, 0, fSize.x, internal::waylandCaptionHeight);
+            wl_surface_damage_buffer(fNativeState->captionSurface, 0, 0, static_cast<int32_t>(width), captionHeight);
         else
             wl_surface_damage(fNativeState->captionSurface, 0, 0, fSize.x, internal::waylandCaptionHeight);
         wl_surface_commit(fNativeState->captionSurface);

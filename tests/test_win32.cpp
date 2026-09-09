@@ -7,6 +7,7 @@
     #include <LWS/FileDialog.hpp>
     #include <LWS/Platform.hpp>
     #include <LWS/Timer.hpp>
+    #include <LWS/Win32/Platform.hpp>
     #include <LWS/Win32/WindowExtensions.hpp>
     #include <LWS/Window.hpp>
 
@@ -30,6 +31,7 @@ namespace
 
         Context()
         {
+            REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);
             REQUIRE(value.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::Success);
         }
 
@@ -67,6 +69,7 @@ namespace
 
 TEST_CASE("Platform context is one-shot", "[platform][win32]")
 {
+    REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);
     LWS::PlatformContext context;
     REQUIRE(context.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::Success);
     REQUIRE(context.IsUsable());
@@ -86,6 +89,7 @@ TEST_CASE("Platform rejects invalid and unavailable backends", "[platform][win32
 
 TEST_CASE("Independent contexts run on independent UI threads", "[platform][thread][win32]")
 {
+    REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);
     std::atomic_uint successes{};
     auto run = [&]
     {
@@ -138,6 +142,7 @@ TEST_CASE("Window is stable, final, and one-shot", "[window][win32]")
 
 TEST_CASE("Context shutdown rejects a bound C++ window", "[platform][window][win32]")
 {
+    REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);
     LWS::PlatformContext context;
     REQUIRE(context.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::Success);
     {
@@ -161,7 +166,7 @@ TEST_CASE("Window basic properties round-trip", "[window][win32]")
     REQUIRE(window.SetPosition({120, 140}) == LWS::Result::Success);
     REQUIRE(window.GetPosition().has_value());
     REQUIRE(window.RequestClientSize({720, 520}) == LWS::Result::Success);
-    REQUIRE(window.GetClientSize() == LWS::Size{720, 520});
+    REQUIRE(window.GetClientSize() == LWS::LogicalSize{720, 520});
     REQUIRE(window.SetAlwaysOnTop(true) == LWS::Result::Success);
     REQUIRE(window.GetAlwaysOnTop());
     REQUIRE(window.SetTransparent(true) == LWS::Result::Success);
@@ -196,14 +201,102 @@ TEST_CASE("Window icons apply before creation, replace, and reset", "[window][ic
     REQUIRE(WindowIconHandle(handle, ICON_SMALL) == nullptr);
 }
 
+TEST_CASE("Failed creation preserves a window icon for retry", "[window][icon][win32]")
+{
+    bool iconAppliedAfterRetry{};
+    std::jthread thread(
+        [&]
+        {
+            const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            if (FAILED(comResult))
+                return;
+
+            {
+                LWS::PlatformContext platform;
+                if (LWS::Win32::BootstrapProcess() == LWS::Result::Success &&
+                    platform.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::Success)
+                {
+                    LWS::Window window(platform);
+                    const auto icon = MakeWindowIcon(std::byte{255});
+                    if (icon.has_value() && window.SetWindowIcon(*icon) == LWS::Result::Success &&
+                        window.Create({.dragAndDropEnabled = true}) == LWS::Result::NotSupported &&
+                        window.Create() == LWS::Result::Success)
+                    {
+                        const HWND handle = *LWS::Win32::GetHwnd(window);
+                        const HICON big = WindowIconHandle(handle, ICON_BIG);
+                        iconAppliedAfterRetry = big != nullptr && WindowIconHandle(handle, ICON_SMALL) == big;
+                    }
+                }
+            }
+            CoUninitialize();
+        });
+    thread.join();
+
+    REQUIRE(iconAppliedAfterRetry);
+}
+
 TEST_CASE("Window min and max client sizes round-trip", "[window][win32]")
 {
     Context context;
     LWS::Window window(context.value);
     REQUIRE(window.Create() == LWS::Result::Success);
     REQUIRE(window.SetMinMaxClientSize({100, 120}, {900, 700}) == LWS::Result::Success);
-    REQUIRE(window.GetMinClientSize() == LWS::Size{100, 120});
-    REQUIRE(window.GetMaxClientSize() == LWS::Size{900, 700});
+    REQUIRE(window.GetMinClientSize() == LWS::LogicalSize{100, 120});
+    REQUIRE(window.GetMaxClientSize() == LWS::LogicalSize{900, 700});
+}
+
+TEST_CASE("Window metrics are coherent", "[window][metrics][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.Create({.clientSize = {400, 300}}) == LWS::Result::Success);
+    const auto size = window.GetClientAreaSize();
+    REQUIRE(size.has_value());
+    REQUIRE(size->logical == window.GetClientSize());
+    REQUIRE(size->pixels.x > 0);
+    REQUIRE(size->Scale().x > 0.0);
+}
+
+TEST_CASE("Client area events suppress duplicate native sizes", "[window][metrics][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    unsigned changes{};
+    auto connection = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            changes += std::holds_alternative<LWS::EventClientAreaSizeChanged>(event);
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(connection.has_value());
+    REQUIRE(window.Create({.clientSize = {400, 300}}) == LWS::Result::Success);
+    REQUIRE(window.RequestClientSize({400, 300}) == LWS::Result::Success);
+    const unsigned confirmedChanges = changes;
+    REQUIRE(window.RequestClientSize({400, 300}) == LWS::Result::Success);
+    REQUIRE(changes == confirmedChanges);
+    REQUIRE(window.RequestClientSize({500, 350}) == LWS::Result::Success);
+    REQUIRE(changes == confirmedChanges + 1);
+    REQUIRE(window.GetClientAreaSize()->logical == LWS::LogicalSize{500, 350});
+}
+
+TEST_CASE("Child placement preserves logical client geometry", "[window][geometry][parent][win32]")
+{
+    Context context;
+    LWS::Window parent(context.value);
+    LWS::Window child(context.value);
+    REQUIRE(parent.Create({.clientSize = {800, 600}}) == LWS::Result::Success);
+    REQUIRE(child.Create({.parent = &parent, .position = LWS::Point{100, 80}, .clientSize = {200, 300}}) ==
+            LWS::Result::Success);
+    REQUIRE(child.GetPosition() == LWS::Point{100, 80});
+
+    const HWND handle = Hwnd(child);
+    SetWindowLongPtrW(handle, GWL_STYLE, GetWindowLongPtrW(handle, GWL_STYLE) | WS_VSCROLL);
+    SetWindowPos(handle, nullptr, 0, 0, 0, 0,
+                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    REQUIRE(child.SetPlacement({.position = LWS::Point{300, 120}, .clientSize = {200, 300}}) == LWS::Result::Success);
+    REQUIRE(child.GetPosition() == LWS::Point{300, 120});
+    REQUIRE(child.GetClientSize() == LWS::LogicalSize{200, 300});
+    REQUIRE(child.GetClientAreaSize()->logical == child.GetClientSize());
 }
 
 TEST_CASE("Parent configuration creates a child relationship", "[window][parent][win32]")
@@ -375,6 +468,30 @@ TEST_CASE("Clipboard service ownership cannot be copied", "[clipboard][win32]")
     STATIC_REQUIRE_FALSE(std::is_move_constructible_v<LWS::Clipboard>);
 }
 
+TEST_CASE("Native resize limits measure the logical client area", "[window][metrics][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.Create({.clientSize = {400, 300},
+                           .styles = LWS::WindowStyle::Caption | LWS::WindowStyle::ResizableBorder}) ==
+            LWS::Result::Success);
+    const HWND handle = Hwnd(window);
+    RECT outer{};
+    RECT client{};
+    REQUIRE(GetWindowRect(handle, &outer));
+    REQUIRE(GetClientRect(handle, &client));
+    const LONG borderWidth = outer.right - outer.left - client.right;
+    const LONG borderHeight = outer.bottom - outer.top - client.bottom;
+    const auto scale = window.GetClientAreaSize()->Scale();
+    REQUIRE(window.SetMinMaxClientSize({100, 120}, {900, 700}) == LWS::Result::Success);
+    MINMAXINFO limits{};
+    SendMessageW(handle, WM_GETMINMAXINFO, 0, reinterpret_cast<LPARAM>(&limits));
+    REQUIRE(limits.ptMinTrackSize.x == static_cast<LONG>(std::lround(100 * scale.x)) + borderWidth);
+    REQUIRE(limits.ptMinTrackSize.y == static_cast<LONG>(std::lround(120 * scale.y)) + borderHeight);
+    REQUIRE(limits.ptMaxTrackSize.x == static_cast<LONG>(std::lround(900 * scale.x)) + borderWidth);
+    REQUIRE(limits.ptMaxTrackSize.y == static_cast<LONG>(std::lround(700 * scale.y)) + borderHeight);
+}
+
 TEST_CASE("A shape replaces a custom cursor", "[cursor][win32]")
 {
     const std::array pixels{std::byte{0}, std::byte{0}, std::byte{0}, std::byte{255}};
@@ -474,6 +591,7 @@ TEST_CASE("Disabling a high precision timer discards pending ticks", "[timer][pr
 
 TEST_CASE("Independent UI threads own independent timer registrations", "[timer][thread][win32]")
 {
+    REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);
     std::atomic_uint successes{};
     auto run = [&]
     {
@@ -586,6 +704,53 @@ TEST_CASE("Destroying a timer target detaches it and invalidates retrieved ticks
     REQUIRE(timer.GetInterval() == 2);
 }
 
+TEST_CASE("Initial client dimensions are preserved on each monitor", "[window][metrics][monitor][win32]")
+{
+    Context context;
+    std::vector<RECT> monitors;
+    REQUIRE(EnumDisplayMonitors(nullptr, nullptr,
+        [](HMONITOR, HDC, LPRECT rectangle, LPARAM data) -> BOOL
+        {
+            reinterpret_cast<std::vector<RECT>*>(data)->push_back(*rectangle);
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&monitors)));
+    const auto primary = context.value.GetPrimaryMonitor();
+    REQUIRE(primary.has_value());
+    const double systemScale = primary->contentScale.x;
+    for (const RECT& monitor : monitors)
+    {
+        LWS::Window window(context.value);
+        REQUIRE(window.Create({.position = LWS::Point{
+                                  static_cast<int32_t>(std::lround((monitor.left + 50) / systemScale)),
+                                  static_cast<int32_t>(std::lround((monitor.top + 50) / systemScale))},
+                               .clientSize = {400, 300}}) == LWS::Result::Success);
+        const auto size = window.GetClientSize();
+        INFO("monitor origin " << monitor.left << ", " << monitor.top << "; system scale " << systemScale
+             << "; actual logical client " << size.x << " x " << size.y
+             << "; pixels " << window.GetClientAreaSize()->pixels.x << " x " << window.GetClientAreaSize()->pixels.y);
+        REQUIRE(size == LWS::LogicalSize{400, 300});
+    }
+}
+
 // These process-DPI scenarios must run in separate test processes before any normal context bootstrap.
+TEST_CASE("Process bootstrap rejects a thread-only DPI override", "[.][bootstrap][win32]")
+{
+    REQUIRE(SetProcessDPIAware());
+    const DPI_AWARENESS_CONTEXT previous = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    REQUIRE(previous != nullptr);
+    const LWS::Result result = LWS::Win32::BootstrapProcess({LWS::Win32::DpiPolicy::AdoptExistingPerMonitorV2});
+    SetThreadDpiAwarenessContext(previous);
+    REQUIRE(result == LWS::Result::Failure);
+}
+
+TEST_CASE("Process bootstrap recognizes process awareness behind a thread override", "[.][bootstrap][win32]")
+{
+    REQUIRE(SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2));
+    const DPI_AWARENESS_CONTEXT previous = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE);
+    REQUIRE(previous != nullptr);
+    const LWS::Result result = LWS::Win32::BootstrapProcess({LWS::Win32::DpiPolicy::AdoptExistingPerMonitorV2});
+    SetThreadDpiAwarenessContext(previous);
+    REQUIRE(result == LWS::Result::Success);
+}
 
 #endif

@@ -14,9 +14,9 @@
 
 namespace LWS
 {
-    struct EventResize
+    struct EventClientAreaSizeChanged
     {
-        Size newClientSize;
+        ClientAreaSize size;
     };
     struct EventMove
     {
@@ -81,7 +81,7 @@ namespace LWS
     };
 
     using AnyEvent =
-        std::variant<EventResize, EventMove, EventCloseRequested, EventWindowDestroyed, EventFocusGained,
+        std::variant<EventClientAreaSizeChanged, EventMove, EventCloseRequested, EventWindowDestroyed, EventFocusGained,
                      EventFocusLost, EventShowStateChanged, EventKeyDown, EventKeyUp, EventMouseMove, EventMouseButton,
                      EventMouseWheel, EventPaint, EventDragDropFile, EventRawPlatform>;
 

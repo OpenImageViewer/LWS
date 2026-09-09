@@ -21,6 +21,24 @@ namespace LWS
 
     class Window;
 
+    struct LogicalSize
+    {
+        int32_t x{};
+        int32_t y{};
+
+        explicit operator Size() const { return {x, y}; }
+        bool operator==(const LogicalSize&) const = default;
+    };
+
+    struct PixelSize
+    {
+        int32_t x{};
+        int32_t y{};
+
+        explicit operator Size() const { return {x, y}; }
+        bool operator==(const PixelSize&) const = default;
+    };
+
     enum class BackendId
     {
         Undefined,
@@ -66,8 +84,8 @@ namespace LWS
     struct WindowPlacement
     {
         std::optional<Point> position;
-        /// Drawable client-area size in native client units, excluding native outer decorations.
-        Size clientSize;
+        /// Drawable client-area size in logical units, excluding native outer decorations.
+        LogicalSize clientSize;
     };
 
     struct ContentScale
@@ -78,13 +96,31 @@ namespace LWS
         auto operator<=>(const ContentScale&) const = default;
     };
 
+    struct ClientAreaSize
+    {
+        /// Observed drawable client size in 96-DPI logical units or Wayland surface coordinates.
+        LogicalSize logical;
+        /// Exact pixel dimensions required by the native renderer or presentation buffer.
+        PixelSize pixels;
+
+        [[nodiscard]] ContentScale Scale() const
+        {
+            return {
+                static_cast<double>(pixels.x) / logical.x,
+                static_cast<double>(pixels.y) / logical.y,
+            };
+        }
+
+        bool operator==(const ClientAreaSize&) const = default;
+    };
+
     struct WindowConfig
     {
         Window* parent = nullptr;
         string_type title;
         std::optional<Point> position;
-        /// Initial drawable client-area size in native client units, excluding native outer decorations.
-        Size clientSize{800, 600};
+        /// Initial drawable client-area size in logical units, excluding native outer decorations.
+        LogicalSize clientSize{800, 600};
         WindowStyleFlags styles;
         WindowShowState showState{WindowShowState::Restored};
         LLUtils::Color backgroundColor{};
@@ -93,7 +129,7 @@ namespace LWS
         bool alwaysOnTop{false};
         bool transparent{false};
         bool dragAndDropEnabled{false};
-        Size minClientSize{};
-        Size maxClientSize{};
+        LogicalSize minClientSize{};
+        LogicalSize maxClientSize{};
     };
 }  // namespace LWS

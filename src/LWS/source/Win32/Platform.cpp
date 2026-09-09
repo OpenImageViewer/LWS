@@ -4,6 +4,7 @@
     #include <Ole2.h>
 
     #include <LWS/Platform.hpp>
+    #include <LWS/Win32/Platform.hpp>
     #include "internal/MonitorInfo.hpp"
     #include "internal/PlatformState.hpp"
 
@@ -31,22 +32,60 @@ namespace
     };
 
     thread_local PlatformThreadState g_platformThreadState;
-    std::once_flag g_processInitFlag;
+    std::mutex g_processMutex;
+    bool g_processBootstrapped = false;
+    LWS::Win32::DpiPolicy g_dpiPolicy{};
 
-    void initializeProcess()
+    bool isPerMonitorV2()
     {
-        HMODULE user32 = GetModuleHandleW(L"user32.dll");
-        if (user32 == nullptr)
-            return;
+        using GetThreadDpiAwarenessContextFn = DPI_AWARENESS_CONTEXT(WINAPI*)();
+        using AreDpiAwarenessContextsEqualFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT);
+        const HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        const auto getThreadDpiAwarenessContext = reinterpret_cast<GetThreadDpiAwarenessContextFn>(
+            user32 != nullptr ? GetProcAddress(user32, "GetThreadDpiAwarenessContext") : nullptr);
+        const auto areDpiAwarenessContextsEqual = reinterpret_cast<AreDpiAwarenessContextsEqualFn>(
+            user32 != nullptr ? GetProcAddress(user32, "AreDpiAwarenessContextsEqual") : nullptr);
+        if (areDpiAwarenessContextsEqual == nullptr)
+            return false;
 
-        using SetProcessDpiAwarenessContextFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
-        auto setDpiAwarenessContext = reinterpret_cast<SetProcessDpiAwarenessContextFn>(
-            GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
-        if (setDpiAwarenessContext == nullptr ||
-            setDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) == FALSE)
+        if (getThreadDpiAwarenessContext == nullptr)
+            return false;
+
+        // A fresh thread inherits the process default. Queries on the bootstrap caller can instead
+        // report its thread override, including GetDpiAwarenessContextForProcess for the current process.
+        bool processIsPerMonitorV2 = false;
+        try
         {
-            SetProcessDPIAware();
+            std::thread probe([&]
+            {
+                processIsPerMonitorV2 = areDpiAwarenessContextsEqual(getThreadDpiAwarenessContext(),
+                                                                     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) != FALSE;
+            });
+            probe.join();
         }
+        catch (const std::system_error&)
+        {
+            return false;
+        }
+        return processIsPerMonitorV2;
+    }
+
+    bool configureProcessDpiAwareness()
+    {
+        using SetProcessDpiAwarenessContextFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+        const HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        const auto setProcessDpiAwarenessContext = reinterpret_cast<SetProcessDpiAwarenessContextFn>(
+            user32 != nullptr ? GetProcAddress(user32, "SetProcessDpiAwarenessContext") : nullptr);
+        if (setProcessDpiAwarenessContext != nullptr)
+        {
+            if (setProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) != FALSE)
+                return true;
+            if (GetLastError() != ERROR_INVALID_PARAMETER)
+                return false;
+        }
+
+        // Legacy Windows either lacks this API or does not recognize the per-monitor-v2 context.
+        return SetProcessDPIAware() != FALSE || IsProcessDPIAware() != FALSE;
     }
 
     int virtualKeyFromKeyCode(LWS::KeyCode key)
@@ -295,6 +334,26 @@ namespace
     }
 }  // namespace
 
+namespace LWS::Win32
+{
+    Result BootstrapProcess(const ProcessConfig& config)
+    {
+        const std::scoped_lock lock(g_processMutex);
+        if (g_processBootstrapped)
+            return config.dpiPolicy == g_dpiPolicy ? Result::Success : Result::InvalidState;
+
+        if (config.dpiPolicy == DpiPolicy::ConfigurePerMonitorV2 && !isPerMonitorV2() &&
+            !configureProcessDpiAwareness())
+            return Result::Failure;
+        if (config.dpiPolicy == DpiPolicy::AdoptExistingPerMonitorV2 && !isPerMonitorV2())
+            return Result::Failure;
+
+        g_dpiPolicy = config.dpiPolicy;
+        g_processBootstrapped = true;
+        return Result::Success;
+    }
+}  // namespace LWS::Win32
+
 namespace LWS::internal
 {
     bool isOleInitializedForCurrentThread()
@@ -314,7 +373,11 @@ namespace LWS::internal::platform_backend
             return Result::Success;
         }
 
-        std::call_once(g_processInitFlag, initializeProcess);
+        {
+            const std::scoped_lock lock(g_processMutex);
+            if (!g_processBootstrapped)
+                return Result::PlatformNotInitialized;
+        }
 
         const HRESULT oleResult = OleInitialize(nullptr);
         if (oleResult == S_OK || oleResult == S_FALSE)

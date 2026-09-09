@@ -20,6 +20,8 @@
     #include <xdg-shell-client-protocol.h>
     #include <pointer-constraints-client-protocol.h>
     #include <relative-pointer-client-protocol.h>
+    #include <fractional-scale-v1-client-protocol.h>
+    #include <viewporter-client-protocol.h>
 
 namespace LWS
 {
@@ -64,6 +66,7 @@ namespace LWS::internal
         [[nodiscard]] const WaylandWindowRegistration* findWindowRegistration(wl_surface* surface) const;
         [[nodiscard]] WindowBackendWayland* findWindow(wl_surface* surface) const;
         void applyCursor(WindowBackendWayland& window, CursorShape shape, bool visible);
+        void outputChanged(wl_output* output, bool removed);
 
         [[nodiscard]] wl_display* display() const { return fDisplay; }
         [[nodiscard]] wl_compositor* compositor() const { return fCompositor; }
@@ -76,11 +79,14 @@ namespace LWS::internal
         {
             return fRelativePointerManager;
         }
+        [[nodiscard]] wp_fractional_scale_manager_v1* fractionalScaleManager() const { return fFractionalScaleManager; }
+        [[nodiscard]] wp_viewporter* viewporter() const { return fViewporter; }
         [[nodiscard]] bool hasHostWindowFrame() const { return fHasHostWindowFrame; }
         [[nodiscard]] wl_pointer* pointer() const { return fSeatController.pointer(); }
         [[nodiscard]] wl_seat* seat() const { return fSeatController.seat(); }
         [[nodiscard]] uint32_t pointerButtonSerial() const { return fSeatController.pointerButtonSerial(); }
         [[nodiscard]] bool supportsDragAndDrop() const { return fDragAndDropController.supported(); }
+        [[nodiscard]] int32_t outputScale(wl_output* output) const { return fOutputManager.scale(output); }
 
       private:
 
@@ -104,6 +110,8 @@ namespace LWS::internal
         zxdg_decoration_manager_v1* fDecorationManager = nullptr;
         zwp_pointer_constraints_v1* fPointerConstraints = nullptr;
         zwp_relative_pointer_manager_v1* fRelativePointerManager = nullptr;
+        wp_fractional_scale_manager_v1* fFractionalScaleManager = nullptr;
+        wp_viewporter* fViewporter = nullptr;
         int fWakeDescriptor = -1;
         WaylandSeatController fSeatController;
         WaylandDragAndDropController fDragAndDropController;

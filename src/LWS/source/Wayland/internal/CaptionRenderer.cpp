@@ -2,19 +2,19 @@
 
 #ifdef LWS_PLATFORM_WAYLAND
 
-    #include "WindowFrame.hpp"
-
     #include <algorithm>
+    #include <cmath>
 
     #include <fontconfig/fontconfig.h>
     #include <pango/pangocairo.h>
 
 namespace LWS::internal
 {
-    void renderCaptionTitle(std::span<uint32_t> pixels, int32_t width, std::string_view title, int32_t rightEdge)
+    void renderCaptionTitle(std::span<uint32_t> pixels, int32_t width, int32_t height, std::string_view title,
+                            int32_t rightEdge, double scale)
     {
-        constexpr int32_t titleLeft = 10;
-        constexpr int32_t fontSize = 13;
+        const int32_t titleLeft = static_cast<int32_t>(std::lround(10.0 * scale));
+        const int32_t fontSize = static_cast<int32_t>(std::lround(13.0 * scale));
         if (title.empty() || width <= titleLeft)
             return;
 
@@ -23,16 +23,16 @@ namespace LWS::internal
             return;
 
         const int32_t titleRight = std::clamp(rightEdge, titleLeft, width);
-        const size_t requiredPixels = static_cast<size_t>(width) * waylandCaptionHeight;
+        const size_t requiredPixels = static_cast<size_t>(width) * height;
         if (pixels.size() < requiredPixels || titleRight == titleLeft)
             return;
 
         const int32_t stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, width);
         cairo_surface_t* surface = cairo_image_surface_create_for_data(reinterpret_cast<unsigned char*>(pixels.data()),
-                                                                       CAIRO_FORMAT_ARGB32, width, waylandCaptionHeight,
+                                                                       CAIRO_FORMAT_ARGB32, width, height,
                                                                        stride);
         cairo_t* context = cairo_create(surface);
-        cairo_rectangle(context, titleLeft, 0, titleRight - titleLeft, waylandCaptionHeight);
+        cairo_rectangle(context, titleLeft, 0, titleRight - titleLeft, height);
         cairo_clip(context);
         cairo_set_source_rgb(context, 1.0, 1.0, 1.0);
 
@@ -47,7 +47,7 @@ namespace LWS::internal
 
         PangoRectangle logicalBounds{};
         pango_layout_get_pixel_extents(layout, nullptr, &logicalBounds);
-        cairo_move_to(context, titleLeft, (waylandCaptionHeight - logicalBounds.height) / 2.0 - logicalBounds.y);
+        cairo_move_to(context, titleLeft, (height - logicalBounds.height) / 2.0 - logicalBounds.y);
         pango_cairo_show_layout(context, layout);
         cairo_surface_flush(surface);
 

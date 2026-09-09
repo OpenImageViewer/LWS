@@ -28,10 +28,86 @@ namespace
 {
     static constexpr LWS::char_type g_windowClassName[] = L"LWS_WINDOW_CLASS";
     static constexpr LWS::char_type g_windowPropName[] = L"LWSBackend";
-    LWS::Size outerSizeForClient(LWS::Size size, DWORD style, DWORD extendedStyle)
+    static constexpr int g_logicalDpi = 96;
+
+    // Resolve the Windows 10 DPI helpers dynamically so the same binary remains loadable on Windows 7 and 8.
+    UINT systemDpi()
     {
-        RECT rectangle{0, 0, size.x, size.y};
-        AdjustWindowRectEx(&rectangle, style, FALSE, extendedStyle);
+        using GetDpiForSystemFn = UINT(WINAPI*)();
+        static const auto getDpiForSystem = reinterpret_cast<GetDpiForSystemFn>(
+            GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForSystem"));
+        if (getDpiForSystem != nullptr)
+            return getDpiForSystem();
+
+        static const UINT legacyDpi = []
+        {
+            const HDC deviceContext = GetDC(nullptr);
+            const UINT dpi = deviceContext != nullptr ? static_cast<UINT>(GetDeviceCaps(deviceContext, LOGPIXELSX))
+                                                      : static_cast<UINT>(g_logicalDpi);
+            if (deviceContext != nullptr)
+                ReleaseDC(nullptr, deviceContext);
+            return dpi;
+        }();
+        return legacyDpi;
+    }
+
+    UINT windowDpi(HWND window)
+    {
+        using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
+        static const auto getDpiForWindow = reinterpret_cast<GetDpiForWindowFn>(
+            GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+        if (getDpiForWindow != nullptr)
+            return getDpiForWindow(window);
+        return systemDpi();
+    }
+
+    void adjustWindowRectForDpi(RECT& rectangle, DWORD style, DWORD extendedStyle, UINT dpi)
+    {
+        using AdjustWindowRectExForDpiFn = BOOL(WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
+        static const auto adjustWindowRectExForDpi = reinterpret_cast<AdjustWindowRectExForDpiFn>(
+            GetProcAddress(GetModuleHandleW(L"user32.dll"), "AdjustWindowRectExForDpi"));
+        if (adjustWindowRectExForDpi != nullptr)
+            std::ignore = adjustWindowRectExForDpi(&rectangle, style, FALSE, extendedStyle, dpi);
+        else
+            std::ignore = AdjustWindowRectEx(&rectangle, style, FALSE, extendedStyle);
+    }
+
+    int systemMetricForDpi(int index, UINT dpi)
+    {
+        using GetSystemMetricsForDpiFn = int(WINAPI*)(int, UINT);
+        static const auto getSystemMetricsForDpi = reinterpret_cast<GetSystemMetricsForDpiFn>(
+            GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetSystemMetricsForDpi"));
+        return getSystemMetricsForDpi != nullptr ? getSystemMetricsForDpi(index, dpi) : GetSystemMetrics(index);
+    }
+
+    int32_t physicalFromLogical(int32_t value, UINT dpi)
+    {
+        return MulDiv(value, static_cast<int>(dpi), g_logicalDpi);
+    }
+
+    int32_t logicalFromPhysical(int32_t value, UINT dpi)
+    {
+        return MulDiv(value, g_logicalDpi, static_cast<int>(dpi));
+    }
+
+    LWS::Point physicalFromLogical(LWS::Point point, UINT dpi)
+    {
+        return {physicalFromLogical(point.x, dpi), physicalFromLogical(point.y, dpi)};
+    }
+
+    LWS::Point logicalFromPhysical(LWS::Point point, UINT dpi)
+    {
+        return {logicalFromPhysical(point.x, dpi), logicalFromPhysical(point.y, dpi)};
+    }
+
+    LWS::Size outerSizeForLogicalClient(LWS::Size clientSize, DWORD style, DWORD extendedStyle, UINT dpi)
+    {
+        RECT rectangle{0, 0, physicalFromLogical(clientSize.x, dpi), physicalFromLogical(clientSize.y, dpi)};
+        adjustWindowRectForDpi(rectangle, style, extendedStyle, dpi);
+        if ((style & WS_VSCROLL) != 0)
+            rectangle.right += systemMetricForDpi(SM_CXVSCROLL, dpi);
+        if ((style & WS_HSCROLL) != 0)
+            rectangle.bottom += systemMetricForDpi(SM_CYHSCROLL, dpi);
         return {rectangle.right - rectangle.left, rectangle.bottom - rectangle.top};
     }
 
@@ -316,8 +392,9 @@ namespace LWS
         }
 
         const DWORD style = static_cast<DWORD>(WS_CLIPCHILDREN | WS_CLIPSIBLINGS | composeWindowStyles());
-        const Point position = config.position;
-        const Size outerSize = outerSizeForClient(config.size, style, ex_style);
+        const UINT dpi = parent_hwnd != nullptr ? windowDpi(parent_hwnd) : systemDpi();
+        const Point position = physicalFromLogical(config.position, dpi);
+        const Size outerSize = outerSizeForLogicalClient(config.size, style, ex_style, dpi);
         HWND hwnd = CreateWindowEx(ex_style, g_windowClassName, config.title.c_str(), style, position.x, position.y,
                                    outerSize.x, outerSize.y, parent_hwnd, nullptr, instance, this);
 
@@ -537,7 +614,7 @@ namespace LWS
     {
         if (fHwnd != nullptr)
         {
-            const Point position = pos;
+            const Point position = physicalFromLogical(pos, fDpi);
             internal::WindowPosHelper::setPosition(fHwnd, position.x, position.y);
         }
     }
@@ -564,7 +641,7 @@ namespace LWS
             GetWindowPlacement(fHwnd, &placement);
             position = {placement.rcNormalPosition.left, placement.rcNormalPosition.top};
         }
-        return Point{position.x, position.y};
+        return logicalFromPhysical(Point{position.x, position.y}, fDpi);
     }
 
     void WindowBackendWin32::setSize(Size sz)
@@ -573,7 +650,7 @@ namespace LWS
         {
             const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE));
             const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
-            const Size outerSize = outerSizeForClient(sz, style, extendedStyle);
+            const Size outerSize = outerSizeForLogicalClient(sz, style, extendedStyle, fDpi);
             internal::WindowPosHelper::setSize(fHwnd, outerSize.x, outerSize.y);
         }
     }
@@ -587,7 +664,8 @@ namespace LWS
 
         RECT rect{};
         GetClientRect(fHwnd, &rect);
-        return {rect.right - rect.left, rect.bottom - rect.top};
+        return {MulDiv(rect.right - rect.left, 96, static_cast<int>(fDpi)),
+                MulDiv(rect.bottom - rect.top, 96, static_cast<int>(fDpi))};
     }
 
     Size WindowBackendWin32::getFramebufferSize() const
@@ -618,10 +696,10 @@ namespace LWS
             return;
         }
 
-        const Point position = placement.position;
+        const Point position = physicalFromLogical(placement.position, fDpi);
         const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE));
         const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
-        const Size outerSize = outerSizeForClient(placement.size, style, extendedStyle);
+        const Size outerSize = outerSizeForLogicalClient(placement.size, style, extendedStyle, fDpi);
         internal::WindowPosHelper::setPlacement(fHwnd, position.x, position.y, outerSize.x, outerSize.y);
         if (placement.displayState != fDisplayState)
             setDisplayState(placement.displayState);
@@ -781,7 +859,7 @@ namespace LWS
         POINT point{};
         GetCursorPos(&point);
         ScreenToClient(fHwnd, &point);
-        return Point{point.x, point.y};
+        return logicalFromPhysical(Point{point.x, point.y}, fDpi);
     }
 
     void WindowBackendWin32::setLockMouseToWindowMode(internal::LockMouseToWindowMode mode)
@@ -822,7 +900,11 @@ namespace LWS
 
     void WindowBackendWin32::dispatchClientAreaSizeChanged(Size framebufferSize)
     {
-        dispatchEvent(EventResize{framebufferSize});
+        const double scale = static_cast<double>(fDpi) / 96.0;
+        const Size logicalSize{static_cast<int32_t>(std::lround(framebufferSize.x / scale)),
+                               static_cast<int32_t>(std::lround(framebufferSize.y / scale))};
+        std::ignore = dispatchEvent(
+            EventClientAreaSizeChanged{{{logicalSize.x, logicalSize.y}, {framebufferSize.x, framebufferSize.y}}});
     }
 
     Result WindowBackendWin32::enableDragAndDrop(bool enable)
@@ -886,6 +968,7 @@ namespace LWS
             WindowBackendWin32* self = reinterpret_cast<WindowBackendWin32*>(create_struct->lpCreateParams);
             SetProp(hWnd, g_windowPropName, self);
             self->fHwnd = hWnd;
+            self->fDpi = windowDpi(hWnd);
         }
 
         WindowBackendWin32* self = reinterpret_cast<WindowBackendWin32*>(GetProp(hWnd, g_windowPropName));
@@ -1047,7 +1130,21 @@ namespace LWS
                 break;
             }
 
+            case WM_DPICHANGED:
+                fDpi = LOWORD(wParam);
+                if (fParentBackend == nullptr)
+                {
+                    const auto* suggested = reinterpret_cast<const RECT*>(lParam);
+                    SetWindowPos(hWnd, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
+                                 suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER);
+                    use_default = false;
+                    return_value = 0;
+                }
+                dispatchClientAreaSizeChanged(getFramebufferSize());
+                break;
+
             case WM_DPICHANGED_AFTERPARENT:
+                fDpi = windowDpi(hWnd);
                 dispatchClientAreaSizeChanged(getFramebufferSize());
                 break;
 
@@ -1072,7 +1169,7 @@ namespace LWS
 
             case WM_MOUSEMOVE:
             {
-                const Point position = Point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                const Point position = logicalFromPhysical(Point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}, fDpi);
                 Point delta{position.x - fLastMousePos.x, position.y - fLastMousePos.y};
                 fLastMousePos = position;
                 dispatchEvent(EventMouseMove{position, delta});
@@ -1104,7 +1201,7 @@ namespace LWS
                     button = GET_XBUTTON_WPARAM(wParam) == XBUTTON1 ? MouseButton::X1 : MouseButton::X2;
                 }
 
-                const Point position = Point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                const Point position = logicalFromPhysical(Point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}, fDpi);
                 dispatchEvent(EventMouseButton{button, pressed, position});
                 break;
             }
@@ -1115,7 +1212,7 @@ namespace LWS
                 ScreenToClient(hWnd, &point);
                 dispatchEvent(EventMouseWheel{
                     GET_WHEEL_DELTA_WPARAM(wParam),
-                    Point{point.x, point.y},
+                    logicalFromPhysical(Point{point.x, point.y}, fDpi),
                 });
                 break;
             }
@@ -1171,14 +1268,18 @@ namespace LWS
                 if (fMinSize.x > 0 || fMinSize.y > 0 || fMaxSize.x > 0 || fMaxSize.y > 0)
                 {
                     MINMAXINFO* min_max_info = reinterpret_cast<MINMAXINFO*>(lParam);
+                    const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_STYLE));
+                    const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_EXSTYLE));
+                    const Size minimum = outerSizeForLogicalClient(fMinSize, style, extendedStyle, fDpi);
+                    const Size maximum = outerSizeForLogicalClient(fMaxSize, style, extendedStyle, fDpi);
                     if (fMinSize.x > 0)
-                        min_max_info->ptMinTrackSize.x = fMinSize.x;
+                        min_max_info->ptMinTrackSize.x = minimum.x;
                     if (fMinSize.y > 0)
-                        min_max_info->ptMinTrackSize.y = fMinSize.y;
+                        min_max_info->ptMinTrackSize.y = minimum.y;
                     if (fMaxSize.x > 0)
-                        min_max_info->ptMaxTrackSize.x = fMaxSize.x;
+                        min_max_info->ptMaxTrackSize.x = maximum.x;
                     if (fMaxSize.y > 0)
-                        min_max_info->ptMaxTrackSize.y = fMaxSize.y;
+                        min_max_info->ptMaxTrackSize.y = maximum.y;
                     use_default = false;
                     return_value = 0;
                 }

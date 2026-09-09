@@ -11,9 +11,13 @@
 
 namespace LWS::internal
 {
+    class WaylandPlatformState;
+
     class WaylandOutputManager
     {
       public:
+
+        explicit WaylandOutputManager(WaylandPlatformState& platform) : fPlatform(platform) {}
 
         void bindOutput(wl_registry* registry, uint32_t name, uint32_t version);
         void removeGlobal(uint32_t name);
@@ -45,6 +49,7 @@ namespace LWS::internal
 
         [[nodiscard]] Output* findOutput(wl_output* output);
 
+        WaylandPlatformState& fPlatform;
         std::vector<Output> fOutputs;
     };
 }  // namespace LWS::internal

@@ -45,6 +45,7 @@ namespace LWS
         Point getPosition() const override;
         void setSize(Size sz) override;
         Size getClientSize() const override;
+        Size getFramebufferSize() const override;
         void setPlacement(const internal::NativeWindowPlacement& placement) override;
         void setMinMaxSize(Size minSize, Size maxSize) override;
         Size getMinSize() const override;
@@ -84,9 +85,11 @@ namespace LWS
         void handleKeyboardFocus(bool focused);
         void handleKey(KeyCode key, bool pressed, bool repeat = false);
         void handleToplevelConfigure(Size size, bool maximized, bool fullscreen);
+        void handleOutputChange(wl_output* output, bool removed);
         void setAppId(const std::string& appId);
         [[nodiscard]] void* surface() const;
         [[nodiscard]] wl_display* display() const;
+        [[nodiscard]] double contentScale() const;
 
       private:
 
@@ -117,6 +120,8 @@ namespace LWS
         void paintCaption();
         void updateChildInputRegions();
         void updateWindowGeometry();
+        void updateContentScale();
+        void setContentScale(double scale);
         void updateSubsurfaceInputRegion();
         void updateSubsurfacePosition();
         [[nodiscard]] bool showsClientSideDecorations() const;

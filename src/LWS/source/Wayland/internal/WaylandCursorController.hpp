@@ -21,7 +21,7 @@ namespace LWS::internal
         ~WaylandCursorController();
 
         void apply(CursorShape shape, bool visible, wl_pointer* pointer, uint32_t enterSerial,
-                   wl_compositor* compositor, wl_shm* sharedMemory);
+                   wl_compositor* compositor, wl_shm* sharedMemory, int32_t scale);
         void reset();
 
       private:

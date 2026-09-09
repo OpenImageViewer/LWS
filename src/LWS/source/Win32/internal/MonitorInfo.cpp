@@ -1,7 +1,21 @@
 #include "MonitorInfo.hpp"
 
+#include <ShellScalingApi.h>
+
 #include <algorithm>
 #include <ranges>
+
+namespace
+{
+    HRESULT getDpiForMonitor(HMONITOR monitor, MONITOR_DPI_TYPE type, UINT* dpiX, UINT* dpiY)
+    {
+        using GetDpiForMonitorFn = HRESULT(WINAPI*)(HMONITOR, MONITOR_DPI_TYPE, UINT*, UINT*);
+        static const HMODULE shcore = LoadLibraryExW(L"shcore.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        static const auto getDpi = reinterpret_cast<GetDpiForMonitorFn>(
+            shcore != nullptr ? GetProcAddress(shcore, "GetDpiForMonitor") : nullptr);
+        return getDpi != nullptr ? getDpi(monitor, type, dpiX, dpiY) : E_NOTIMPL;
+    }
+}  // namespace
 
 namespace LWS::internal
 {
@@ -132,7 +146,7 @@ namespace LWS::internal
 
             UINT dpi_x = 96;
             UINT dpi_y = 96;
-            if (FAILED(GetDpiForMonitor(hMonitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y)))
+            if (FAILED(getDpiForMonitor(hMonitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y)))
             {
                 HWND desktop_window = GetDesktopWindow();
                 HDC desktop_dc = GetDC(desktop_window);

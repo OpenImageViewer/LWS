@@ -1,6 +1,7 @@
 #ifdef LWS_PLATFORM_WAYLAND
 
     #include "WaylandOutputManager.hpp"
+    #include "PlatformState.hpp"
 
     #include <algorithm>
     #include <ranges>
@@ -33,10 +34,12 @@ namespace LWS::internal
         const auto it = std::ranges::find(fOutputs, name, &Output::registryName);
         if (it == fOutputs.end())
             return;
-        wl_output_destroy(it->object);
+        wl_output* output = it->object;
         fOutputs.erase(it);
         if (!fOutputs.empty())
             fOutputs.front().description.primary = true;
+        fPlatform.outputChanged(output, true);
+        wl_output_destroy(output);
     }
 
     MonitorDesc WaylandOutputManager::monitorInfo(Handle handle) const
@@ -132,6 +135,7 @@ namespace LWS::internal
                 };
                 item->description.workRect = item->description.monitorRect;
             }
+            manager.fPlatform.outputChanged(output, false);
         }
     }
 

@@ -5,6 +5,9 @@
 #include <LWS/Timer.hpp>
 #include <LWS/Window.hpp>
 
+#ifdef LWS_HAS_WIN32_BACKEND
+    #include <LWS/Win32/Platform.hpp>
+#endif
 
 #include <array>
 #include <chrono>
@@ -18,6 +21,7 @@ namespace
     void Initialize(LWS::PlatformContext& context)
     {
 #ifdef LWS_HAS_WIN32_BACKEND
+        REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);
         REQUIRE(context.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::Success);
 #else
         REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);

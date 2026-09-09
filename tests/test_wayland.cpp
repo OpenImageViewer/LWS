@@ -103,6 +103,32 @@ TEST_CASE("Wayland child containment uses parent configuration", "[window][paren
     REQUIRE_FALSE(child.IsCreated());
 }
 
+TEST_CASE("Wayland emits portable coherent metric events", "[window][event][wayland]")
+{
+    LWS::PlatformContext context;
+    Initialize(context);
+    LWS::Window window(context);
+    bool observed{};
+    auto connection = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (const auto* size = std::get_if<LWS::EventClientAreaSizeChanged>(&event))
+                observed = size->size.logical.x > 0 && size->size.pixels.x > 0;
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(connection.has_value());
+    REQUIRE(window.Create({.visible = true}) == LWS::Result::Success);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!observed && std::chrono::steady_clock::now() < deadline)
+    {
+        std::ignore = context.ProcessMessages();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(observed);
+    REQUIRE(window.IsConfigured());
+    REQUIRE(window.GetClientAreaSize().has_value());
+}
+
 TEST_CASE("Wayland custom cursors fail without changing standard selection", "[cursor][wayland]")
 {
     LWS::PlatformContext context;
@@ -139,6 +165,37 @@ TEST_CASE("Wayland timer callbacks marshal through the context", "[timer][waylan
     while (!fired && std::chrono::steady_clock::now() < deadline)
         std::ignore = context.ProcessMessages();
     REQUIRE(fired);
+}
+
+TEST_CASE("Wayland configure tolerates destruction from paint callbacks", "[window][event][wayland]")
+{
+    LWS::PlatformContext context;
+    Initialize(context);
+    LWS::Window window(context);
+    bool destroyed{};
+    bool destroyFromMetrics{};
+    SECTION("paint") {}
+    SECTION("metrics") { destroyFromMetrics = true; }
+    auto connection = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (destroyFromMetrics ? std::holds_alternative<LWS::EventClientAreaSizeChanged>(event)
+                                   : std::holds_alternative<LWS::EventPaint>(event))
+            {
+                destroyed = window.Destroy() == LWS::Result::Success;
+            }
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(connection.has_value());
+    REQUIRE(window.Create({.visible = true, .eraseBackground = false}) == LWS::Result::Success);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!destroyed && std::chrono::steady_clock::now() < deadline)
+    {
+        std::ignore = context.ProcessMessages();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(destroyed);
+    REQUIRE_FALSE(window.IsCreated());
 }
 
 TEST_CASE("Wayland timer restart discards an already queued expiration", "[timer][wayland]")

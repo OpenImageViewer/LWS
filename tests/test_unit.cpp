@@ -42,6 +42,24 @@ TEST_CASE("Result enum covers all expected values", "[result]")
 // ---------------------------------------------------------------------------
 // WindowConfig defaults
 // ---------------------------------------------------------------------------
+TEST_CASE("WindowConfig has expected defaults", "[config]")
+{
+    STATIC_REQUIRE_FALSE(std::is_convertible_v<LWS::LogicalSize, LWS::PixelSize>);
+    STATIC_REQUIRE_FALSE(std::is_convertible_v<LWS::PixelSize, LWS::LogicalSize>);
+    LWS::WindowConfig cfg{};
+    REQUIRE(cfg.clientSize.x == 800);
+    REQUIRE(cfg.clientSize.y == 600);
+    REQUIRE(cfg.visible == false);
+    REQUIRE(cfg.eraseBackground == true);
+    REQUIRE(cfg.alwaysOnTop == false);
+    REQUIRE(cfg.transparent == false);
+    REQUIRE(cfg.minClientSize.x == 0);
+    REQUIRE(cfg.minClientSize.y == 0);
+    REQUIRE(cfg.maxClientSize.x == 0);
+    REQUIRE(cfg.maxClientSize.y == 0);
+    REQUIRE(cfg.styles == LWS::WindowStyle::NoStyle);
+    REQUIRE(cfg.showState == LWS::WindowShowState::Restored);
+}
 
 TEST_CASE("Cursor values are immutable cheap copies", "[cursor][lifetime]")
 {
@@ -63,6 +81,24 @@ TEST_CASE("Cursor validates custom bitmap hotspots", "[cursor][bitmap]")
 // ---------------------------------------------------------------------------
 // AnyEvent variant dispatch
 // ---------------------------------------------------------------------------
+TEST_CASE("AnyEvent variant holds a coherent client area and can be visited", "[event]")
+{
+    LWS::AnyEvent ev = LWS::EventClientAreaSizeChanged{{{1280, 720}, {2560, 1440}}};
+    bool visited = false;
+    std::visit(
+        [&](const auto& e)
+        {
+            if constexpr (std::is_same_v<std::decay_t<decltype(e)>, LWS::EventClientAreaSizeChanged>)
+            {
+                REQUIRE(e.size.logical.x == 1280);
+                REQUIRE(e.size.pixels.x == 2560);
+                REQUIRE(e.size.Scale().x == 2.0);
+                visited = true;
+            }
+        },
+        ev);
+    REQUIRE(visited);
+}
 
 TEST_CASE("AnyEvent variant holds EventKeyDown", "[event]")
 {

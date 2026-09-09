@@ -48,6 +48,13 @@ elseif(UNIX)
         "${WAYLAND_PROTOCOLS_DIRECTORY}/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml")
     set(LWS_POINTER_CONSTRAINTS_HEADER "${LWS_WAYLAND_GENERATED_DIR}/pointer-constraints-client-protocol.h")
     set(LWS_POINTER_CONSTRAINTS_SOURCE "${LWS_WAYLAND_GENERATED_DIR}/pointer-constraints-protocol.c")
+    set(LWS_FRACTIONAL_SCALE_XML
+        "${WAYLAND_PROTOCOLS_DIRECTORY}/staging/fractional-scale/fractional-scale-v1.xml")
+    set(LWS_FRACTIONAL_SCALE_HEADER "${LWS_WAYLAND_GENERATED_DIR}/fractional-scale-v1-client-protocol.h")
+    set(LWS_FRACTIONAL_SCALE_SOURCE "${LWS_WAYLAND_GENERATED_DIR}/fractional-scale-v1-protocol.c")
+    set(LWS_VIEWPORTER_XML "${WAYLAND_PROTOCOLS_DIRECTORY}/stable/viewporter/viewporter.xml")
+    set(LWS_VIEWPORTER_HEADER "${LWS_WAYLAND_GENERATED_DIR}/viewporter-client-protocol.h")
+    set(LWS_VIEWPORTER_SOURCE "${LWS_WAYLAND_GENERATED_DIR}/viewporter-protocol.c")
 
     add_custom_command(
         OUTPUT "${LWS_XDG_SHELL_HEADER}"
@@ -79,7 +86,7 @@ elseif(UNIX)
         DEPENDS "${LWS_XDG_DECORATION_XML}"
         VERBATIM
     )
-    foreach(protocol RELATIVE_POINTER POINTER_CONSTRAINTS)
+    foreach(protocol RELATIVE_POINTER POINTER_CONSTRAINTS FRACTIONAL_SCALE VIEWPORTER)
       add_custom_command(
           OUTPUT "${LWS_${protocol}_HEADER}"
           COMMAND "${CMAKE_COMMAND}" -E make_directory "${LWS_WAYLAND_GENERATED_DIR}"
@@ -122,7 +129,6 @@ function(lws_configure_target target)
     target_link_libraries(${target} PRIVATE
         ole32
         shell32
-        shcore
         user32
         gdi32
         comctl32
@@ -163,6 +169,10 @@ if(LWS_PLATFORM_WAYLAND)
       "${LWS_RELATIVE_POINTER_SOURCE}"
       "${LWS_POINTER_CONSTRAINTS_HEADER}"
       "${LWS_POINTER_CONSTRAINTS_SOURCE}"
+      "${LWS_FRACTIONAL_SCALE_HEADER}"
+      "${LWS_FRACTIONAL_SCALE_SOURCE}"
+      "${LWS_VIEWPORTER_HEADER}"
+      "${LWS_VIEWPORTER_SOURCE}"
   )
   target_include_directories(LWSLib PRIVATE "${LWS_WAYLAND_GENERATED_DIR}")
   target_link_libraries(LWSLib PRIVATE Wayland::Client PkgConfig::CaptionText)

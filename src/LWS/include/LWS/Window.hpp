@@ -54,14 +54,15 @@ namespace LWS
 
         [[nodiscard]] Result SetPosition(Point position);
         [[nodiscard]] std::optional<Point> GetPosition() const;
-        /// Requests a drawable client area in native client units; native outer decorations are excluded.
-        [[nodiscard]] Result RequestClientSize(Size size);
-        [[nodiscard]] Size GetClientSize() const;
+        /// Requests a drawable client area in logical units; native outer decorations are excluded.
+        [[nodiscard]] Result RequestClientSize(LogicalSize size);
+        [[nodiscard]] LogicalSize GetClientSize() const;
+        [[nodiscard]] std::expected<ClientAreaSize, Result> GetClientAreaSize() const;
         [[nodiscard]] Result SetPlacement(const WindowPlacement& placement);
         [[nodiscard]] WindowPlacement GetPlacement() const;
-        [[nodiscard]] Result SetMinMaxClientSize(Size minimum, Size maximum);
-        [[nodiscard]] Size GetMinClientSize() const;
-        [[nodiscard]] Size GetMaxClientSize() const;
+        [[nodiscard]] Result SetMinMaxClientSize(LogicalSize minimum, LogicalSize maximum);
+        [[nodiscard]] LogicalSize GetMinClientSize() const;
+        [[nodiscard]] LogicalSize GetMaxClientSize() const;
         [[nodiscard]] Result Center(CenterTarget target);
 
         [[nodiscard]] Result SetWindowMode(WindowMode mode);

@@ -31,11 +31,14 @@ Embed LWS with `add_subdirectory` and link `LWSLib`.
 #include <LWS/Platform.hpp>
 #include <LWS/Window.hpp>
 #ifdef LWS_HAS_WIN32_BACKEND
+#include <LWS/Win32/Platform.hpp>
 #endif
 
 int main()
 {
 #ifdef LWS_HAS_WIN32_BACKEND
+    if (LWS::Win32::BootstrapProcess() != LWS::Result::Success)
+        return 1;
 #endif
 
     LWS::PlatformContext platform;
@@ -83,6 +86,43 @@ int main()
   cross-thread-safe instance operations.
 - User callbacks execute synchronously on the context thread. Exceptions are reported through the installed
   non-throwing context handler and never unwind through native callbacks.
+
+## Portable and typed APIs
+
+Shared code uses `Window`, `AnyEvent`, coherent `ClientAreaSize`, and logical client coordinates. `WindowConfig` and
+`RequestClientSize()` always describe the drawable client area with `LogicalSize`; native title bars, borders, shadows,
+and other outer decorations are deliberately outside the portable size contract. `ClientAreaSize::pixels` is a
+non-convertible `PixelSize` and is authoritative for native rendering. `Scale()` derives the effective mapping between
+the paired sizes.
+
+Wayland scale is compositor-provided per-surface state, not physical-monitor DPI. With `wp_fractional_scale_v1` and
+`wp_viewporter`, LWS allocates each pixel dimension with `ceil(logical * preferredScale)`, uses buffer scale one, and
+sets the viewport destination to the logical size. Without those protocols, LWS uses the maximum integer scale of the
+outputs containing the surface. A scale change that alters the paired pixel size publishes
+`EventClientAreaSizeChanged` even when logical size is unchanged; clients must use that pixel size rather than monitor
+scale or reconstructed dimensions. Platform
+translation units may opt into typed extensions:
+
+```cpp
+#ifdef LWS_HAS_WIN32_BACKEND
+#include <LWS/Win32/WindowExtensions.hpp>
+
+auto connection = LWS::Win32::Listen(
+    window,
+    [](const LWS::Win32::PlatformEvent& event) -> std::optional<LRESULT>
+    {
+        if (const auto* paint = std::get_if<LWS::Win32::PaintEvent>(&event))
+        {
+            DrawSidebar(paint->deviceContext, paint->invalidRect);
+            return 0;
+        }
+        return std::nullopt;
+    });
+#endif
+```
+
+Typed native handles are borrowed and stable from successful window creation until destruction begins. Destroy every
+dependent swap chain, EGL surface, `wl_egl_window`, or registered native callback before destroying the window.
 
 ## Repository layout
 

@@ -73,9 +73,9 @@ namespace LWS
         LRESULT windowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
         LONG composeWindowStyles() const;
         void applyWindowIcon() const;
-        void dispatchClientAreaSizeChanged(Size framebufferSize);
         void updateWindowStyles();
         void updateBackgroundBrush();
+        void dispatchClientAreaSizeChanged(Size framebufferSize);
         [[nodiscard]] Size getWindowSize() const;
         void setWindowed();
         void setFullScreen(bool multiMonitor);
@@ -84,6 +84,7 @@ namespace LWS
 
         HWND fHwnd = nullptr;
         // Coordinate conversion runs for every input event, so refresh this cache only when the window DPI changes.
+        UINT fDpi = 96;
         bool fSuppressMenuChar = false;
         Size fMinSize = {0, 0};
         Size fMaxSize = {0, 0};
