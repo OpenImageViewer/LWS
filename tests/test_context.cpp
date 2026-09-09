@@ -206,4 +206,19 @@ TEST_CASE("Timer targets detach before handled destruction notifications", "[tim
     REQUIRE(timer.GetInterval() == 2);
 }
 
+TEST_CASE("Moved-from cursor and icon values are rejected", "[window][resource]")
+{
+    LWS::PlatformContext context;
+    Initialize(context);
+    LWS::Window window(context);
+    auto cursor = LWS::Cursor::FromShape(LWS::CursorShape::Arrow);
+    const auto retainedCursor = std::move(cursor);
+    REQUIRE(window.SetMouseCursor(cursor) == LWS::Result::InvalidArgument);
+    const std::array<std::byte, 4> pixels{};
+    auto icon = LWS::WindowIcon::FromBitmap({.pixels = pixels, .width = 1, .height = 1, .rowPitch = 4});
+    REQUIRE(icon.has_value());
+    const auto retainedIcon = std::move(*icon);
+    REQUIRE(window.SetWindowIcon(*icon) == LWS::Result::InvalidArgument);
+}
+
 #endif

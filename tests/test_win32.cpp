@@ -43,6 +43,17 @@ namespace
         return *handle;
     }
 
+    std::expected<LWS::WindowIcon, LWS::Result> MakeWindowIcon(std::byte blue)
+    {
+        const std::array pixels{blue, std::byte{0}, std::byte{0}, std::byte{255}};
+        return LWS::WindowIcon::FromBitmap({
+            .pixels = pixels,
+            .width = 1,
+            .height = 1,
+            .rowPitch = 4,
+        });
+    }
+
     HICON WindowIconHandle(HWND window, WPARAM size)
     {
         return reinterpret_cast<HICON>(SendMessageW(window, WM_GETICON, size, 0));
@@ -155,6 +166,34 @@ TEST_CASE("Window basic properties round-trip", "[window][win32]")
     REQUIRE(window.GetAlwaysOnTop());
     REQUIRE(window.SetTransparent(true) == LWS::Result::Success);
     REQUIRE(window.GetTransparent());
+}
+
+TEST_CASE("Window icons apply before creation, replace, and reset", "[window][icon][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    const auto firstIcon = MakeWindowIcon(std::byte{255});
+    REQUIRE(firstIcon.has_value());
+    REQUIRE(window.SetWindowIcon(*firstIcon) == LWS::Result::Success);
+    REQUIRE(window.Create({.visible = true}) == LWS::Result::Success);
+
+    const HWND handle = Hwnd(window);
+    const HICON initialBig = WindowIconHandle(handle, ICON_BIG);
+    const HICON initialSmall = WindowIconHandle(handle, ICON_SMALL);
+    REQUIRE(initialBig != nullptr);
+    REQUIRE(initialSmall == initialBig);
+
+    const auto replacement = MakeWindowIcon(std::byte{127});
+    REQUIRE(replacement.has_value());
+    REQUIRE(window.SetWindowIcon(*replacement) == LWS::Result::Success);
+    const HICON replacementBig = WindowIconHandle(handle, ICON_BIG);
+    REQUIRE(replacementBig != nullptr);
+    REQUIRE(replacementBig != initialBig);
+    REQUIRE(WindowIconHandle(handle, ICON_SMALL) == replacementBig);
+
+    REQUIRE(window.ResetWindowIcon() == LWS::Result::Success);
+    REQUIRE(WindowIconHandle(handle, ICON_BIG) == nullptr);
+    REQUIRE(WindowIconHandle(handle, ICON_SMALL) == nullptr);
 }
 
 TEST_CASE("Window min and max client sizes round-trip", "[window][win32]")
@@ -282,6 +321,20 @@ TEST_CASE("Task exceptions report and later work continues", "[platform][excepti
     REQUIRE(laterRan);
 }
 
+TEST_CASE("Custom cursors validate and apply copied pixels", "[cursor][bitmap][win32]")
+{
+    const std::array pixels{std::byte{0}, std::byte{0}, std::byte{0}, std::byte{255}};
+    auto cursor = LWS::Cursor::FromBitmap({.pixels = pixels, .width = 1, .height = 1, .rowPitch = 4}, {0, 0});
+    REQUIRE(cursor.has_value());
+
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.SetMouseCursor(*cursor) == LWS::Result::Success);
+    REQUIRE(window.Create() == LWS::Result::Success);
+    REQUIRE(window.SetMouseCursorVisible(false) == LWS::Result::Success);
+    REQUIRE(window.ResetMouseCursor() == LWS::Result::Success);
+}
+
 TEST_CASE("Timer can target windows in its context", "[timer][win32]")
 {
     Context context;
@@ -320,6 +373,20 @@ TEST_CASE("Clipboard service ownership cannot be copied", "[clipboard][win32]")
 {
     STATIC_REQUIRE_FALSE(std::is_copy_constructible_v<LWS::Clipboard>);
     STATIC_REQUIRE_FALSE(std::is_move_constructible_v<LWS::Clipboard>);
+}
+
+TEST_CASE("A shape replaces a custom cursor", "[cursor][win32]")
+{
+    const std::array pixels{std::byte{0}, std::byte{0}, std::byte{0}, std::byte{255}};
+    const auto custom = LWS::Cursor::FromBitmap({.pixels = pixels, .width = 1, .height = 1, .rowPitch = 4}, {0, 0});
+    REQUIRE(custom.has_value());
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.Create() == LWS::Result::Success);
+    REQUIRE(window.SetMouseCursor(*custom) == LWS::Result::Success);
+    REQUIRE(window.SetMouseCursor(LWS::Cursor::FromShape(LWS::CursorShape::Hand)) == LWS::Result::Success);
+    SendMessageW(Hwnd(window), WM_SETCURSOR, reinterpret_cast<WPARAM>(Hwnd(window)), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+    REQUIRE(GetCursor() == LoadCursorW(nullptr, IDC_HAND));
 }
 
 TEST_CASE("Retrieved timer messages cannot invoke a replacement timer", "[timer][lifetime][win32]")
@@ -442,6 +509,26 @@ TEST_CASE("Independent UI threads own independent timer registrations", "[timer]
     first.join();
     second.join();
     REQUIRE(successes == 2);
+}
+
+TEST_CASE("Cursor visibility stays local to the window client area", "[cursor][visibility][win32]")
+{
+    Context context;
+    LWS::Window hidden(context.value);
+    LWS::Window visible(context.value);
+    REQUIRE(hidden.Create() == LWS::Result::Success);
+    REQUIRE(visible.Create() == LWS::Result::Success);
+    const int initialVisibilityCount = ShowCursor(TRUE);
+    ShowCursor(FALSE);
+    REQUIRE(hidden.SetMouseCursorVisible(false) == LWS::Result::Success);
+    SendMessageW(Hwnd(hidden), WM_SETCURSOR, reinterpret_cast<WPARAM>(Hwnd(hidden)), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+    REQUIRE(GetCursor() == nullptr);
+    SendMessageW(Hwnd(visible), WM_SETCURSOR, reinterpret_cast<WPARAM>(Hwnd(visible)), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+    REQUIRE(GetCursor() == LoadCursorW(nullptr, IDC_ARROW));
+    const int finalVisibilityCount = ShowCursor(TRUE);
+    ShowCursor(FALSE);
+    REQUIRE(finalVisibilityCount == initialVisibilityCount);
+    REQUIRE(hidden.SetMouseCursorVisible(true) == LWS::Result::Success);
 }
 
 TEST_CASE("Posted work cannot starve native window input", "[platform][task][win32]")

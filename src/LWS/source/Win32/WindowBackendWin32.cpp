@@ -473,20 +473,55 @@ namespace LWS
         return title;
     }
 
-    void WindowBackendWin32::setWindowIcon(const std::filesystem::path& iconPath)
+    Result WindowBackendWin32::setWindowIcon(const BitmapBuffer* icon)
     {
-        if (fHwnd == nullptr)
+        if (icon == nullptr)
         {
-            return;
+            const HICON previousIcon = std::exchange(fWindowIcon, nullptr);
+            applyWindowIcon();
+            if (previousIcon != nullptr)
+                DestroyIcon(previousIcon);
+            return Result::Success;
         }
+        const auto layout = internal::validateBitmapBuffer(*icon);
+        if (!layout.has_value() || icon->format != BitmapPixelFormat::Bgra8Premultiplied)
+            return Result::InvalidArgument;
 
-        HICON icon = static_cast<HICON>(
-            LoadImage(nullptr, iconPath.c_str(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE));
-        if (icon != nullptr)
-        {
-            SendMessage(fHwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
-            SendMessage(fHwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
-        }
+        BITMAPV5HEADER header{};
+        header.bV5Size = sizeof(header);
+        header.bV5Width = static_cast<LONG>(icon->width);
+        header.bV5Height = -static_cast<LONG>(icon->height);
+        header.bV5Planes = 1;
+        header.bV5BitCount = 32;
+        header.bV5Compression = BI_BITFIELDS;
+        header.bV5RedMask = 0x00FF0000;
+        header.bV5GreenMask = 0x0000FF00;
+        header.bV5BlueMask = 0x000000FF;
+        header.bV5AlphaMask = 0xFF000000;
+        void* targetPixels{};
+        HDC screen = GetDC(nullptr);
+        HBITMAP color = CreateDIBSection(screen, reinterpret_cast<BITMAPINFO*>(&header), DIB_RGB_COLORS, &targetPixels,
+                                         nullptr, 0);
+        ReleaseDC(nullptr, screen);
+        if (color == nullptr || targetPixels == nullptr)
+            return Result::Failure;
+        const size_t rowBytes = static_cast<size_t>(icon->width) * 4U;
+        for (uint32_t row = 0; row < icon->height; ++row)
+            std::memcpy(static_cast<std::byte*>(targetPixels) + row * rowBytes,
+                        icon->pixels.data() + row * icon->rowPitch, rowBytes);
+        HBITMAP mask = CreateBitmap(static_cast<int>(icon->width), static_cast<int>(icon->height), 1, 1, nullptr);
+        ICONINFO info{.fIcon = TRUE, .hbmMask = mask, .hbmColor = color};
+        HICON nativeIcon = mask != nullptr ? CreateIconIndirect(&info) : nullptr;
+        DeleteObject(color);
+        if (mask != nullptr)
+            DeleteObject(mask);
+        if (nativeIcon == nullptr)
+            return Result::Failure;
+        const HICON previousIcon = std::exchange(fWindowIcon, nativeIcon);
+        applyWindowIcon();
+        if (previousIcon != nullptr)
+            DestroyIcon(previousIcon);
+        return Result::Success;
     }
 
     void WindowBackendWin32::applyWindowIcon() const

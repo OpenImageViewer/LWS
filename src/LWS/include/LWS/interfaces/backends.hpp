@@ -8,7 +8,6 @@
 #include <LWS/Result.hpp>
 #include <LWS/WindowTypes.hpp>
 
-#include <filesystem>
 #include <functional>
 #include <memory>
 
@@ -83,7 +82,7 @@ namespace LWS
             [[nodiscard]] virtual WindowShowState getDisplayState() const = 0;
             virtual void setTitle(const string_type& title) = 0;
             [[nodiscard]] virtual string_type getTitle() const = 0;
-            virtual void setWindowIcon(const std::filesystem::path& iconPath) = 0;
+            [[nodiscard]] virtual Result setWindowIcon(const BitmapBuffer* icon) = 0;
             virtual void setPosition(Point position) = 0;
             [[nodiscard]] virtual Point getPosition() const = 0;
             [[nodiscard]] virtual uintptr_t getCurrentMonitorHandle() const { return 0; }

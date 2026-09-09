@@ -30,7 +30,7 @@ namespace LWS
         WindowShowState getDisplayState() const override;
         void setTitle(const LWS::string_type& title) override;
         LWS::string_type getTitle() const override;
-        void setWindowIcon(const std::filesystem::path& iconPath) override;
+        Result setWindowIcon(const BitmapBuffer* icon) override;
         void setPosition(Point pos) override;
         Point getPosition() const override;
         void setSize(Size sz) override;

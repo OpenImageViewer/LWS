@@ -1,31 +1,63 @@
 #include <LWS/Cursor.hpp>
-#include <stdexcept>
+
+#include <LWS/Bitmap.hpp>
+
+#include <variant>
 
 namespace LWS
 {
-    Cursor::Cursor() : impl_(internal::createDefaultCursorBackend()) {}
+    struct Cursor::Resource
+    {
+        struct Custom
+        {
+            std::shared_ptr<const Bitmap> bitmap;
+            Point hotspot;
+        };
 
-    Cursor::Cursor(std::unique_ptr<internal::ICursorBackend> impl) : impl_(std::move(impl)) {}
+        std::variant<CursorShape, Custom> value;
+    };
 
-    void Cursor::setVisible(bool visible)
+    Cursor Cursor::FromShape(CursorShape shape)
     {
-        impl_->setVisible(visible);
-    }
-    void Cursor::setCursorShape(CursorShape shape)
-    {
-        impl_->setCursorShape(shape);
-    }
-    Result Cursor::setCustomCursor(const BitmapBuffer& bitmap)
-    {
-        return impl_->setCustomCursor(bitmap, {});
-    }
-    BackendId Cursor::backendId() const
-    {
-        return impl_->backend();
+        return Cursor(std::make_shared<Resource>(Resource{shape}));
     }
 
-    std::shared_ptr<internal::ICursorBackend> Cursor::getBackendShared() const
+    std::expected<Cursor, Result> Cursor::FromBitmap(const BitmapBuffer& bitmap, Point hotspot)
     {
-        return impl_;
+        if (hotspot.x < 0 || hotspot.y < 0 || static_cast<uint32_t>(hotspot.x) >= bitmap.width ||
+            static_cast<uint32_t>(hotspot.y) >= bitmap.height)
+        {
+            return std::unexpected(Result::InvalidArgument);
+        }
+
+        try
+        {
+            auto normalized = std::make_shared<Bitmap>(bitmap);
+            return Cursor(std::make_shared<Resource>(Resource{Resource::Custom{std::move(normalized), hotspot}}));
+        }
+        catch (...)
+        {
+            return std::unexpected(Result::InvalidArgument);
+        }
+    }
+
+    bool Cursor::IsCustom() const
+    {
+        return std::holds_alternative<Resource::Custom>(resource_->value);
+    }
+
+    CursorShape Cursor::Shape() const
+    {
+        return std::get<CursorShape>(resource_->value);
+    }
+
+    BitmapBuffer Cursor::BitmapData() const
+    {
+        return std::get<Resource::Custom>(resource_->value).bitmap->GetBuffer();
+    }
+
+    Point Cursor::Hotspot() const
+    {
+        return std::get<Resource::Custom>(resource_->value).hotspot;
     }
 }  // namespace LWS

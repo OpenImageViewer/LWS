@@ -37,12 +37,15 @@ namespace LWS
 
         std::unique_ptr<internal::IWindowBackend> backend;
         std::shared_ptr<internal::ListenerState> listeners;
-        Cursor* cursor{};
+        std::shared_ptr<internal::ICursorBackend> cursorBackend;
+        std::optional<Cursor> cursor;
+        std::optional<WindowIcon> icon;
         Window* parent{};
         std::vector<Window*> children;
         State state{State::PreCreate};
         WindowConfig config;
         bool configured{};
+        bool cursorVisible{true};
     };
 
     internal::IWindowBackend* internal::WindowBackendAccess::Get(Window& window)
@@ -137,11 +140,15 @@ namespace LWS
         };
         impl_->backend->setBackgroundColor(config.backgroundColor);
         Result result = Result::Success;
-
+        if (impl_->icon.has_value())
+        {
+            const BitmapBuffer icon = impl_->icon->GetBuffer();
+            result = impl_->backend->setWindowIcon(&icon);
+        }
         if (result == Result::Success && config.dragAndDropEnabled)
             result = impl_->backend->enableDragAndDrop(true);
-        if (result == Result::Success && impl_->cursor != nullptr)
-            result = SetMouseCursor(impl_->cursor);
+        if (result == Result::Success && impl_->cursor.has_value())
+            result = SetMouseCursor(*impl_->cursor);
         if (result == Result::Success)
             result = impl_->backend->create(nativeConfig);
 
@@ -535,24 +542,93 @@ namespace LWS
         return Result::Success;
     }
 
-    Result Window::SetMouseCursor(Cursor* cursor)
+    Result Window::SetMouseCursor(Cursor cursor)
+    {
+        platform_.AssertCurrentThread();
+        if (cursor.resource_ == nullptr)
+            return Result::InvalidArgument;
+        if (impl_->state == Impl::State::Destroyed || impl_->state == Impl::State::Destroying)
+            return Result::InvalidState;
+        if (cursor.IsCustom() && GetBackendId() == BackendId::Wayland)
+            return Result::NotSupported;
+        if (impl_->state == Impl::State::PreCreate)
+        {
+            impl_->cursor = std::move(cursor);
+            return Result::Success;
+        }
+        if (impl_->cursorBackend == nullptr)
+        {
+            auto nativeCursor = internal::createDefaultCursorBackend();
+            impl_->cursorBackend = std::shared_ptr<internal::ICursorBackend>(std::move(nativeCursor));
+            impl_->backend->setCursor(impl_->cursorBackend);
+        }
+        const Result result = cursor.IsCustom()
+                                  ? impl_->cursorBackend->setCustomCursor(cursor.BitmapData(), cursor.Hotspot())
+                                  : (impl_->cursorBackend->setCursorShape(cursor.Shape()), Result::Success);
+        if (result == Result::Success)
+        {
+            impl_->cursor = std::move(cursor);
+            impl_->cursorBackend->setVisible(impl_->cursorVisible);
+        }
+        return result;
+    }
+
+    Result Window::ResetMouseCursor()
     {
         platform_.AssertCurrentThread();
         if (impl_->state == Impl::State::Destroyed || impl_->state == Impl::State::Destroying)
             return Result::InvalidState;
-        impl_->cursor = cursor;
-        impl_->backend->setCursor(cursor != nullptr ? cursor->getBackendShared() : nullptr);
+        return SetMouseCursor(Cursor::FromShape(CursorShape::Arrow));
+    }
+
+    Result Window::SetMouseCursorVisible(bool visible)
+    {
+        platform_.AssertCurrentThread();
+        if (impl_->state == Impl::State::Destroyed || impl_->state == Impl::State::Destroying)
+            return Result::InvalidState;
+        impl_->cursorVisible = visible;
+        if (!impl_->cursor.has_value())
+            return SetMouseCursor(Cursor::FromShape(CursorShape::Arrow));
+        if (impl_->cursorBackend != nullptr)
+            impl_->cursorBackend->setVisible(visible);
         return Result::Success;
     }
 
-    Cursor* Window::GetMouseCursor() const { return impl_->cursor; }
-
-    Result Window::SetWindowIcon(const std::filesystem::path& iconPath)
+    Result Window::SetWindowIcon(WindowIcon icon)
     {
-        if (!IsCreated())
+        platform_.AssertCurrentThread();
+        if (icon.bitmap_ == nullptr)
+            return Result::InvalidArgument;
+        if (impl_->state == Impl::State::Destroyed || impl_->state == Impl::State::Destroying)
             return Result::InvalidState;
-        impl_->backend->setWindowIcon(iconPath);
-        return Result::Success;
+        if (GetBackendId() != BackendId::Win32)
+            return Result::NotSupported;
+        if (impl_->state == Impl::State::PreCreate)
+        {
+            impl_->icon = std::move(icon);
+            return Result::Success;
+        }
+        const BitmapBuffer bitmap = icon.GetBuffer();
+        const Result result = impl_->backend->setWindowIcon(&bitmap);
+        if (result == Result::Success)
+            impl_->icon = std::move(icon);
+        return result;
+    }
+
+    Result Window::ResetWindowIcon()
+    {
+        platform_.AssertCurrentThread();
+        if (impl_->state == Impl::State::Destroyed || impl_->state == Impl::State::Destroying)
+            return Result::InvalidState;
+        if (impl_->state == Impl::State::PreCreate)
+        {
+            impl_->icon.reset();
+            return Result::Success;
+        }
+        const Result result = impl_->backend->setWindowIcon(nullptr);
+        if (result == Result::Success)
+            impl_->icon.reset();
+        return result;
     }
 
     Window* Window::GetParent() const
@@ -617,7 +693,9 @@ namespace LWS
                 child->impl_->parent = nullptr;
             impl_->children.clear();
             impl_->backend->setCursor(nullptr);
-            impl_->cursor = nullptr;
+            impl_->cursorBackend.reset();
+            impl_->cursor.reset();
+            impl_->icon.reset();
         }
         return response;
     }

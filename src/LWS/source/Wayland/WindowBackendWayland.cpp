@@ -595,7 +595,10 @@ namespace LWS
     {
         return fTitle;
     }
-    void WindowBackendWayland::setWindowIcon(const std::filesystem::path&) {}
+    Result WindowBackendWayland::setWindowIcon(const BitmapBuffer*)
+    {
+        return Result::NotSupported;
+    }
     void WindowBackendWayland::setPosition(Point position)
     {
         if (isChildWindow())

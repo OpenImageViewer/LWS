@@ -4,6 +4,7 @@
 
     #include <cstring>
     #include <limits>
+    #include <utility>
 
     #include <LWS/Win32/CursorBackendWin32.hpp>
     #include <LWS/source/internal/BitmapValidation.hpp>
@@ -55,30 +56,17 @@ namespace LWS
 
     void CursorBackendWin32::setVisible(bool visible)
     {
-        if (fVisible == visible)
-        {
-            return;
-        }
-
         fVisible = visible;
-        if (visible)
-        {
-            while (ShowCursor(TRUE) < 0)
-            {
-            }
-        }
-        else
-        {
-            while (ShowCursor(FALSE) >= 0)
-            {
-            }
-        }
+        SetCursor(getCursorHandle());
     }
 
     void CursorBackendWin32::setCursorShape(CursorShape shape)
     {
+        const HCURSOR previous = std::exchange(fCustomCursor, nullptr);
         fCurrentCursor = loadCursorShape(shape);
         SetCursor(getCursorHandle());
+        if (previous != nullptr)
+            DestroyCursor(previous);
     }
 
     Result CursorBackendWin32::setCustomCursor(const BitmapBuffer& bmp, Point hotspot)
@@ -191,6 +179,8 @@ namespace LWS
 
     HCURSOR CursorBackendWin32::getCursorHandle() const
     {
+        if (!fVisible)
+            return nullptr;
         if (fCustomCursor != nullptr)
         {
             return fCustomCursor;

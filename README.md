@@ -1,7 +1,7 @@
 # LWS
 
 LWS is a compact C++26 windowing layer with explicit platform ownership. It provides portable window lifecycle,
-input, events, cursors and icons, timers, clipboard, drag-and-drop, and bitmap presentation while keeping
+input, events, immutable cursors and icons, timers, clipboard, drag-and-drop, and bitmap presentation while keeping
 native backends private.
 
 ## Supported platforms

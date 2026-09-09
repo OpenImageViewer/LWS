@@ -103,6 +103,18 @@ TEST_CASE("Wayland child containment uses parent configuration", "[window][paren
     REQUIRE_FALSE(child.IsCreated());
 }
 
+TEST_CASE("Wayland custom cursors fail without changing standard selection", "[cursor][wayland]")
+{
+    LWS::PlatformContext context;
+    Initialize(context);
+    LWS::Window window(context);
+    REQUIRE(window.SetMouseCursor(LWS::Cursor::FromShape(LWS::CursorShape::Hand)) == LWS::Result::Success);
+    const std::array<std::byte, 4> pixel{};
+    auto custom = LWS::Cursor::FromBitmap({.pixels = pixel, .width = 1, .height = 1, .rowPitch = 4}, {0, 0});
+    REQUIRE(custom.has_value());
+    REQUIRE(window.SetMouseCursor(*custom) == LWS::Result::NotSupported);
+}
+
 TEST_CASE("Wayland task wake executes FIFO", "[platform][task][wayland]")
 {
     LWS::PlatformContext context;

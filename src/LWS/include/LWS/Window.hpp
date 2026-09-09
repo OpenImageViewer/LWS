@@ -5,7 +5,7 @@
 #include <LWS/Event.hpp>
 #include <LWS/Platform.hpp>
 #include <LWS/Result.hpp>
-#include <filesystem>
+#include <LWS/WindowIcon.hpp>
 #include <LWS/WindowTypes.hpp>
 
 #include <expected>
@@ -88,9 +88,11 @@ namespace LWS
         [[nodiscard]] Result SetPointerLocked(bool locked);
         [[nodiscard]] Result BeginWindowDrag(WindowDragOperation operation);
 
-        [[nodiscard]] Result SetMouseCursor(Cursor* cursor);
-        [[nodiscard]] Cursor* GetMouseCursor() const;
-        [[nodiscard]] Result SetWindowIcon(const std::filesystem::path& iconPath);
+        [[nodiscard]] Result SetMouseCursor(Cursor cursor);
+        [[nodiscard]] Result ResetMouseCursor();
+        [[nodiscard]] Result SetMouseCursorVisible(bool visible);
+        [[nodiscard]] Result SetWindowIcon(WindowIcon icon);
+        [[nodiscard]] Result ResetWindowIcon();
 
         [[nodiscard]] Window* GetParent() const;
         [[nodiscard]] std::expected<EventConnection, Result> Listen(EventCallback callback);

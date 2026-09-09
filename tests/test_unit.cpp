@@ -43,6 +43,23 @@ TEST_CASE("Result enum covers all expected values", "[result]")
 // WindowConfig defaults
 // ---------------------------------------------------------------------------
 
+TEST_CASE("Cursor values are immutable cheap copies", "[cursor][lifetime]")
+{
+    const LWS::Cursor cursor = LWS::Cursor::FromShape(LWS::CursorShape::Hand);
+    const LWS::Cursor copy = cursor;
+    STATIC_REQUIRE(std::is_copy_constructible_v<LWS::Cursor>);
+    STATIC_REQUIRE(std::is_nothrow_move_constructible_v<LWS::Cursor>);
+    std::ignore = copy;
+}
+
+TEST_CASE("Cursor validates custom bitmap hotspots", "[cursor][bitmap]")
+{
+    const std::array<std::byte, 4> pixel{};
+    const LWS::BitmapBuffer bitmap{.pixels = pixel, .width = 1, .height = 1, .rowPitch = 4};
+    REQUIRE(LWS::Cursor::FromBitmap(bitmap, {0, 0}).has_value());
+    REQUIRE(LWS::Cursor::FromBitmap(bitmap, {1, 0}).error() == LWS::Result::InvalidArgument);
+}
+
 // ---------------------------------------------------------------------------
 // AnyEvent variant dispatch
 // ---------------------------------------------------------------------------
