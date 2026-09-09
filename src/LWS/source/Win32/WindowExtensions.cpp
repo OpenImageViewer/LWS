@@ -38,9 +38,9 @@ namespace LWS::Win32
         return GetHwnd(const_cast<Window&>(window));
     }
 
-    Result SetPlatformCallback(Window& window, PlatformCallback callback)
+    std::expected<EventConnection, Result> Listen(Window& window, PlatformCallback callback)
     {
-        return internal::WindowBackendAccess::SetPlatformCallback(window, std::move(callback));
+        return internal::WindowBackendAccess::ListenPlatform(window, std::move(callback));
     }
 
     Result SetMenuChar(Window& window, bool suppress)

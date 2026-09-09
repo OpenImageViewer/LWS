@@ -47,7 +47,7 @@ namespace LWS
                 if (fWindow.Create({.visible = false}) != Result::Success)
                     LL_EXCEPTION(LLUtils::Exception::ErrorCode::InvalidState,
                                  "Unable to create the notification-icon window");
-                const Result connection = Win32::SetPlatformCallback(
+                auto connection = Win32::Listen(
                     fWindow,
                     [this, &notificationEvent](const Win32::PlatformEvent& event)
                     {
@@ -58,11 +58,12 @@ namespace LWS
                         }
                         return std::optional<LRESULT>{};
                     });
-                if (connection != Result::Success)
+                if (!connection.has_value())
                 {
                     LL_EXCEPTION(LLUtils::Exception::ErrorCode::InvalidState,
                                  "Unable to register the notification-icon platform callback");
                 }
+                fConnection = std::move(*connection);
             }
 
             NOTIFYICONDATA nid{};
@@ -133,6 +134,7 @@ namespace LWS
 
         std::set<IconID> fIconIDs;
         Window fWindow;
+        EventConnection fConnection;
         LLUtils::UniqueIdProvider<IconID, std::set<IconID>> fIconIdProvider{1};
     };
 

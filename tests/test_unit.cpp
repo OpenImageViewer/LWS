@@ -68,6 +68,13 @@ TEST_CASE("AnyEvent variant holds EventMouseButton", "[event]")
 // ---------------------------------------------------------------------------
 // EventConnection — type guarantees
 // ---------------------------------------------------------------------------
+TEST_CASE("EventConnection is move-only", "[event]")
+{
+    STATIC_REQUIRE_FALSE(std::is_copy_constructible_v<LWS::EventConnection>);
+    STATIC_REQUIRE(std::is_nothrow_move_constructible_v<LWS::EventConnection>);
+    const LWS::EventConnection connection;
+    REQUIRE_FALSE(connection.IsConnected());
+}
 
 // ---------------------------------------------------------------------------
 // WindowShowState enum
@@ -272,6 +279,113 @@ TEST_CASE("Notification icon rectangles use signed screen coordinates", "[notifi
     REQUIRE(std::is_signed_v<typename IconRect::Point_Type::point_type>);
 }
 
-#ifdef LWS_PLATFORM_WIN32
+TEST_CASE("Listeners retain their captures during self-disconnection", "[event][lifetime]")
+{
+    LWS::PlatformContext platform;
+    LWS::internal::ListenerState listeners(platform);
+    auto capture = std::make_shared<int>(42);
+    const std::weak_ptr<int> lifetime = capture;
+    uint64_t id{};
+    bool aliveDuringCallback{};
+    id = listeners.Add(
+        [&, capture = std::move(capture)](const LWS::AnyEvent&)
+        {
+            listeners.Remove(id);
+            aliveDuringCallback = !lifetime.expired();
+            return LWS::EventResponse::Unhandled;
+        });
 
+    REQUIRE(listeners.Dispatch(LWS::EventPaint{}) == LWS::EventResponse::Unhandled);
+    REQUIRE(aliveDuringCallback);
+    REQUIRE(lifetime.expired());
+    REQUIRE_FALSE(listeners.Contains(id));
+}
+
+TEST_CASE("Listener mutations preserve dispatch order and defer new registrations", "[event][lifetime]")
+{
+    LWS::PlatformContext platform;
+    LWS::internal::ListenerState listeners(platform);
+    std::vector<int> calls;
+    uint64_t first{};
+    uint64_t removed{};
+    first = listeners.Add(
+        [&](const LWS::AnyEvent&)
+        {
+            calls.push_back(1);
+            listeners.Remove(first);
+            listeners.Remove(removed);
+            std::ignore = listeners.Add(
+                [&](const LWS::AnyEvent&)
+                {
+                    calls.push_back(3);
+                    return LWS::EventResponse::Unhandled;
+                });
+            return LWS::EventResponse::Unhandled;
+        });
+    removed = listeners.Add(
+        [&](const LWS::AnyEvent&)
+        {
+            calls.push_back(2);
+            return LWS::EventResponse::Unhandled;
+        });
+
+    REQUIRE(listeners.Dispatch(LWS::EventPaint{}) == LWS::EventResponse::Unhandled);
+    REQUIRE(calls == std::vector{1});
+    REQUIRE(listeners.Dispatch(LWS::EventPaint{}) == LWS::EventResponse::Unhandled);
+    REQUIRE(calls == std::vector{1, 3});
+}
+
+TEST_CASE("Closing listeners preserves active captures and stops propagation", "[event][lifetime]")
+{
+    LWS::PlatformContext platform;
+    LWS::internal::ListenerState listeners(platform);
+    auto capture = std::make_shared<int>(42);
+    const std::weak_ptr<int> lifetime = capture;
+    bool aliveDuringCallback{};
+    bool laterCalled{};
+    std::ignore = listeners.Add(
+        [&, capture = std::move(capture)](const LWS::AnyEvent&)
+        {
+            listeners.Close();
+            aliveDuringCallback = !lifetime.expired();
+            return LWS::EventResponse::Unhandled;
+        });
+    std::ignore = listeners.Add(
+        [&](const LWS::AnyEvent&)
+        {
+            laterCalled = true;
+            return LWS::EventResponse::Unhandled;
+        });
+
+    REQUIRE(listeners.Dispatch(LWS::EventPaint{}) == LWS::EventResponse::Unhandled);
+    REQUIRE(aliveDuringCallback);
+    REQUIRE(lifetime.expired());
+    REQUIRE_FALSE(laterCalled);
+    REQUIRE(listeners.IsClosed());
+}
+
+#ifdef LWS_PLATFORM_WIN32
+TEST_CASE("Typed listeners retain their captures during self-disconnection", "[event][lifetime][win32]")
+{
+    LWS::PlatformContext platform;
+    LWS::internal::ListenerState listeners(platform);
+    auto capture = std::make_shared<int>(42);
+    const std::weak_ptr<int> lifetime = capture;
+    uint64_t id{};
+    bool aliveDuringCallback{};
+    id = listeners.AddPlatform(
+        [&, capture = std::move(capture)](const LWS::Win32::PlatformEvent&) -> std::optional<LRESULT>
+        {
+            listeners.Remove(id);
+            aliveDuringCallback = !lifetime.expired();
+            return 7;
+        });
+
+    LRESULT result{};
+    REQUIRE(listeners.DispatchPlatform(LWS::Win32::ActivationEvent{true}, result));
+    REQUIRE(result == 7);
+    REQUIRE(aliveDuringCallback);
+    REQUIRE(lifetime.expired());
+    REQUIRE_FALSE(listeners.Contains(id));
+}
 #endif

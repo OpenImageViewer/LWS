@@ -1,7 +1,6 @@
 #include <LWS/Event.hpp>
 
 #include <LWS/Platform.hpp>
-#include <LWS/Window.hpp>
 
 #include "internal/ListenerState.hpp"
 
@@ -9,31 +8,68 @@
 
 namespace LWS
 {
-    EventListenerGuard& EventListenerGuard::operator=(EventListenerGuard&& other) noexcept
+    EventConnection::EventConnection(std::weak_ptr<internal::ListenerState> state, uint64_t listenerId,
+                                     std::thread::id threadId) noexcept
+        : state_(std::move(state)), listenerId_(listenerId), threadId_(threadId), bound_(true)
+    {
+    }
+
+    EventConnection::~EventConnection()
+    {
+        Disconnect();
+    }
+
+    EventConnection::EventConnection(EventConnection&& other) noexcept
+    {
+        MoveFrom(other);
+    }
+
+    EventConnection& EventConnection::operator=(EventConnection&& other) noexcept
     {
         if (this != &other)
         {
-            if (window)
-            {
-                window->RemoveEventListener(token);
-            }
-
-            window = other.window;
-            token = other.token;
-            other.window = nullptr;
+            assert(!bound_ || !other.bound_ || threadId_ == other.threadId_);
+            Disconnect();
+            MoveFrom(other);
         }
-
         return *this;
     }
 
-    EventListenerGuard::~EventListenerGuard()
+    void EventConnection::Disconnect()
     {
-        if (window)
-        {
-            window->RemoveEventListener(token);
-        }
+        if (!bound_)
+            return;
+
+        assert(std::this_thread::get_id() == threadId_);
+        if (const auto state = state_.lock(); state != nullptr)
+            state->Remove(listenerId_);
+        state_.reset();
+        listenerId_ = 0;
     }
-}
+
+    bool EventConnection::IsConnected() const
+    {
+        if (!bound_)
+            return false;
+
+        assert(std::this_thread::get_id() == threadId_);
+        const auto state = state_.lock();
+        return state != nullptr && state->Contains(listenerId_);
+    }
+
+    void EventConnection::MoveFrom(EventConnection& other) noexcept
+    {
+        if (other.bound_)
+            assert(std::this_thread::get_id() == other.threadId_);
+        state_ = std::move(other.state_);
+        listenerId_ = other.listenerId_;
+        threadId_ = other.threadId_;
+        bound_ = other.bound_;
+        other.listenerId_ = 0;
+        other.threadId_ = {};
+        other.bound_ = false;
+    }
+}  // namespace LWS
 
 namespace LWS::internal
 {
@@ -48,7 +84,7 @@ namespace LWS::internal
                 EventResponse response;
                 try
                 {
-                    response = listener->callback(event) ? EventResponse::Handled : EventResponse::Unhandled;
+                    response = listener->callback(event);
                 }
                 catch (...)
                 {

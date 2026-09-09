@@ -179,6 +179,86 @@ TEST_CASE("Parent configuration creates a child relationship", "[window][parent]
     REQUIRE_FALSE(child.IsCreated());
 }
 
+TEST_CASE("Portable event connections own listener registration", "[window][event][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    unsigned paints{};
+    auto connection = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            paints += std::holds_alternative<LWS::EventPaint>(event);
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(connection.has_value());
+    REQUIRE(connection->IsConnected());
+    REQUIRE(window.Create() == LWS::Result::Success);
+    SendMessageW(Hwnd(window), WM_PAINT, 0, 0);
+    REQUIRE(paints > 0);
+    connection->Disconnect();
+    REQUIRE_FALSE(connection->IsConnected());
+}
+
+TEST_CASE("Typed Win32 event connections are runtime validated", "[window][event][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    unsigned paints{};
+    auto connection = LWS::Win32::Listen(window,
+                                         [&](const LWS::Win32::PlatformEvent& event) -> std::optional<LRESULT>
+                                         {
+                                             paints += std::holds_alternative<LWS::Win32::PaintEvent>(event);
+                                             return std::nullopt;
+                                         });
+    REQUIRE(connection.has_value());
+    REQUIRE(window.Create() == LWS::Result::Success);
+    SendMessageW(Hwnd(window), WM_PAINT, 0, 0);
+    REQUIRE(paints > 0);
+}
+
+TEST_CASE("Listener exceptions stop propagation and report through the context", "[window][event][exception][win32]")
+{
+    Context context;
+    unsigned exceptions{};
+    unsigned laterCalls{};
+    context.value.SetUnhandledExceptionHandler([&](std::exception_ptr) noexcept { ++exceptions; });
+    LWS::Window window(context.value);
+    auto throwing = window.Listen([](const LWS::AnyEvent&) -> LWS::EventResponse { throw 7; });
+    auto later = window.Listen(
+        [&](const LWS::AnyEvent&)
+        {
+            ++laterCalls;
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(throwing.has_value());
+    REQUIRE(later.has_value());
+    REQUIRE(window.Create() == LWS::Result::Success);
+    SendMessageW(Hwnd(window), WM_PAINT, 0, 0);
+    REQUIRE(exceptions == 1);
+    REQUIRE(laterCalls == 0);
+}
+
+TEST_CASE("Unhandled close destroys and handled close retains", "[window][event][close][win32]")
+{
+    Context context;
+    LWS::Window retained(context.value);
+    auto connection = retained.Listen(
+        [](const LWS::AnyEvent& event)
+        {
+            return std::holds_alternative<LWS::EventCloseRequested>(event) ? LWS::EventResponse::Handled
+                                                                           : LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(connection.has_value());
+    REQUIRE(retained.Create() == LWS::Result::Success);
+    SendMessageW(Hwnd(retained), WM_CLOSE, 0, 0);
+    REQUIRE(retained.IsCreated());
+
+    LWS::Window destroyed(context.value);
+    REQUIRE(destroyed.Create() == LWS::Result::Success);
+    SendMessageW(Hwnd(destroyed), WM_CLOSE, 0, 0);
+    REQUIRE_FALSE(destroyed.IsCreated());
+}
+
 TEST_CASE("Posted tasks execute FIFO on the context thread", "[platform][task][win32]")
 {
     Context context;
@@ -362,6 +442,38 @@ TEST_CASE("Independent UI threads own independent timer registrations", "[timer]
     first.join();
     second.join();
     REQUIRE(successes == 2);
+}
+
+TEST_CASE("Posted work cannot starve native window input", "[platform][task][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.Create() == LWS::Result::Success);
+    bool keyReceived{};
+    auto connection = window.Listen([&](const LWS::AnyEvent& event)
+    {
+        if (std::holds_alternative<LWS::EventKeyDown>(event))
+        {
+            keyReceived = true;
+            context.value.RequestQuit();
+        }
+        return LWS::EventResponse::Unhandled;
+    });
+    REQUIRE(connection.has_value());
+    unsigned batches{};
+    std::function<void()> postAgain;
+    postAgain = [&]
+    {
+        if (++batches < 1000)
+            std::ignore = context.value.PostTask(postAgain);
+        else
+            context.value.RequestQuit();
+    };
+    REQUIRE(context.value.PostTask(postAgain) == LWS::Result::Success);
+    REQUIRE(PostMessageW(Hwnd(window), WM_KEYDOWN, 'A', 0));
+    context.value.RunMessageLoop();
+    REQUIRE(keyReceived);
+    REQUIRE(batches < 1000);
 }
 
 TEST_CASE("Destroying a timer target detaches it and invalidates retrieved ticks", "[timer][lifetime][win32]")

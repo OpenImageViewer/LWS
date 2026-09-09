@@ -29,15 +29,15 @@ int main()
         config.backgroundColor = LLUtils::Colors::Red;
         config.visible = true;
 
-        auto connection = win.AddEventListener(
+        auto connection = win.Listen(
             [&](const AnyEvent& event)
             {
                 if (std::holds_alternative<EventWindowDestroyed>(event))
                     platform.RequestQuit();
-                return false;
+                return EventResponse::Unhandled;
             });
 
-        if (connection == 0 || win.Create(config) != Result::Success)
+        if (!connection.has_value() || win.Create(config) != Result::Success)
             return 1;
 
         platform.RunMessageLoop();

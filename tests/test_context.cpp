@@ -114,6 +114,36 @@ TEST_CASE("Empty timer callbacks remain disabled", "[timer][callback]")
     REQUIRE(exceptions == 0);
 }
 
+TEST_CASE("Window destruction tolerates child callbacks removing siblings", "[window][lifetime]")
+{
+    LWS::PlatformContext context;
+    Initialize(context);
+    LWS::Window parent(context);
+    LWS::Window first(context);
+    auto second = std::make_unique<LWS::Window>(context);
+    REQUIRE(parent.Create() == LWS::Result::Success);
+    REQUIRE(first.Create({.parent = &parent}) == LWS::Result::Success);
+    REQUIRE(second->Create({.parent = &parent}) == LWS::Result::Success);
+    LWS::Result recursive = LWS::Result::Failure;
+    unsigned destroyed = 0;
+    auto listener = first.Listen([&](const LWS::AnyEvent& event)
+                                 {
+                                     if (std::holds_alternative<LWS::EventWindowDestroyed>(event))
+                                     {
+                                         ++destroyed;
+                                         recursive = first.Destroy();
+                                         second.reset();
+                                     }
+                                     return LWS::EventResponse::Unhandled;
+                                 });
+    REQUIRE(listener.has_value());
+    REQUIRE(parent.Destroy() == LWS::Result::Success);
+    REQUIRE(destroyed == 1);
+    REQUIRE(recursive == LWS::Result::InvalidState);
+    REQUIRE(second == nullptr);
+    REQUIRE_FALSE(first.IsCreated());
+}
+
 TEST_CASE("Client size constraints reject inverted bounds before native requests", "[window][size]")
 {
     LWS::PlatformContext context;
@@ -144,6 +174,36 @@ TEST_CASE("Exception handlers may replace themselves during dispatch", "[platfor
     std::ignore = context.ProcessMessages();
     REQUIRE(aliveAfterReset);
     REQUIRE(lifetime.expired());
+}
+
+TEST_CASE("Timer targets detach before handled destruction notifications", "[timer][lifetime]")
+{
+    LWS::PlatformContext context;
+    Initialize(context);
+    LWS::Window window(context);
+    REQUIRE(window.Create() == LWS::Result::Success);
+    auto listener = window.Listen([](const LWS::AnyEvent& event)
+                                  {
+                                      return std::holds_alternative<LWS::EventWindowDestroyed>(event)
+                                                 ? LWS::EventResponse::Handled
+                                                 : LWS::EventResponse::Unhandled;
+                                  });
+    REQUIRE(listener.has_value());
+    LWS::Timer timer(context);
+    REQUIRE(timer.SetTargetWindow(&window) == LWS::Result::Success);
+    unsigned calls = 0;
+    timer.SetCallback([&] { ++calls; });
+    timer.SetInterval(1);
+    REQUIRE(window.Destroy() == LWS::Result::Success);
+    timer.SetInterval(2);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(30);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        std::ignore = context.ProcessMessages();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(calls == 0);
+    REQUIRE(timer.GetInterval() == 2);
 }
 
 #endif

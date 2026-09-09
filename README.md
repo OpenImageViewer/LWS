@@ -51,19 +51,19 @@ int main()
 
     {
         LWS::Window window(platform);
-        auto connection = window.AddEventListener(
+        auto connection = window.Listen(
             [&](const LWS::AnyEvent& event)
             {
                 if (std::holds_alternative<LWS::EventWindowDestroyed>(event))
                     platform.RequestQuit();
-                return false;
+                return LWS::EventResponse::Unhandled;
             });
         const LWS::WindowConfig config{
             .clientSize = {800, 600},
             .styles = LWS::WindowStyleFlags(LWS::WindowStyle::Caption | LWS::WindowStyle::CloseButton),
             .visible = true,
         };
-        if (connection == 0 || window.Create(config) != LWS::Result::Success)
+        if (!connection.has_value() || window.Create(config) != LWS::Result::Success)
             return 1;
 
         platform.RunMessageLoop();

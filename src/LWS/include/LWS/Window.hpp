@@ -93,15 +93,13 @@ namespace LWS
         [[nodiscard]] Result SetWindowIcon(const std::filesystem::path& iconPath);
 
         [[nodiscard]] Window* GetParent() const;
-        [[nodiscard]] EventListenerToken AddEventListener(EventCallback callback);
-        void RemoveEventListener(EventListenerToken token);
-        [[nodiscard]] EventListenerGuard MakeListenerGuard(EventListenerToken token);
+        [[nodiscard]] std::expected<EventConnection, Result> Listen(EventCallback callback);
         [[nodiscard]] Result PresentBitmap(const BitmapBuffer& bitmap);
 
       private:
 
         friend class Timer;
-        [[nodiscard]] EventListenerToken AddEventListener(EventCallback callback, bool beforeUserCallbacks);
+        [[nodiscard]] std::expected<EventConnection, Result> Listen(EventCallback callback, bool beforeUserCallbacks);
 
         friend class internal::WindowBackendAccess;
 

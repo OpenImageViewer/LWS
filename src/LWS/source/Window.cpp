@@ -38,7 +38,6 @@ namespace LWS
         std::unique_ptr<internal::IWindowBackend> backend;
         std::shared_ptr<internal::ListenerState> listeners;
         Cursor* cursor{};
-        uint64_t platformListener{};
         Window* parent{};
         std::vector<Window*> children;
         State state{State::PreCreate};
@@ -62,12 +61,18 @@ namespace LWS
     }
 
 #ifdef LWS_PLATFORM_WIN32
-    Result internal::WindowBackendAccess::SetPlatformCallback(Window& window, Win32::PlatformCallback callback)
+    std::expected<EventConnection, Result> internal::WindowBackendAccess::ListenPlatform(
+        Window& window, Win32::PlatformCallback callback)
     {
         window.platform_.AssertCurrentThread();
-        window.impl_->listeners->Remove(window.impl_->platformListener);
-        window.impl_->platformListener = callback ? window.impl_->listeners->AddPlatform(std::move(callback)) : 0;
-        return Result::Success;
+        if (!callback)
+            return std::unexpected(Result::InvalidArgument);
+        if (window.impl_->listeners->IsClosed())
+            return std::unexpected(Result::InvalidState);
+        if (window.GetBackendId() != BackendId::Win32)
+            return std::unexpected(Result::NotSupported);
+        const uint64_t id = window.impl_->listeners->AddPlatform(std::move(callback));
+        return EventConnection(window.impl_->listeners, id, std::this_thread::get_id());
     }
 
     bool internal::WindowBackendAccess::DispatchPlatform(Window& window, const Win32::PlatformEvent& event,
@@ -556,26 +561,21 @@ namespace LWS
         return impl_->parent;
     }
 
-    EventListenerToken Window::AddEventListener(EventCallback callback)
+    std::expected<EventConnection, Result> Window::Listen(EventCallback callback)
     {
-        return AddEventListener(std::move(callback), false);
+        return Listen(std::move(callback), false);
     }
 
-    EventListenerToken Window::AddEventListener(EventCallback callback, bool beforeUserCallbacks)
-    {
-        platform_.AssertCurrentThread();
-        if (!callback || impl_->listeners->IsClosed())
-            return 0;
-        return impl_->listeners->Add(std::move(callback), beforeUserCallbacks);
-    }
-
-    void Window::RemoveEventListener(EventListenerToken token)
+    std::expected<EventConnection, Result> Window::Listen(EventCallback callback, bool beforeUserCallbacks)
     {
         platform_.AssertCurrentThread();
-        impl_->listeners->Remove(token);
+        if (!callback)
+            return std::unexpected(Result::InvalidArgument);
+        if (impl_->listeners->IsClosed())
+            return std::unexpected(Result::InvalidState);
+        const uint64_t id = impl_->listeners->Add(std::move(callback), beforeUserCallbacks);
+        return EventConnection(impl_->listeners, id, std::this_thread::get_id());
     }
-
-    EventListenerGuard Window::MakeListenerGuard(EventListenerToken token) { return {this, token}; }
 
     Result Window::PresentBitmap(const BitmapBuffer& bitmap)
     {

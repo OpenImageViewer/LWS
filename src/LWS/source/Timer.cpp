@@ -16,8 +16,7 @@ namespace LWS
             backend = internal::createTimerBackend(platform);
         }
         std::unique_ptr<internal::ITimerBackend> backend;
-        Window* targetWindow{};
-        EventListenerToken targetListener{};
+        EventConnection targetConnection;
     };
 
     class HighPrecisionTimer::Impl
@@ -40,7 +39,6 @@ namespace LWS
     Timer::~Timer()
     {
         platform_.AssertCurrentThread();
-        std::ignore = SetTargetWindow(nullptr);
         impl_.reset();
         platform_.UnregisterService();
     }
@@ -50,10 +48,7 @@ namespace LWS
         if (window == nullptr)
         {
             impl_->backend->setTargetWindow(0);
-            if (impl_->targetWindow != nullptr)
-                impl_->targetWindow->RemoveEventListener(impl_->targetListener);
-            impl_->targetWindow = nullptr;
-            impl_->targetListener = 0;
+            impl_->targetConnection.Disconnect();
             return Result::Success;
         }
         if (&window->GetPlatformContext() != &platform_)
@@ -61,20 +56,17 @@ namespace LWS
         if (!window->IsCreated())
             return Result::InvalidState;
         // Detach before user listeners can consume the destruction event or release the timer.
-        auto connection = window->AddEventListener(
+        auto connection = window->Listen(
             [this](const AnyEvent& event)
             {
                 if (std::holds_alternative<EventWindowDestroyed>(event))
                     std::ignore = SetTargetWindow(nullptr);
-                return false;
+                return EventResponse::Unhandled;
             }, true);
-        if (connection == 0)
-            return Result::InvalidState;
+        if (!connection.has_value())
+            return connection.error();
         impl_->backend->setTargetWindow(internal::WindowBackendAccess::Get(*window)->getHandle());
-        if (impl_->targetWindow != nullptr)
-            impl_->targetWindow->RemoveEventListener(impl_->targetListener);
-        impl_->targetWindow = window;
-        impl_->targetListener = connection;
+        impl_->targetConnection = std::move(*connection);
         return Result::Success;
     }
     uint32_t Timer::GetInterval() const

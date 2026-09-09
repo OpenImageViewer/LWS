@@ -15,7 +15,7 @@ namespace LWS::Win32
 {
     [[nodiscard]] std::expected<HWND, Result> GetHwnd(Window& window);
     [[nodiscard]] std::expected<HWND, Result> GetHwnd(const Window& window);
-    [[nodiscard]] Result SetPlatformCallback(Window& window, PlatformCallback callback);
+    [[nodiscard]] std::expected<EventConnection, Result> Listen(Window& window, PlatformCallback callback);
     [[nodiscard]] Result SetMenuChar(Window& window, bool suppress);
 }  // namespace LWS::Win32
 

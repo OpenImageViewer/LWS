@@ -91,7 +91,7 @@ namespace LWS
         Handled
     };
 
-    using EventCallback = std::move_only_function<bool(const AnyEvent&)>;
+    using EventCallback = std::move_only_function<EventResponse(const AnyEvent&)>;
 
     namespace internal
     {
@@ -99,21 +99,37 @@ namespace LWS
         class WindowBackendAccess;
     }  // namespace internal
 
-    using EventListenerToken = uint64_t;
-    class Window;
-    struct EventListenerGuard
+    /// Owns one listener registration on its bound context thread.
+    ///
+    /// A live or disconnected bound connection must be moved, queried, disconnected, and destroyed on that thread. A
+    /// default or moved-from connection is thread-neutral. Destroying a connection after its Window is safe.
+    class EventConnection final
     {
-        Window* window = nullptr;
-        EventListenerToken token = 0;
-        EventListenerGuard() = default;
-        EventListenerGuard(Window* w, EventListenerToken t) : window(w), token(t) {}
-        EventListenerGuard(const EventListenerGuard&) = delete;
-        EventListenerGuard& operator=(const EventListenerGuard&) = delete;
-        EventListenerGuard(EventListenerGuard&& other) noexcept : window(other.window), token(other.token)
-        {
-            other.window = nullptr;
-        }
-        EventListenerGuard& operator=(EventListenerGuard&& other) noexcept;
-        ~EventListenerGuard();
+      public:
+
+        EventConnection() = default;
+        ~EventConnection();
+
+        EventConnection(const EventConnection&) = delete;
+        EventConnection& operator=(const EventConnection&) = delete;
+        EventConnection(EventConnection&& other) noexcept;
+        EventConnection& operator=(EventConnection&& other) noexcept;
+
+        void Disconnect();
+        [[nodiscard]] bool IsConnected() const;
+
+      private:
+
+        friend class Window;
+        friend class internal::WindowBackendAccess;
+
+        EventConnection(std::weak_ptr<internal::ListenerState> state, uint64_t listenerId,
+                        std::thread::id threadId) noexcept;
+        void MoveFrom(EventConnection& other) noexcept;
+
+        std::weak_ptr<internal::ListenerState> state_;
+        uint64_t listenerId_{};
+        std::thread::id threadId_{};
+        bool bound_{};
     };
 }  // namespace LWS
