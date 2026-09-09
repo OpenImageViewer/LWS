@@ -3,7 +3,7 @@
 #include <LWS/Window.hpp>
 
 #include "PlatformBackend.hpp"
-#include <LWS/interfaces/backends.hpp>
+#include <LWS/source/internal/Backends.hpp>
 
 #ifdef LWS_PLATFORM_WIN32
     #include <LWS/Win32/EventWin32.hpp>

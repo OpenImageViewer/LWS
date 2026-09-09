@@ -1,5 +1,5 @@
-#include <LWS/Wayland/WindowBackendWayland.hpp>
-#include <LWS/Wayland/CursorBackendWayland.hpp>
+#include <LWS/source/Wayland/internal/WindowBackendWayland.hpp>
+#include <LWS/source/Wayland/internal/CursorBackendWayland.hpp>
 #include <LWS/source/internal/BitmapValidation.hpp>
 #include <LWS/Window.hpp>
 

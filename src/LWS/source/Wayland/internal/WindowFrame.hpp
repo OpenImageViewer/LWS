@@ -2,7 +2,7 @@
 
 #ifdef LWS_PLATFORM_WAYLAND
 
-    #include <LWS/interfaces/backends.hpp>
+    #include <LWS/source/internal/Backends.hpp>
 
     #include <algorithm>
     #include <cstdint>

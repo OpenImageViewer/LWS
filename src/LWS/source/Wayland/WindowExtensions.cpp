@@ -1,6 +1,6 @@
 #ifdef LWS_PLATFORM_WAYLAND
 
-    #include <LWS/Wayland/WindowBackendWayland.hpp>
+    #include <LWS/source/Wayland/internal/WindowBackendWayland.hpp>
     #include <LWS/Wayland/WindowExtensions.hpp>
     #include <LWS/Window.hpp>
 

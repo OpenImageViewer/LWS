@@ -5,7 +5,7 @@
     #include "PlatformState.hpp"
     #include "UriList.hpp"
 
-    #include <LWS/Wayland/WindowBackendWayland.hpp>
+    #include <LWS/source/Wayland/internal/WindowBackendWayland.hpp>
 
     #include <algorithm>
     #include <cerrno>

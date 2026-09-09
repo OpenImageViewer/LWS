@@ -4,7 +4,7 @@
 #include "internal/PlatformBackend.hpp"
 #include "internal/WindowBackendAccess.hpp"
 
-#include <LWS/interfaces/backends.hpp>
+#include <LWS/source/internal/Backends.hpp>
 
 #include <algorithm>
 #include <cassert>

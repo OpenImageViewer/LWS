@@ -1,5 +1,5 @@
 #pragma once
-#include <LWS/interfaces/backends.hpp>
+#include <LWS/source/internal/Backends.hpp>
 
 #include <unordered_set>
 

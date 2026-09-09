@@ -5,7 +5,7 @@
     #include "KeyCodeLinux.hpp"
     #include "PlatformState.hpp"
 
-    #include <LWS/Wayland/WindowBackendWayland.hpp>
+    #include <LWS/source/Wayland/internal/WindowBackendWayland.hpp>
 
     #include <algorithm>
     #include <cmath>

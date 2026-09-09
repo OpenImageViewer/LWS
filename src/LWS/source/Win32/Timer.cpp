@@ -3,7 +3,7 @@
     #include <Windows.h>
 
     #include <LWS/Timer.hpp>
-    #include <LWS/interfaces/backends.hpp>
+    #include <LWS/source/internal/Backends.hpp>
     #include <LLUtils/Exception.h>
 
     #include <atomic>

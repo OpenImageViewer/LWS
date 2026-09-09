@@ -2,7 +2,7 @@
 
 #include "internal/PlatformBackend.hpp"
 
-#include <LWS/interfaces/backends.hpp>
+#include <LWS/source/internal/Backends.hpp>
 
 #include <cassert>
 #include <mutex>

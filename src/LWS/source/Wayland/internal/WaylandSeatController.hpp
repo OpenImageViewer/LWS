@@ -7,7 +7,7 @@
     #include "WindowFrame.hpp"
 
     #include <LWS/KeyCode.hpp>
-    #include <LWS/interfaces/backends.hpp>
+    #include <LWS/source/internal/Backends.hpp>
 
     #include <cstdint>
     #include <unordered_set>

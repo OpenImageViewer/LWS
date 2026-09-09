@@ -6,7 +6,7 @@
     #include <limits>
     #include <utility>
 
-    #include <LWS/Win32/CursorBackendWin32.hpp>
+    #include <LWS/source/Win32/internal/CursorBackendWin32.hpp>
     #include <LWS/source/internal/BitmapValidation.hpp>
 
 namespace

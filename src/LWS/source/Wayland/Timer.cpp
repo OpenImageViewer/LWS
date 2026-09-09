@@ -1,7 +1,7 @@
 #ifdef LWS_PLATFORM_WAYLAND
 
     #include <LWS/Timer.hpp>
-    #include <LWS/interfaces/backends.hpp>
+    #include <LWS/source/internal/Backends.hpp>
 
     #include <atomic>
     #include <chrono>

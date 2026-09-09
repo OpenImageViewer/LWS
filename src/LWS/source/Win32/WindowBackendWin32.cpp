@@ -13,9 +13,9 @@
     #include <utility>
     #include <tuple>
 
-    #include <LWS/Win32/CursorBackendWin32.hpp>
+    #include <LWS/source/Win32/internal/CursorBackendWin32.hpp>
     #include <LWS/Win32/EventWin32.hpp>
-    #include <LWS/Win32/WindowBackendWin32.hpp>
+    #include <LWS/source/Win32/internal/WindowBackendWin32.hpp>
     #include <LWS/Platform.hpp>
     #include "internal/DragAndDropTarget.hpp"
     #include "internal/MonitorInfo.hpp"

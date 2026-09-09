@@ -3,7 +3,7 @@
 
     #include <Windows.h>
 
-    #include <LWS/interfaces/backends.hpp>
+    #include <LWS/source/internal/Backends.hpp>
     #include <LWS/Win32/EventWin32.hpp>
 
 namespace LWS::internal

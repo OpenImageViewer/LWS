@@ -1,11 +1,11 @@
-#include <LWS/Wayland/CursorBackendWayland.hpp>
+#include <LWS/source/Wayland/internal/CursorBackendWayland.hpp>
 
 #ifdef LWS_PLATFORM_WAYLAND
 
     #include "internal/PlatformState.hpp"
     #include "internal/WaylandCursorController.hpp"
 
-    #include <LWS/Wayland/WindowBackendWayland.hpp>
+    #include <LWS/source/Wayland/internal/WindowBackendWayland.hpp>
 
     #include <algorithm>
     #include <array>

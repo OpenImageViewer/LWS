@@ -3,7 +3,7 @@
 
     #include <Windows.h>
 
-    #include <LWS/interfaces/backends.hpp>
+    #include <LWS/source/internal/Backends.hpp>
 
 namespace LWS
 {

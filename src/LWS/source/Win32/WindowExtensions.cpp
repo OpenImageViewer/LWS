@@ -1,6 +1,6 @@
 #ifdef LWS_PLATFORM_WIN32
 
-    #include <LWS/Win32/WindowBackendWin32.hpp>
+    #include <LWS/source/Win32/internal/WindowBackendWin32.hpp>
     #include <LWS/Win32/WindowExtensions.hpp>
 
     #include "../internal/WindowBackendAccess.hpp"

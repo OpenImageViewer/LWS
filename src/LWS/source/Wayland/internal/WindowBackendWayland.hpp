@@ -3,7 +3,7 @@
 #include <utility>
 #include <vector>
 
-#include <LWS/interfaces/backends.hpp>
+#include <LWS/source/internal/Backends.hpp>
 
 struct wl_display;
 struct wl_output;

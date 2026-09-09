@@ -114,9 +114,10 @@ endif()
 # Shared include/compile settings helper function
 # ---------------------------------------------------------------------------
 function(lws_configure_target target)
-  target_include_directories(${target} PUBLIC
+  target_include_directories(${target}
+    PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
-
+    PUBLIC
       "${CMAKE_CURRENT_SOURCE_DIR}/src/LWS/include"
       "${CMAKE_CURRENT_SOURCE_DIR}/external/LLUtils/include"
   )

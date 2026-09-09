@@ -3,7 +3,7 @@
     #define WIN32_LEAN_AND_MEAN
     #include <Windows.h>
 
-    #include <LWS/Win32/WindowBackendWin32.hpp>
+    #include <LWS/source/Win32/internal/WindowBackendWin32.hpp>
 
     #include "../internal/PlatformBackend.hpp"
     #include "internal/MonitorInfo.hpp"

@@ -4,7 +4,7 @@
     #include <LWS/FileDialog.hpp>
     #include <LWS/NotificationIconGroup.hpp>
     #include <LWS/Timer.hpp>
-    #include <LWS/interfaces/backends.hpp>
+    #include <LWS/source/internal/Backends.hpp>
 
     #include <memory>
     #include <utility>
