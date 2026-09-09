@@ -4,6 +4,7 @@
 
     #include <LWS/Platform.hpp>
 
+    #include "WaylandDragAndDropController.hpp"
     #include "WaylandOutputManager.hpp"
     #include "WaylandSeatController.hpp"
     #include "WindowFrame.hpp"
@@ -71,6 +72,7 @@ namespace LWS::internal
         [[nodiscard]] wl_seat* seat() const { return fSeatController.seat(); }
         [[nodiscard]] uint32_t pointerButtonSerial() const { return fSeatController.pointerButtonSerial(); }
         [[nodiscard]] Point pointerPosition() const { return fSeatController.pointerPosition(); }
+        [[nodiscard]] bool supportsDragAndDrop() const { return fDragAndDropController.supported(); }
         [[nodiscard]] bool isKeyPressed(KeyCode key) const { return fSeatController.isKeyPressed(key); }
         [[nodiscard]] Platform::MonitorDesc monitorInfo(Handle handle) const
         {
@@ -108,6 +110,7 @@ namespace LWS::internal
         std::mutex fTaskMutex;
         std::vector<std::move_only_function<void()>> fTasks;
         WaylandSeatController fSeatController;
+        WaylandDragAndDropController fDragAndDropController;
         WaylandOutputManager fOutputManager;
         std::unordered_map<wl_surface*, WaylandWindowRegistration> fWindows;
     };

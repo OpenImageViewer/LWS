@@ -930,9 +930,15 @@ namespace LWS
         updateSubsurfaceInputRegion();
     }
 
-    Result WindowBackendWayland::enableDragAndDrop(bool)
+    Result WindowBackendWayland::enableDragAndDrop(bool enable)
     {
-        return Result::NotSupported;
+        auto& platform = internal::WaylandPlatformState::current();
+        if (!platform.isInitialized())
+            return Result::PlatformNotInitialized;
+        if (enable && !platform.supportsDragAndDrop())
+            return Result::NotSupported;
+        fDragAndDropEnabled = enable;
+        return Result::Success;
     }
 
     EventListenerToken WindowBackendWayland::addListener(EventCallback callback)
@@ -1223,6 +1229,14 @@ namespace LWS
         {
             xdg_toplevel_set_app_id(fNativeState->toplevel, appId.c_str());
         }
+    }
+
+    WindowBackendWayland* WindowBackendWayland::dragDropTarget()
+    {
+        WindowBackendWayland* window = this;
+        while (window != nullptr && !window->fDragAndDropEnabled)
+            window = window->fParentBackend;
+        return window;
     }
 
     bool WindowBackendWayland::dispatchEvent(const AnyEvent& event)

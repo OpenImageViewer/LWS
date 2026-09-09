@@ -14,6 +14,9 @@
 #include <LLUtils/Exception.h>
 
 #include "LWS/source/Wayland/internal/WheelDeltaFrame.hpp"
+#ifdef LWS_PLATFORM_WAYLAND
+    #include "LWS/source/Wayland/internal/UriList.hpp"
+#endif
 
 #include <array>
 #include <cstddef>
@@ -244,6 +247,26 @@ TEST_CASE("Wayland wheel frames aggregate and normalize fallbacks", "[input][way
     frame.clear();
     REQUIRE_FALSE(frame.takeDelta().has_value());
 }
+
+#ifdef LWS_PLATFORM_WAYLAND
+TEST_CASE("Wayland URI lists decode local file paths", "[input][wayland][drag-drop]")
+{
+    const auto paths = LWS::internal::parseUriList(
+        "# files\r\nfile:///tmp/first%20image.png\r\nFILE:///tmp/%D7%AA%D7%9E%D7%95%D7%A0%D7%94.png\n"
+        "file://localhost/tmp/last.png\n");
+
+    REQUIRE(paths == std::vector<std::filesystem::path>{"/tmp/first image.png", "/tmp/תמונה.png", "/tmp/last.png"});
+}
+
+TEST_CASE("Wayland URI lists ignore unsupported entries", "[input][wayland][drag-drop]")
+{
+    const auto paths = LWS::internal::parseUriList(
+        "https://example.com/image.png\nfile://server/share/image.png\nfile:///tmp/bad%2.png\n"
+        "file:///tmp/bad%00.png\nfile:///tmp/good.png");
+
+    REQUIRE(paths == std::vector<std::filesystem::path>{"/tmp/good.png"});
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // BitmapBuffer default

@@ -53,6 +53,8 @@ namespace LWS::internal::platform_backend
         if (feature == Feature::PointerLock)
             return WaylandPlatformState::current().pointerConstraints() != nullptr &&
                    WaylandPlatformState::current().relativePointerManager() != nullptr;
+        if (feature == Feature::DragAndDrop)
+            return WaylandPlatformState::current().supportsDragAndDrop();
         return feature == Feature::HostWindowFrame && WaylandPlatformState::current().hasHostWindowFrame();
     }
     bool isKeyPressed(KeyCode key)

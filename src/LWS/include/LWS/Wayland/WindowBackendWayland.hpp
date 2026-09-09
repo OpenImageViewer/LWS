@@ -11,6 +11,7 @@ namespace LWS
     {
         enum class WaylandCaptionMode;
         enum class WaylandDecorationMode;
+        class WaylandDragAndDropController;
         struct WaylandFrameHit;
         enum class WaylandResizeEdge : uint32_t;
         enum class WaylandSurfaceRole;
@@ -113,6 +114,7 @@ namespace LWS
       private:
 
         friend class CursorBackendWayland;
+        friend class internal::WaylandDragAndDropController;
 
         class NativeState;
         std::unique_ptr<NativeState> fNativeState;
@@ -143,6 +145,7 @@ namespace LWS
         [[nodiscard]] bool showsClientSideDecorations() const;
         [[nodiscard]] bool showsDetachedCaption() const;
         [[nodiscard]] bool isCaptionDoubleClick(uint32_t time, Point position);
+        [[nodiscard]] WindowBackendWayland* dragDropTarget();
 
         // Wayland surface handles (opaque void* to avoid including wayland-client.h here)
         void* fWlSurface = nullptr;    // wl_surface*
@@ -164,6 +167,7 @@ namespace LWS
         bool fMouseInside = false;
         bool fPointerLockRequested = false;
         bool fPointerLockActive = false;
+        bool fDragAndDropEnabled = false;
         double fRelativeRemainderX = 0.0;
         double fRelativeRemainderY = 0.0;
         Point fMousePosition{};

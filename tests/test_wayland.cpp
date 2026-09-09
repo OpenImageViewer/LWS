@@ -65,6 +65,20 @@ TEST_CASE("Wayland marks repeated key-down events", "[wayland][keyboard]")
     REQUIRE(repeated);
 }
 
+TEST_CASE("Wayland enables drag and drop when the compositor supports it", "[wayland][drag-drop]")
+{
+    PlatformSession platform;
+    if (platform.result != LWS::Result::Success || !LWS::Platform::supports(LWS::Platform::Feature::DragAndDrop))
+    {
+        SKIP("No Wayland data device is available");
+    }
+
+    LWS::Window window;
+    REQUIRE(window.Create() == LWS::Result::Success);
+    REQUIRE(window.EnableDragAndDrop(true) == LWS::Result::Success);
+    REQUIRE(window.EnableDragAndDrop(false) == LWS::Result::Success);
+}
+
 TEST_CASE("Wayland platform state can be reinitialized", "[wayland][platform]")
 {
     {

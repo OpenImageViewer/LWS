@@ -14,7 +14,7 @@
 
 namespace LWS::internal
 {
-    WaylandPlatformState::WaylandPlatformState() : fSeatController(*this) {}
+    WaylandPlatformState::WaylandPlatformState() : fSeatController(*this), fDragAndDropController(*this) {}
 
     WaylandPlatformState& WaylandPlatformState::current()
     {
@@ -124,7 +124,10 @@ namespace LWS::internal
     void WaylandPlatformState::unregisterWindow(wl_surface* surface)
     {
         if (WindowBackendWayland* window = findWindow(surface); window != nullptr)
+        {
             fSeatController.windowRemoved(*window);
+            fDragAndDropController.windowRemoved(*window);
+        }
         fWindows.erase(surface);
         if (fWindows.empty())
             requestQuit();
@@ -188,6 +191,10 @@ namespace LWS::internal
             state.fRelativePointerManager = static_cast<zwp_relative_pointer_manager_v1*>(
                 wl_registry_bind(registry, name, &zwp_relative_pointer_manager_v1_interface, 1));
         }
+        else if (std::strcmp(interface, wl_data_device_manager_interface.name) == 0)
+        {
+            state.fDragAndDropController.bindManager(registry, name, version);
+        }
         else if (std::strcmp(interface, "weston_rdprail_shell") == 0)
         {
             state.fHasHostWindowFrame = true;
@@ -195,6 +202,7 @@ namespace LWS::internal
         else if (std::strcmp(interface, wl_seat_interface.name) == 0 && state.fSeatController.seat() == nullptr)
         {
             state.fSeatController.bindSeat(registry, name, version);
+            state.fDragAndDropController.setSeat(state.fSeatController.seat());
         }
         else if (std::strcmp(interface, wl_output_interface.name) == 0)
         {
@@ -251,12 +259,14 @@ namespace LWS::internal
         constexpr size_t DisplayDescriptor = 0;
         constexpr size_t WakeDescriptor = 1;
         constexpr size_t KeyRepeatDescriptor = 2;
+        constexpr size_t DropDescriptor = 3;
         pollfd descriptors[]{
             {.fd = wl_display_get_fd(fDisplay),
              .events = static_cast<short>(POLLIN | (flushResult < 0 ? POLLOUT : 0)),
              .revents = 0},
             {.fd = fWakeDescriptor, .events = POLLIN, .revents = 0},
             {.fd = fSeatController.pollDescriptor(), .events = POLLIN, .revents = 0},
+            {.fd = fDragAndDropController.pollDescriptor(), .events = POLLIN, .revents = 0},
         };
         const int pollResult = poll(descriptors, std::size(descriptors), timeoutMilliseconds);
         if (pollResult > 0 && (descriptors[DisplayDescriptor].revents & POLLIN) != 0)
@@ -289,6 +299,8 @@ namespace LWS::internal
 
         if (pollResult > 0 && (descriptors[KeyRepeatDescriptor].revents & POLLIN) != 0)
             fSeatController.dispatchKeyRepeats();
+        if (pollResult > 0)
+            fDragAndDropController.processEvents(descriptors[DropDescriptor].revents);
 
         if (!fQuitRequested && wl_display_dispatch_pending(fDisplay) < 0)
             fQuitRequested = true;
@@ -296,6 +308,7 @@ namespace LWS::internal
 
     void WaylandPlatformState::releaseObjects()
     {
+        fDragAndDropController.reset();
         fSeatController.reset();
         fOutputManager.reset();
         fWindows.clear();
