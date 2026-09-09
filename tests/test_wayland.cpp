@@ -65,6 +65,24 @@ TEST_CASE("Wayland marks repeated key-down events", "[wayland][keyboard]")
     REQUIRE(repeated);
 }
 
+TEST_CASE("Wayland platform state can be reinitialized", "[wayland][platform]")
+{
+    {
+        PlatformSession firstSession;
+        if (firstSession.result != LWS::Result::Success)
+            SKIP("No Wayland compositor is available");
+        REQUIRE(LWS::Platform::isInitialized());
+    }
+    REQUIRE_FALSE(LWS::Platform::isInitialized());
+
+    {
+        PlatformSession secondSession;
+        REQUIRE(secondSession.result == LWS::Result::Success);
+        REQUIRE(LWS::Platform::isInitialized());
+    }
+    REQUIRE_FALSE(LWS::Platform::isInitialized());
+}
+
 TEST_CASE("Wayland reports its primary output", "[wayland][output]")
 {
     PlatformSession platform;
