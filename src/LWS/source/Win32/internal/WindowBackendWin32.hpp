@@ -27,6 +27,7 @@ namespace LWS
         void hide() override;
         bool getVisible() const override;
         void setDisplayState(WindowShowState state) override;
+        void maximize() override;
         WindowShowState getDisplayState() const override;
         void setTitle(const LWS::string_type& title) override;
         LWS::string_type getTitle() const override;
@@ -94,6 +95,8 @@ namespace LWS
         HICON fWindowIcon = nullptr;
         internal::FullScreenState fFullScreenState = internal::FullScreenState::Windowed;
         WINDOWPLACEMENT fSavedFullScreenPlacement = {};
+        Size fSavedWindowedClientSize{};
+        bool fRestoringFullScreenPlacement = false;
         bool fVisible = false;
         bool fAlwaysOnTop = false;
         bool fTransparent = false;

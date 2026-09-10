@@ -1,6 +1,7 @@
 #ifdef LWS_PLATFORM_WIN32
 
     #include <catch2/catch_test_macros.hpp>
+    #include <catch2/generators/catch_generators.hpp>
 
     #include <LWS/Clipboard.hpp>
     #include <LWS/Cursor.hpp>
@@ -22,9 +23,16 @@
     #include <cmath>
     #include <thread>
     #include <type_traits>
+    #include <vector>
 
 namespace
 {
+    BOOL CALLBACK CollectMonitors(HMONITOR monitor, HDC, LPRECT, LPARAM data)
+    {
+        reinterpret_cast<std::vector<HMONITOR>*>(data)->push_back(monitor);
+        return TRUE;
+    }
+
     class Context final
     {
       public:
@@ -255,6 +263,147 @@ TEST_CASE("Window metrics are coherent", "[window][metrics][win32]")
     REQUIRE(size->logical == window.GetClientSize());
     REQUIRE(size->pixels.x > 0);
     REQUIRE(size->Scale().x > 0.0);
+}
+
+TEST_CASE("Fullscreen restoration preserves placement after moving between DPI scales",
+          "[.][window][fullscreen][win32]")
+{
+    const bool maximizeOnCurrentMonitor = GENERATE(false, true);
+    Context context;
+    std::vector<HMONITOR> monitors;
+    REQUIRE(EnumDisplayMonitors(nullptr, nullptr, CollectMonitors, reinterpret_cast<LPARAM>(&monitors)));
+    std::array<HMONITOR, 2> pair{};
+    double firstScale = 0.0;
+    for (HMONITOR monitor : monitors)
+    {
+        const auto info = context.value.GetMonitorInfo(reinterpret_cast<uintptr_t>(monitor));
+        REQUIRE(info.has_value());
+        if (pair[0] == nullptr)
+        {
+            pair[0] = monitor;
+            firstScale = info->contentScale.x;
+        }
+        else if (info->contentScale.x != firstScale)
+        {
+            pair[1] = monitor;
+            break;
+        }
+    }
+    if (pair[1] == nullptr)
+        SKIP("Requires two monitors with different DPI scales");
+
+    for (bool reverse : {false, true})
+    {
+        for (bool maximized : {false, true})
+        {
+            CAPTURE(reverse, maximized, maximizeOnCurrentMonitor);
+            const HMONITOR source = pair[reverse ? 1 : 0];
+            const HMONITOR target = pair[reverse ? 0 : 1];
+            MONITORINFO sourceInfo{sizeof(MONITORINFO)};
+            MONITORINFO targetInfo{sizeof(MONITORINFO)};
+            REQUIRE(GetMonitorInfoW(source, &sourceInfo));
+            REQUIRE(GetMonitorInfoW(target, &targetInfo));
+            LWS::Window window(context.value);
+            REQUIRE(window.Create({
+                        .clientSize = {640, 480},
+                        .styles = LWS::WindowStyleFlags(LWS::WindowStyle::Caption | LWS::WindowStyle::CloseButton |
+                                                        LWS::WindowStyle::ResizableBorder |
+                                                        LWS::WindowStyle::MaximizeButton),
+                        .visible = true,
+                    }) == LWS::Result::Success);
+            const HWND handle = Hwnd(window);
+            REQUIRE(SetWindowPos(handle, nullptr, sourceInfo.rcWork.left + 40, sourceInfo.rcWork.top + 40, 800, 600,
+                                 SWP_NOZORDER | SWP_NOACTIVATE));
+            Pump(context.value);
+            const auto originalSize = window.GetClientSize();
+            RECT originalRect{};
+            REQUIRE(GetWindowRect(handle, &originalRect));
+            if (maximized)
+                REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::Success);
+            REQUIRE(window.SetWindowMode(LWS::WindowMode::Fullscreen) == LWS::Result::Success);
+            REQUIRE(SetWindowPos(handle, nullptr, targetInfo.rcMonitor.left, targetInfo.rcMonitor.top,
+                                 targetInfo.rcMonitor.right - targetInfo.rcMonitor.left,
+                                 targetInfo.rcMonitor.bottom - targetInfo.rcMonitor.top,
+                                 SWP_NOZORDER | SWP_NOACTIVATE));
+            Pump(context.value);
+            REQUIRE(MonitorFromWindow(handle, MONITOR_DEFAULTTONEAREST) == target);
+            bool visitedOtherMonitor = false;
+            auto connection = window.Listen(
+                [&](const LWS::AnyEvent&)
+                {
+                    if (maximizeOnCurrentMonitor)
+                        visitedOtherMonitor |= MonitorFromWindow(handle, MONITOR_DEFAULTTONEAREST) != target;
+                    return LWS::EventResponse::Unhandled;
+                });
+            REQUIRE(connection.has_value());
+            if (maximizeOnCurrentMonitor)
+            {
+                REQUIRE(window.RequestMaximize() == LWS::Result::Success);
+                REQUIRE(window.GetWindowMode() == LWS::WindowMode::Windowed);
+                REQUIRE(window.GetShowState() == LWS::WindowShowState::Maximized);
+                REQUIRE_FALSE(visitedOtherMonitor);
+            }
+            else
+            {
+                REQUIRE(window.SetWindowMode(LWS::WindowMode::Windowed) == LWS::Result::Success);
+                REQUIRE(window.GetShowState() ==
+                        (maximized ? LWS::WindowShowState::Maximized : LWS::WindowShowState::Restored));
+            }
+            REQUIRE(window.RequestShowState(LWS::WindowShowState::Restored) == LWS::Result::Success);
+            REQUIRE(MonitorFromWindow(handle, MONITOR_DEFAULTTONEAREST) ==
+                    (maximizeOnCurrentMonitor ? target : source));
+            const auto restoredSize = window.GetClientSize();
+            CAPTURE(originalSize.x, originalSize.y, restoredSize.x, restoredSize.y);
+            REQUIRE(restoredSize == originalSize);
+            RECT restoredRect{};
+            REQUIRE(GetWindowRect(handle, &restoredRect));
+            if (maximizeOnCurrentMonitor)
+            {
+                REQUIRE(restoredRect.left >= targetInfo.rcWork.left);
+                REQUIRE(restoredRect.top >= targetInfo.rcWork.top);
+                REQUIRE(restoredRect.right <= targetInfo.rcWork.right);
+                REQUIRE(restoredRect.bottom <= targetInfo.rcWork.bottom);
+            }
+            else
+            {
+                REQUIRE(restoredRect.left == originalRect.left);
+                REQUIRE(restoredRect.top == originalRect.top);
+                REQUIRE(restoredRect.right == originalRect.right);
+                REQUIRE(restoredRect.bottom == originalRect.bottom);
+            }
+        }
+    }
+}
+
+TEST_CASE("Repeated window mode requests preserve the current placement", "[window][state][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.RequestMaximize() == LWS::Result::InvalidState);
+    REQUIRE(window.Create({.clientSize = {400, 300}, .visible = true}) == LWS::Result::Success);
+    REQUIRE(window.SetWindowMode(LWS::WindowMode::Fullscreen) == LWS::Result::Success);
+    REQUIRE(window.SetWindowMode(LWS::WindowMode::Windowed) == LWS::Result::Success);
+    REQUIRE(window.SetPlacement({.position = LWS::Point{120, 80}, .clientSize = {500, 350}}) == LWS::Result::Success);
+    const auto placement = window.GetPlacement();
+    REQUIRE(window.SetWindowMode(LWS::WindowMode::Windowed) == LWS::Result::Success);
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Restored) == LWS::Result::Success);
+    REQUIRE(window.GetPlacement().position == placement.position);
+    REQUIRE(window.GetClientSize() == placement.clientSize);
+    REQUIRE(window.RequestMaximize() == LWS::Result::Success);
+    RECT maximized{};
+    REQUIRE(GetWindowRect(Hwnd(window), &maximized));
+    REQUIRE(window.RequestMaximize() == LWS::Result::Success);
+    RECT repeated{};
+    REQUIRE(GetWindowRect(Hwnd(window), &repeated));
+    REQUIRE(repeated.left == maximized.left);
+    REQUIRE(repeated.top == maximized.top);
+    REQUIRE(repeated.right == maximized.right);
+    REQUIRE(repeated.bottom == maximized.bottom);
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Restored) == LWS::Result::Success);
+    REQUIRE(window.GetClientSize() == placement.clientSize);
+    LWS::Window child(context.value);
+    REQUIRE(child.Create({.parent = &window}) == LWS::Result::Success);
+    REQUIRE(child.RequestMaximize() == LWS::Result::NotSupported);
 }
 
 TEST_CASE("Client area events suppress duplicate native sizes", "[window][metrics][win32]")

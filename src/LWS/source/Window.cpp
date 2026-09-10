@@ -428,6 +428,18 @@ namespace LWS
         return Result::Success;
     }
 
+    Result Window::RequestMaximize()
+    {
+        platform_.AssertCurrentThread();
+        if (!IsCreated())
+            return Result::InvalidState;
+        if (impl_->parent != nullptr)
+            return Result::NotSupported;
+        impl_->backend->maximize();
+        impl_->config.showState = WindowShowState::Maximized;
+        return Result::Success;
+    }
+
     WindowShowState Window::GetShowState() const
     {
         return IsCreated() ? impl_->backend->getDisplayState() : impl_->config.showState;

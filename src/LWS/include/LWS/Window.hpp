@@ -68,6 +68,10 @@ namespace LWS
         [[nodiscard]] Result SetWindowMode(WindowMode mode);
         [[nodiscard]] WindowMode GetWindowMode() const;
         [[nodiscard]] Result RequestShowState(WindowShowState state);
+        /// Requests windowed maximization of a top-level window, leaving fullscreen if necessary.
+        /// Win32 keeps the current monitor and retains the normal client size where it fits.
+        /// On Wayland the compositor chooses and asynchronously confirms the state, output, and geometry.
+        [[nodiscard]] Result RequestMaximize();
         [[nodiscard]] WindowShowState GetShowState() const;
         [[nodiscard]] bool IsConfigured() const;
 

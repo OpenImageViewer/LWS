@@ -83,6 +83,78 @@ TEST_CASE("Wayland top-level positions and multi-monitor fullscreen are unsuppor
     REQUIRE(window.BeginWindowDrag(LWS::WindowDragOperation::Move) == LWS::Result::NotSupported);
 }
 
+// Requires a compositor that honors fullscreen/maximize requests.
+TEST_CASE("Wayland windowed maximization leaves fullscreen and retains normal size", "[.][window][maximize][wayland]")
+{
+    LWS::PlatformContext context;
+    Initialize(context);
+    LWS::Window window(context);
+    REQUIRE(window.RequestMaximize() == LWS::Result::InvalidState);
+    LWS::WindowMode expectedMode = LWS::WindowMode::Windowed;
+    LWS::WindowShowState expectedState = LWS::WindowShowState::Restored;
+    bool confirmed = false;
+    LWS::Result presentation = LWS::Result::Success;
+    std::vector<std::byte> pixels;
+    auto connection = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (std::holds_alternative<LWS::EventPaint>(event) && window.IsConfigured())
+            {
+                // Commit each configured state, including intermediate ones, so the compositor can map the surface.
+                const auto area = window.GetClientAreaSize();
+                pixels.resize(static_cast<size_t>(area->pixels.x) * area->pixels.y * 4, std::byte{0xff});
+                presentation = window.PresentBitmap({
+                    .pixels = pixels,
+                    .format = LWS::BitmapPixelFormat::Bgra8Premultiplied,
+                    .width = static_cast<uint32_t>(area->pixels.x),
+                    .height = static_cast<uint32_t>(area->pixels.y),
+                    .rowPitch = static_cast<uint32_t>(area->pixels.x) * 4U,
+                });
+                confirmed = window.GetWindowMode() == expectedMode && window.GetShowState() == expectedState;
+            }
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(connection.has_value());
+    const auto awaitConfigure = [&]
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!confirmed && std::chrono::steady_clock::now() < deadline)
+        {
+            std::ignore = context.ProcessMessages();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        REQUIRE(presentation == LWS::Result::Success);
+        REQUIRE(confirmed);
+    };
+    REQUIRE(window.Create({.clientSize = {320, 240}, .visible = true, .eraseBackground = false}) ==
+            LWS::Result::Success);
+    awaitConfigure();
+    const auto original = window.GetClientSize();
+    confirmed = false;
+    expectedMode = LWS::WindowMode::Fullscreen;
+    REQUIRE(window.SetWindowMode(expectedMode) == LWS::Result::Success);
+    awaitConfigure();
+    confirmed = false;
+    expectedMode = LWS::WindowMode::Windowed;
+    expectedState = LWS::WindowShowState::Maximized;
+    REQUIRE(window.RequestMaximize() == LWS::Result::Success);
+    REQUIRE(window.RequestMaximize() == LWS::Result::Success);
+    awaitConfigure();
+    confirmed = false;
+    expectedState = LWS::WindowShowState::Restored;
+    REQUIRE(window.RequestShowState(expectedState) == LWS::Result::Success);
+    awaitConfigure();
+    REQUIRE(window.GetClientSize() == original);
+    confirmed = false;
+    expectedState = LWS::WindowShowState::Maximized;
+    REQUIRE(window.SetWindowMode(LWS::WindowMode::Fullscreen) == LWS::Result::Success);
+    REQUIRE(window.RequestMaximize() == LWS::Result::Success);
+    awaitConfigure();
+    LWS::Window child(context);
+    REQUIRE(child.Create({.parent = &window}) == LWS::Result::Success);
+    REQUIRE(child.RequestMaximize() == LWS::Result::NotSupported);
+}
+
 TEST_CASE("Wayland child containment uses parent configuration", "[window][parent][wayland]")
 {
     LWS::PlatformContext context;

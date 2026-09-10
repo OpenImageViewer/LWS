@@ -496,6 +496,8 @@ namespace LWS
 
     void WindowBackendWin32::setDisplayState(WindowShowState state)
     {
+        if (state == fDisplayState && fVisible)
+            return;
         if (fHwnd == nullptr)
         {
             fDisplayState = state;
@@ -515,6 +517,40 @@ namespace LWS
                 break;
             default:
                 LL_EXCEPTION_UNEXPECTED_VALUE;
+        }
+    }
+
+    void WindowBackendWin32::maximize()
+    {
+        if (fFullScreenState != internal::FullScreenState::Windowed)
+        {
+            MONITORINFO monitor{sizeof(MONITORINFO)};
+            if (!GetMonitorInfoW(MonitorFromWindow(fHwnd, MONITOR_DEFAULTTONEAREST), &monitor))
+                LL_EXCEPTION(LLUtils::Exception::ErrorCode::InvalidState, "Unable to obtain the maximization monitor");
+            fFullScreenState = internal::FullScreenState::Windowed;
+            updateWindowStyles();
+
+            // Apply the normal placement and maximized state together, without visiting the old fullscreen monitor.
+            const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE));
+            const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
+            const Size outer = outerSizeForLogicalClient(fSavedWindowedClientSize, style, extendedStyle, fDpi);
+            const int width = std::min<int>(outer.x, monitor.rcWork.right - monitor.rcWork.left);
+            const int height = std::min<int>(outer.y, monitor.rcWork.bottom - monitor.rcWork.top);
+            RECT bounds = monitor.rcWork;
+            if ((extendedStyle & WS_EX_TOOLWINDOW) == 0)
+                OffsetRect(&bounds, monitor.rcMonitor.left - monitor.rcWork.left,
+                           monitor.rcMonitor.top - monitor.rcWork.top);
+            WINDOWPLACEMENT placement = fSavedFullScreenPlacement;
+            const int left = std::clamp(placement.rcNormalPosition.left, bounds.left, bounds.right - width);
+            const int top = std::clamp(placement.rcNormalPosition.top, bounds.top, bounds.bottom - height);
+            placement.rcNormalPosition = {left, top, left + width, top + height};
+            placement.showCmd = SW_SHOWMAXIMIZED;
+            placement.flags = 0;
+            SetWindowPlacement(fHwnd, &placement);
+        }
+        else
+        {
+            setDisplayState(WindowShowState::Maximized);
         }
     }
 
@@ -812,6 +848,8 @@ namespace LWS
 
     void WindowBackendWin32::setFullScreenState(internal::FullScreenState state)
     {
+        if (state == fFullScreenState)
+            return;
         switch (state)
         {
             case internal::FullScreenState::Windowed:
@@ -1134,9 +1172,13 @@ namespace LWS
                 fDpi = LOWORD(wParam);
                 if (fParentBackend == nullptr)
                 {
-                    const auto* suggested = reinterpret_cast<const RECT*>(lParam);
-                    SetWindowPos(hWnd, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
-                                 suggested->bottom - suggested->top, SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER);
+                    if (!fRestoringFullScreenPlacement)
+                    {
+                        const auto* suggested = reinterpret_cast<const RECT*>(lParam);
+                        SetWindowPos(hWnd, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
+                                     suggested->bottom - suggested->top,
+                                     SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER);
+                    }
                     use_default = false;
                     return_value = 0;
                 }
@@ -1355,6 +1397,14 @@ namespace LWS
         updateWindowStyles();
         if (fSavedFullScreenPlacement.length == sizeof(WINDOWPLACEMENT))
         {
+            // The saved rectangle is already in native coordinates for its original monitor. Applying the DPI
+            // suggestion inside SetWindowPlacement would scale it a second time when restoring across monitors.
+            struct RestoreScope
+            {
+                bool& flag;
+                bool previous;
+                ~RestoreScope() { flag = previous; }
+            } restoreScope{fRestoringFullScreenPlacement, std::exchange(fRestoringFullScreenPlacement, true)};
             SetWindowPlacement(fHwnd, &fSavedFullScreenPlacement);
         }
     }
@@ -1370,6 +1420,12 @@ namespace LWS
         {
             fSavedFullScreenPlacement.length = sizeof(WINDOWPLACEMENT);
             GetWindowPlacement(fHwnd, &fSavedFullScreenPlacement);
+            const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE)) & ~(WS_MAXIMIZE | WS_MINIMIZE);
+            const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
+            const Size frame = outerSizeForLogicalClient({}, style, extendedStyle, fDpi);
+            const RECT& normal = fSavedFullScreenPlacement.rcNormalPosition;
+            fSavedWindowedClientSize = logicalFromPhysical(
+                Size{normal.right - normal.left - frame.x, normal.bottom - normal.top - frame.y}, fDpi);
         }
 
         internal::MonitorInfo& monitor_info = fMonitors;

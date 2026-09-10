@@ -649,6 +649,13 @@ namespace LWS
         }
     }
 
+    void WindowBackendWayland::maximize()
+    {
+        // Send the complete desired state; a previous compositor configure can still be in flight.
+        setFullScreenState(internal::FullScreenState::Windowed);
+        setDisplayState(WindowShowState::Maximized);
+    }
+
     WindowShowState WindowBackendWayland::getDisplayState() const
     {
         return fDisplayState;

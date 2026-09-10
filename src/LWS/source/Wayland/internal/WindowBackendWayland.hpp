@@ -37,6 +37,7 @@ namespace LWS
         bool getVisible() const override;
         bool isConfigured() const override;
         void setDisplayState(WindowShowState state) override;
+        void maximize() override;
         WindowShowState getDisplayState() const override;
         void setTitle(const LWS::string_type& title) override;
         LWS::string_type getTitle() const override;

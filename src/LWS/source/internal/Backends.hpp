@@ -79,6 +79,7 @@ namespace LWS
             virtual void hide() = 0;
             [[nodiscard]] virtual bool getVisible() const = 0;
             virtual void setDisplayState(WindowShowState state) = 0;
+            virtual void maximize() = 0;
             [[nodiscard]] virtual WindowShowState getDisplayState() const = 0;
             virtual void setTitle(const string_type& title) = 0;
             [[nodiscard]] virtual string_type getTitle() const = 0;
