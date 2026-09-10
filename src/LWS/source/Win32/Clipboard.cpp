@@ -124,7 +124,7 @@ namespace LWS
         try
         {
             const auto converted = LLUtils::StringUtility::ConvertString<std::wstring>(text);
-            result = SetClipboardText(ownerWindow, converted.c_str());
+            result               = SetClipboardText(ownerWindow, converted.c_str());
         }
         catch (const std::invalid_argument&)
         {
