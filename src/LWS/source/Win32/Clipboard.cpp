@@ -6,7 +6,6 @@
     #include <LWS/Win32/WindowExtensions.hpp>
     #include <LLUtils/StringUtility.h>
 
-    #include <array>
     #include <string_view>
     #include <utility>
     #include <vector>
@@ -213,29 +212,24 @@ namespace LWS
         }
 
         const std::wstring_view textView(text);
-        const std::string ansi = LLUtils::StringUtility::ConvertString<std::string>(text);
-        const std::array entries{
-            ClipboardDataView{
-                .format = CF_UNICODETEXT,
-                .data = {reinterpret_cast<const std::byte*>(text), (textView.length() + 1) * sizeof(char_type)},
-            },
-            ClipboardDataView{
-                .format = CF_TEXT,
-                .data = {reinterpret_cast<const std::byte*>(ansi.data()), (ansi.length() + 1) * sizeof(char)},
-            },
-        };
-        return SetClipboardData(ownerWindow, entries);
+        // Windows synthesizes CF_TEXT when a legacy consumer requests it.
+        return SetClipboardData(ownerWindow, CF_UNICODETEXT, reinterpret_cast<const std::byte*>(text),
+                                (textView.length() + 1) * sizeof(char_type));
     }
 
     ClipboardResult Clipboard::SetClipboardText(Window& ownerWindow, const char* text)
     {
-        if (text == nullptr)
+        ClipboardResult result = ClipboardResult::UnknownError;
+        try
         {
-            return ClipboardResult::UnknownError;
+            const auto converted = LLUtils::StringUtility::ConvertString<std::wstring>(text);
+            result               = SetClipboardText(ownerWindow, converted.c_str());
         }
-
-        const string_type converted = LLUtils::StringUtility::ToWString(text);
-        return SetClipboardText(ownerWindow, converted.c_str());
+        catch (const std::invalid_argument&)
+        {
+            // Malformed UTF-8 uses the existing clipboard failure contract.
+        }
+        return result;
     }
 
     ClipboardResult Clipboard::GetClipboardError() const

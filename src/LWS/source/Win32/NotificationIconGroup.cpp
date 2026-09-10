@@ -11,10 +11,10 @@
     #include "../internal/WindowBackendAccess.hpp"
     #include <LLUtils/Exception.h>
     #include <LLUtils/StringUtility.h>
-    #include <LLUtils/Templates.h>
     #include <LLUtils/UniqueIDProvider.h>
 
     #include <set>
+    #include <tuple>
 
 namespace LWS
 {
@@ -75,7 +75,8 @@ namespace LWS
             nid.uID = static_cast<UINT>(iconId);
             nid.uCallbackMessage = Win32::NotificationIconEvent::MessageId;
 
-            LLUtils::StringUtility::StrCpy(nid.szTip, tooltip.c_str(), LLUtils::array_length(nid.szTip));
+            // Tooltips may exceed the shell limit; a complete, terminated prefix is sufficient.
+            std::ignore = LLUtils::StringUtility::StrCpy(nid.szTip, std::wstring_view(tooltip));
             nid.hIcon = LoadIcon(GetModuleHandle(nullptr), MAKEINTRESOURCE(iconResourceId));
 
             if (Shell_NotifyIcon(NIM_ADD, &nid) == TRUE && Shell_NotifyIcon(NIM_SETVERSION, &nid) == TRUE)
