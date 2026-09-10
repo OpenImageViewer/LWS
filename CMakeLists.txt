@@ -119,7 +119,6 @@ function(lws_configure_target target)
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
     PUBLIC
       "${CMAKE_CURRENT_SOURCE_DIR}/src/LWS/include"
-      "${CMAKE_CURRENT_SOURCE_DIR}/external/LLUtils/include"
   )
   target_link_libraries(${target} PUBLIC LLUtils::LLUtils)
   target_compile_definitions(${target} PRIVATE NOMINMAX UNICODE _UNICODE)
