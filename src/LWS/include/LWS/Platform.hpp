@@ -10,6 +10,8 @@
 #include <memory>
 #include <optional>
 #include <thread>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -57,6 +59,19 @@ namespace LWS
         BackendId backend{BackendId::Undefined};
     };
 
+    enum class LoopResult
+    {
+        Continue,
+        Quit,
+        Failed
+    };
+
+    struct BackendFailure
+    {
+        int nativeError{};
+        std::string operation;
+    };
+
     using UnhandledExceptionHandler = std::move_only_function<void(std::exception_ptr) noexcept>;
 
     /// Owns one UI-thread identity and at most one successful backend lifetime.
@@ -89,8 +104,15 @@ namespace LWS
         [[nodiscard]] std::optional<BackendId> GetBackendId() const;
         [[nodiscard]] static std::vector<BackendId> GetAvailableBackends();
 
-        void RunMessageLoop();
-        [[nodiscard]] bool ProcessMessages();
+        /// Quit is sticky. Repeated calls after quit/failure return that outcome without dispatching.
+        /// Continue is returned only by nonblocking ProcessMessages(); failure takes precedence over quit.
+        LoopResult RunMessageLoop();
+        [[nodiscard]] LoopResult ProcessMessages();
+        /// The first fatal diagnostic survives Shutdown() and is owned by this context.
+        [[nodiscard]] const std::optional<BackendFailure>& GetFailure() const;
+        /// Queues a callback for execution on the UI context thread. Perform expensive work on background threads and
+        /// post only short callbacks that apply the completed results. Callers are responsible for keeping these
+        /// callbacks brief and nonblocking; the UI thread runs them to completion.
         [[nodiscard]] Result PostTask(std::move_only_function<void()> task);
         void RequestQuit();
 

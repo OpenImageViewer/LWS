@@ -83,7 +83,7 @@ namespace LWS
             [[nodiscard]] virtual WindowShowState getDisplayState() const = 0;
             virtual void setTitle(const string_type& title) = 0;
             [[nodiscard]] virtual string_type getTitle() const = 0;
-            [[nodiscard]] virtual Result setWindowIcon(const BitmapBuffer* icon) = 0;
+            [[nodiscard]] virtual Result setWindowIcon(const BitmapBuffer* icon, bool reuseResource = false) = 0;
             virtual void setPosition(Point position) = 0;
             [[nodiscard]] virtual Point getPosition() const = 0;
             [[nodiscard]] virtual uintptr_t getCurrentMonitorHandle() const { return 0; }
@@ -94,7 +94,7 @@ namespace LWS
             virtual void setMinMaxSize(Size minSize, Size maxSize) = 0;
             [[nodiscard]] virtual Size getMinSize() const = 0;
             [[nodiscard]] virtual Size getMaxSize() const = 0;
-            virtual void setWindowStyles(WindowStyle styles, bool enable) = 0;
+            virtual void setWindowStyles(WindowStyle styles) = 0;
             [[nodiscard]] virtual WindowStyle getWindowStyles() const = 0;
             virtual void setForeground() = 0;
             [[nodiscard]] virtual bool isInFocus() const = 0;

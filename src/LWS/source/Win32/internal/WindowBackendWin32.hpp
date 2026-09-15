@@ -31,7 +31,7 @@ namespace LWS
         WindowShowState getDisplayState() const override;
         void setTitle(const LWS::string_type& title) override;
         LWS::string_type getTitle() const override;
-        Result setWindowIcon(const BitmapBuffer* icon) override;
+        Result setWindowIcon(const BitmapBuffer* icon, bool reuseResource = false) override;
         void setPosition(Point pos) override;
         Point getPosition() const override;
         void setSize(Size sz) override;
@@ -41,7 +41,7 @@ namespace LWS
         void setMinMaxSize(Size minSize, Size maxSize) override;
         Size getMinSize() const override;
         Size getMaxSize() const override;
-        void setWindowStyles(WindowStyle styles, bool enable) override;
+        void setWindowStyles(WindowStyle styles) override;
         WindowStyle getWindowStyles() const override;
         void setForeground() override;
         bool isInFocus() const override;

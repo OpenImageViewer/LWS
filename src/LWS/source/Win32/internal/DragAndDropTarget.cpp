@@ -3,12 +3,13 @@
 #include <LWS/StringDefs.hpp>
 
 #include <vector>
+#include <memory>
+#include <utility>
 
 namespace LWS::internal
 {
     DragAndDropTarget::DragAndDropTarget(HWND hwnd, DragDropCallback callback)
-        : fHwnd(hwnd)
-        , fCallback(std::move(callback))
+        : fHwnd(hwnd), fCallback(std::move(callback))
     {
         fAttachResult = RegisterDragDrop(fHwnd, this);
     }
@@ -22,8 +23,9 @@ namespace LWS::internal
     {
         if (SUCCEEDED(fAttachResult) && fHwnd != nullptr)
         {
-            RevokeDragDrop(fHwnd);
+            const HWND window = std::exchange(fHwnd, nullptr);
             fAttachResult = E_UNEXPECTED;
+            RevokeDragDrop(window);
         }
     }
 
@@ -52,7 +54,9 @@ namespace LWS::internal
 
     ULONG DragAndDropTarget::Release()
     {
-        LONG ref_count = InterlockedDecrement(&mRefCount);
+        const LONG ref_count = InterlockedDecrement(&mRefCount);
+        if (ref_count == 0)
+            delete this;
         return static_cast<ULONG>(ref_count);
     }
 
@@ -83,6 +87,10 @@ namespace LWS::internal
 
     HRESULT DragAndDropTarget::Drop(IDataObject* pdto, DWORD, POINTL, DWORD* pdwEffect)
     {
+        // A file callback can destroy its window and revoke this target. Retain the COM object until Drop returns.
+        AddRef();
+        const auto release = [](DragAndDropTarget* target) { target->Release(); };
+        const std::unique_ptr<DragAndDropTarget, decltype(release)> retained(this, release);
         openFilesFromDataObject(pdto);
         if (pdwEffect != nullptr)
         {
@@ -99,7 +107,7 @@ namespace LWS::internal
             return;
         }
 
-        FORMATETC format_etc{ CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+        FORMATETC format_etc{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
         STGMEDIUM storage{};
         if (FAILED(pdto->GetData(&format_etc, &storage)))
         {
@@ -108,7 +116,7 @@ namespace LWS::internal
 
         HDROP hdrop = static_cast<HDROP>(storage.hGlobal);
         UINT file_count = DragQueryFile(hdrop, 0xFFFFFFFF, nullptr, 0);
-        for (UINT file_index = 0; file_index < file_count; ++file_index)
+        for (UINT file_index = 0; file_index < file_count && fHwnd != nullptr; ++file_index)
         {
             UINT char_count = DragQueryFile(hdrop, file_index, nullptr, 0);
             if (char_count == 0)
@@ -125,4 +133,4 @@ namespace LWS::internal
 
         ReleaseStgMedium(&storage);
     }
-}
+}  // namespace LWS::internal

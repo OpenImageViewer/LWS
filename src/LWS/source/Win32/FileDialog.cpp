@@ -5,6 +5,7 @@
 
     #include <LWS/FileDialog.hpp>
     #include <LWS/Win32/WindowExtensions.hpp>
+    #include "../internal/WindowBackendAccess.hpp"
     #include <LLUtils/Warnings.h>
 
     #include <sstream>
@@ -78,6 +79,10 @@ namespace LWS
                                       const file_dialog_string_type& defaultExtension, uint32_t filterIndex,
                                       file_dialog_string_type defaultFileName, ListFileDialogFileNames& outFilenames)
     {
+        if (!ownerWindow.IsCreated())
+            return FileDialogResult::UnknownError;
+        const internal::WindowBackendAccess::DispatchScope ownerDispatch(ownerWindow);
+        const internal::PlatformContextAccess::DispatchScope contextDispatch(ownerWindow.GetPlatformContext());
         const auto owner = Win32::GetHwnd(ownerWindow);
         if (!owner.has_value())
             return FileDialogResult::UnknownError;

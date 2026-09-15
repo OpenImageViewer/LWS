@@ -15,8 +15,8 @@
 
 namespace LWS::internal
 {
-    WaylandPlatformState::WaylandPlatformState()
-        : fSeatController(*this), fDragAndDropController(*this), fOutputManager(*this)
+    WaylandPlatformState::WaylandPlatformState(PlatformContext& context)
+        : fContext(context), fSeatController(*this), fDragAndDropController(*this), fOutputManager(*this)
     {
     }
 
@@ -66,16 +66,17 @@ namespace LWS::internal
         return fInitialized;
     }
 
-    void WaylandPlatformState::RunMessageLoop(PlatformContext& context)
+    LoopResult WaylandPlatformState::RunMessageLoop(PlatformContext& context)
     {
         while (!PlatformContextAccess::QuitRequested(context) && fDisplay != nullptr)
             dispatchOnce(context, -1);
+        return PlatformContextAccess::GetLoopResult(context);
     }
 
-    bool WaylandPlatformState::ProcessMessages(PlatformContext& context)
+    LoopResult WaylandPlatformState::ProcessMessages(PlatformContext& context)
     {
         dispatchOnce(context, 0);
-        return PlatformContextAccess::QuitRequested(context);
+        return PlatformContextAccess::GetLoopResult(context);
     }
 
     Result WaylandPlatformState::Wake()
@@ -132,7 +133,9 @@ namespace LWS::internal
 
     Result WaylandPlatformState::RefreshMonitors()
     {
-        return wl_display_roundtrip(fDisplay) >= 0 ? Result::Success : Result::Failure;
+        if (wl_display_roundtrip(fDisplay) < 0)
+            PlatformContextAccess::Fail(fContext, wl_display_get_error(fDisplay), "wl_display_roundtrip");
+        return fContext.IsUsable() ? Result::Success : Result::Failure;
     }
 
     MonitorDesc WaylandPlatformState::GetMonitorInfo(uintptr_t handle, bool allowRefresh)
@@ -319,18 +322,27 @@ namespace LWS::internal
 
     void WaylandPlatformState::dispatchOnce(PlatformContext& context, int timeoutMilliseconds)
     {
+        if (!context.IsUsable())
+            return;
         if (fDisplay == nullptr)
         {
-            context.RequestQuit();
+            PlatformContextAccess::Fail(context, ENOTCONN, "Wayland display");
             return;
         }
+        const auto fail = [&](const char* operation)
+        {
+            const int displayError = wl_display_get_error(fDisplay);
+            PlatformContextAccess::Fail(context, displayError != 0 ? displayError : errno, operation);
+        };
 
         int result = wl_display_dispatch_pending(fDisplay);
-        while (result >= 0 && wl_display_prepare_read(fDisplay) != 0)
+        while (context.IsUsable() && result >= 0 && wl_display_prepare_read(fDisplay) != 0)
             result = wl_display_dispatch_pending(fDisplay);
+        if (!context.IsUsable())
+            return;
         if (result < 0)
         {
-            context.RequestQuit();
+            fail("wl_display_dispatch_pending");
             return;
         }
 
@@ -338,7 +350,7 @@ namespace LWS::internal
         if (flushResult < 0 && errno != EAGAIN)
         {
             wl_display_cancel_read(fDisplay);
-            context.RequestQuit();
+            fail("wl_display_flush");
             return;
         }
 
@@ -355,40 +367,39 @@ namespace LWS::internal
             {.fd = fDragAndDropController.pollDescriptor(), .events = POLLIN, .revents = 0},
         };
         const int pollResult = poll(descriptors, std::size(descriptors), timeoutMilliseconds);
+        const int pollError = errno;
+        // Every successful prepare_read is paired before callbacks or early failure returns.
         if (pollResult > 0 && (descriptors[DisplayDescriptor].revents & POLLIN) != 0)
         {
             if (wl_display_read_events(fDisplay) < 0)
-                context.RequestQuit();
+                fail("wl_display_read_events");
         }
         else
-        {
             wl_display_cancel_read(fDisplay);
-        }
+
+        if (pollResult < 0 && pollError != EINTR)
+            PlatformContextAccess::Fail(context, pollError, "poll");
+        if (pollResult > 0 && (descriptors[DisplayDescriptor].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+            PlatformContextAccess::Fail(context, wl_display_get_error(fDisplay), "Wayland display disconnected");
+        if (pollResult > 0 && (descriptors[WakeDescriptor].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+            PlatformContextAccess::Fail(context, EBADF, "Wayland wake descriptor");
+        if (!context.IsUsable())
+            return;
         if (pollResult > 0 && (descriptors[DisplayDescriptor].revents & POLLOUT) != 0 &&
             wl_display_flush(fDisplay) < 0 && errno != EAGAIN)
         {
-            context.RequestQuit();
+            fail("wl_display_flush");
+            return;
         }
-
-        if (pollResult > 0 && (descriptors[DisplayDescriptor].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
-            context.RequestQuit();
-
         if (pollResult > 0 && (descriptors[WakeDescriptor].revents & POLLIN) != 0)
-        {
             PlatformContextAccess::DrainTasks(context);
-        }
-        else if (pollResult < 0 && errno != EINTR)
-        {
-            context.RequestQuit();
-        }
-
-        if (pollResult > 0 && (descriptors[KeyRepeatDescriptor].revents & POLLIN) != 0)
+        if (context.IsUsable() && pollResult > 0 && (descriptors[KeyRepeatDescriptor].revents & POLLIN) != 0)
             fSeatController.dispatchKeyRepeats();
-        if (pollResult > 0)
+        if (context.IsUsable() && pollResult > 0)
             fDragAndDropController.processEvents(descriptors[DropDescriptor].revents);
-
-        if (!PlatformContextAccess::QuitRequested(context) && wl_display_dispatch_pending(fDisplay) < 0)
-            context.RequestQuit();
+        if (context.IsUsable() && !PlatformContextAccess::QuitRequested(context) &&
+            wl_display_dispatch_pending(fDisplay) < 0)
+            fail("wl_display_dispatch_pending");
     }
 
     void WaylandPlatformState::releaseObjects()

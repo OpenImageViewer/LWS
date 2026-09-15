@@ -75,10 +75,19 @@ namespace LWS::internal
 {
     EventResponse ListenerState::Dispatch(const AnyEvent& event)
     {
-        // Retain the executing callable when a callback adds, removes, or closes registrations.
-        const auto listeners = listeners_;
+        const bool destroying = std::holds_alternative<EventWindowDestroying>(event);
+        const bool lifecycle = destroying || std::holds_alternative<EventWindowDestroyed>(event);
+        // Ordinary nested events see the active list until the outermost dispatch returns. Teardown must also
+        // reach newly registered dependents (including timers); Window rejects new registration while destroying,
+        // so callbacks cannot structurally change the pending list being visited by lifecycle dispatch.
+        const auto& listeners = lifecycle && pending_ ? *pending_ : listeners_;
+        if (listeners.empty())
+            return EventResponse::Unhandled;
+        const DispatchScope scope(*this);
         for (const auto& listener : listeners)
         {
+            if (!lifecycle && platform_.GetFailure().has_value())
+                return EventResponse::Unhandled;
             if (listener->connected)
             {
                 EventResponse response;
@@ -89,10 +98,12 @@ namespace LWS::internal
                 catch (...)
                 {
                     platform_.ReportUnhandledException(std::current_exception());
+                    if (destroying)
+                        continue;
                     return std::holds_alternative<EventCloseRequested>(event) ? EventResponse::Handled
                                                                               : EventResponse::Unhandled;
                 }
-                if (response == EventResponse::Handled)
+                if (!destroying && response == EventResponse::Handled)
                     return response;
             }
         }
@@ -102,9 +113,14 @@ namespace LWS::internal
 #ifdef LWS_PLATFORM_WIN32
     bool ListenerState::DispatchPlatform(const Win32::PlatformEvent& event, LRESULT& result)
     {
-        const auto listeners = platformListeners_;
+        if (platformListeners_.empty())
+            return false;
+        const DispatchScope scope(*this);
+        const auto& listeners = platformListeners_;
         for (const auto& listener : listeners)
         {
+            if (platform_.GetFailure().has_value())
+                return false;
             if (!listener->connected)
                 continue;
             try

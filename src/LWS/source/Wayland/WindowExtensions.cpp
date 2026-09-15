@@ -12,6 +12,7 @@ namespace LWS::Wayland
     {
         WindowBackendWayland* GetBackend(Window& window)
         {
+            window.GetPlatformContext().AssertCurrentThread();
             auto* backend = internal::WindowBackendAccess::Get(window);
             return backend != nullptr && backend->backend() == BackendId::Wayland
                        ? static_cast<WindowBackendWayland*>(backend)
@@ -24,7 +25,7 @@ namespace LWS::Wayland
         auto* backend = GetBackend(window);
         if (backend == nullptr)
             return std::unexpected(Result::NotSupported);
-        if (!window.IsCreated())
+        if (!internal::WindowBackendAccess::HasNativeHandle(window))
             return std::unexpected(Result::InvalidState);
         return static_cast<wl_surface*>(backend->surface());
     }
@@ -39,7 +40,7 @@ namespace LWS::Wayland
         auto* backend = GetBackend(window);
         if (backend == nullptr)
             return std::unexpected(Result::NotSupported);
-        if (!window.IsCreated())
+        if (!internal::WindowBackendAccess::HasNativeHandle(window))
             return std::unexpected(Result::InvalidState);
         return backend->display();
     }
@@ -49,6 +50,8 @@ namespace LWS::Wayland
         auto* backend = GetBackend(window);
         if (backend == nullptr)
             return Result::NotSupported;
+        if (!internal::WindowBackendAccess::CanConfigure(window))
+            return Result::InvalidState;
         if (appId.empty() || appId.contains('\0'))
             return Result::InvalidArgument;
         backend->setAppId(std::string(appId));

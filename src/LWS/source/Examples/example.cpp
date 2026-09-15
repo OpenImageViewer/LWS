@@ -47,7 +47,8 @@ int main()
         if (!connection.has_value() || win.Create(config) != Result::Success)
             return 1;
 
-        platform.RunMessageLoop();
+        if (platform.RunMessageLoop() == LWS::LoopResult::Failed)
+            return 1;
         std::ignore = win.Destroy();
     }
     return platform.Shutdown() == Result::Success ? 0 : 1;

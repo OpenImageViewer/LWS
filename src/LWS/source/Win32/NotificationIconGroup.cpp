@@ -121,12 +121,14 @@ namespace LWS
             switch (message.notification)
             {
                 case NIN_SELECT:
-                    notificationEvent.Raise(
-                        NotificationIconEventArgs{NotificationIconAction::Select, message.x, message.y});
+                    notificationEvent.RaiseWhile([&] { return fWindow.GetPlatformContext().IsUsable(); },
+                                                 NotificationIconEventArgs{NotificationIconAction::Select, message.x,
+                                                                           message.y});
                     break;
                 case WM_CONTEXTMENU:
-                    notificationEvent.Raise(
-                        NotificationIconEventArgs{NotificationIconAction::ContextMenu, message.x, message.y});
+                    notificationEvent.RaiseWhile([&] { return fWindow.GetPlatformContext().IsUsable(); },
+                                                 NotificationIconEventArgs{NotificationIconAction::ContextMenu,
+                                                                           message.x, message.y});
                     break;
                 default:
                     break;
@@ -156,13 +158,15 @@ namespace LWS
                                                                          const string_type& tooltip)
     {
         platform_.AssertCurrentThread();
+        if (!platform_.IsUsable())
+            LL_EXCEPTION(LLUtils::Exception::ErrorCode::InvalidState, "Notification context is inactive");
         return impl_->AddIconResource(iconResourceId, tooltip, OnNotificationIconEvent);
     }
 
     Rect NotificationIconGroup::GetIconRect(IconID iconid) const
     {
         platform_.AssertCurrentThread();
-        return impl_->GetIconRect(iconid);
+        return platform_.IsUsable() ? impl_->GetIconRect(iconid) : Rect{};
     }
 }  // namespace LWS
 #endif

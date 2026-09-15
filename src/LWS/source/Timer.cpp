@@ -59,10 +59,12 @@ namespace LWS
         auto connection = window->Listen(
             [this](const AnyEvent& event)
             {
-                if (std::holds_alternative<EventWindowDestroyed>(event))
+                if ((std::holds_alternative<EventWindowDestroying>(event) ||
+                     std::holds_alternative<EventWindowDestroyed>(event)))
                     std::ignore = SetTargetWindow(nullptr);
                 return EventResponse::Unhandled;
-            }, true);
+            },
+            true);
         if (!connection.has_value())
             return connection.error();
         impl_->backend->setTargetWindow(internal::WindowBackendAccess::Get(*window)->getHandle());
@@ -77,7 +79,8 @@ namespace LWS
     void Timer::SetInterval(uint32_t interval)
     {
         platform_.AssertCurrentThread();
-        impl_->backend->setInterval(interval);
+        if (platform_.IsUsable() || interval == 0)
+            impl_->backend->setInterval(interval);
     }
     void Timer::SetCallback(Callback callback)
     {
@@ -90,9 +93,11 @@ namespace LWS
         impl_->backend->setCallback(
             [platform = &platform_, callback = std::move(callback)]
             {
+                const internal::PlatformContextAccess::DispatchScope dispatch(*platform);
                 try
                 {
-                    callback();
+                    if (platform->IsUsable())
+                        callback();
                 }
                 catch (...)
                 {
@@ -106,9 +111,10 @@ namespace LWS
           impl_(std::make_unique<Impl>(platform,
                                        [platform = &platform_, callback = std::move(callback)]
                                        {
+                                           const internal::PlatformContextAccess::DispatchScope dispatch(*platform);
                                            try
                                            {
-                                               if (callback)
+                                               if (callback && platform->IsUsable())
                                                    callback();
                                            }
                                            catch (...)
@@ -129,21 +135,24 @@ namespace LWS
     void HighPrecisionTimer::SetRepeatInterval(uint32_t interval)
     {
         platform_.AssertCurrentThread();
-        impl_->backend->setRepeatInterval(interval);
+        if (platform_.IsUsable())
+            impl_->backend->setRepeatInterval(interval);
     }
     void HighPrecisionTimer::SetDueTime(uint32_t dueTime)
     {
         platform_.AssertCurrentThread();
-        impl_->backend->setDueTime(dueTime);
+        if (platform_.IsUsable())
+            impl_->backend->setDueTime(dueTime);
     }
     bool HighPrecisionTimer::GetEnabled() const
     {
         platform_.AssertCurrentThread();
-        return impl_->backend->getEnabled();
+        return platform_.IsUsable() && impl_->backend->getEnabled();
     }
     void HighPrecisionTimer::Enable(bool enabled)
     {
         platform_.AssertCurrentThread();
-        impl_->backend->enable(enabled);
+        if (platform_.IsUsable() || !enabled)
+            impl_->backend->enable(enabled);
     }
 }  // namespace LWS

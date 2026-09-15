@@ -57,7 +57,7 @@ namespace LWS::internal
             }
         }
 
-        void RunMessageLoop(PlatformContext& context) override
+        LoopResult RunMessageLoop(PlatformContext& context) override
         {
             while (!PlatformContextAccess::QuitRequested(context))
             {
@@ -68,16 +68,21 @@ namespace LWS::internal
                 if (result == WAIT_OBJECT_0 || result == WAIT_OBJECT_0 + 1)
                     DispatchMessages(context);
                 else if (result == WAIT_FAILED)
-                    context.RequestQuit();
+                    PlatformContextAccess::Fail(context, static_cast<int>(GetLastError()),
+                                                "MsgWaitForMultipleObjectsEx");
             }
+            return PlatformContextAccess::GetLoopResult(context);
         }
 
-        bool ProcessMessages(PlatformContext& context) override
+        LoopResult ProcessMessages(PlatformContext& context) override
         {
-            if (WaitForSingleObject(taskEvent_, 0) == WAIT_OBJECT_0)
+            const DWORD wait = WaitForSingleObject(taskEvent_, 0);
+            if (wait == WAIT_OBJECT_0)
                 PlatformContextAccess::DrainTasks(context);
+            else if (wait == WAIT_FAILED)
+                PlatformContextAccess::Fail(context, static_cast<int>(GetLastError()), "WaitForSingleObject");
             DispatchMessages(context);
-            return PlatformContextAccess::QuitRequested(context);
+            return PlatformContextAccess::GetLoopResult(context);
         }
 
         Result Wake() override { return SetEvent(taskEvent_) != FALSE ? Result::Success : Result::Failure; }
@@ -119,7 +124,7 @@ namespace LWS::internal
         static void DispatchMessages(PlatformContext& context)
         {
             MSG message{};
-            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != FALSE)
+            while (context.IsUsable() && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != FALSE)
             {
                 if (message.message == WM_QUIT)
                     context.RequestQuit();
@@ -135,7 +140,7 @@ namespace LWS::internal
         MonitorInfo monitors_;
     };
 
-    std::unique_ptr<PlatformBackend> CreatePlatformBackend(BackendId backend)
+    std::unique_ptr<PlatformBackend> CreatePlatformBackend(BackendId backend, [[maybe_unused]] PlatformContext& context)
     {
         if (backend == BackendId::Win32)
             return std::make_unique<Win32PlatformBackend>();
