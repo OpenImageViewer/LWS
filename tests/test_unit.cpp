@@ -18,6 +18,7 @@
     #include "LWS/source/Wayland/internal/UriList.hpp"
 #endif
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <type_traits>
@@ -442,3 +443,24 @@ TEST_CASE("Typed listeners retain their captures during self-disconnection", "[e
     REQUIRE_FALSE(listeners.Contains(id));
 }
 #endif
+
+TEST_CASE("Bitmap shrinking interpolates all channels and initializes odd margins", "[bitmap]")
+{
+    const std::array pixels{std::byte{0},  std::byte{0},   std::byte{0},  std::byte{0},  std::byte{100}, std::byte{50},
+                            std::byte{20}, std::byte{200}, std::byte{40}, std::byte{20}, std::byte{10},  std::byte{100},
+                            std::byte{80}, std::byte{40},  std::byte{10}, std::byte{100}};
+    const LWS::Bitmap bitmap({.pixels = pixels, .width = 2, .height = 2});
+    // Averaging the four premultiplied samples gives BGRA (55, 28, 10, 100).
+    const auto shrunk = bitmap.resize(1, 1);
+    const std::array expected{std::byte{55}, std::byte{28}, std::byte{10}, std::byte{100}};
+    REQUIRE(std::ranges::equal(shrunk->GetBuffer().pixels, expected));
+    const auto padded = bitmap.resize(5, 3);
+    const auto view = padded->GetBuffer();
+    for (uint32_t y = 0; y < 3; ++y)
+        for (uint32_t x = 0; x < 5; ++x)
+            for (size_t channel = 0; channel < 4; ++channel)
+            {
+                const auto expected = y < 2 && x >= 1 && x < 3 ? pixels[(y * 2 + x - 1) * 4 + channel] : std::byte{0};
+                REQUIRE(view.pixels[y * view.rowPitch + x * 4 + channel] == expected);
+            }
+}

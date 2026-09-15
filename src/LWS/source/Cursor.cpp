@@ -2,6 +2,7 @@
 
 #include <LWS/Bitmap.hpp>
 
+#include <array>
 #include <variant>
 
 namespace LWS
@@ -19,6 +20,17 @@ namespace LWS
 
     Cursor Cursor::FromShape(CursorShape shape)
     {
+        static const auto standard = []
+        {
+            std::array<std::shared_ptr<const Resource>, static_cast<size_t>(CursorShape::AppStarting) + 1> resources;
+            for (size_t i = 0; i < resources.size(); ++i)
+                resources[i] = std::make_shared<Resource>(Resource{static_cast<CursorShape>(i)});
+            return resources;
+        }();
+        const auto index = static_cast<size_t>(shape);
+        if (index < standard.size())
+            return Cursor(standard[index]);
+        // Preserve the existing behavior for unknown values; backends provide their own fallback.
         return Cursor(std::make_shared<Resource>(Resource{shape}));
     }
 
