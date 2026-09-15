@@ -25,6 +25,12 @@ namespace LWS
     struct EventCloseRequested
     {
     };
+    /// Non-cancellable cleanup notification. False means backend loss has already invalidated native handles.
+    /// The flag describes entry to this callback sequence; recheck the context after nested pumping.
+    struct EventWindowDestroying
+    {
+        bool nativeResourcesAvailable{true};
+    };
     struct EventWindowDestroyed
     {
     };
@@ -83,7 +89,7 @@ namespace LWS
     using AnyEvent =
         std::variant<EventClientAreaSizeChanged, EventMove, EventCloseRequested, EventWindowDestroyed, EventFocusGained,
                      EventFocusLost, EventShowStateChanged, EventKeyDown, EventKeyUp, EventMouseMove, EventMouseButton,
-                     EventMouseWheel, EventPaint, EventDragDropFile, EventRawPlatform>;
+                     EventMouseWheel, EventPaint, EventDragDropFile, EventRawPlatform, EventWindowDestroying>;
 
     enum class EventResponse
     {
@@ -101,6 +107,7 @@ namespace LWS
 
     /// Owns one listener registration on its bound context thread.
     ///
+    /// @par Thread safety
     /// A live or disconnected bound connection must be moved, queried, disconnected, and destroyed on that thread. A
     /// default or moved-from connection is thread-neutral. Destroying a connection after its Window is safe.
     class EventConnection final
@@ -116,6 +123,7 @@ namespace LWS
         EventConnection& operator=(EventConnection&& other) noexcept;
 
         void Disconnect();
+        /// Includes accepted registrations pending activation at the end of the outermost listener traversal.
         [[nodiscard]] bool IsConnected() const;
 
       private:

@@ -40,13 +40,13 @@ namespace LWS::internal
     {
       public:
 
-        WaylandPlatformState();
+        explicit WaylandPlatformState(PlatformContext& context);
 
         Result Initialize() override;
         void Shutdown() override;
         [[nodiscard]] bool isInitialized() const;
-        void RunMessageLoop(PlatformContext& context) override;
-        [[nodiscard]] bool ProcessMessages(PlatformContext& context) override;
+        LoopResult RunMessageLoop(PlatformContext& context) override;
+        [[nodiscard]] LoopResult ProcessMessages(PlatformContext& context) override;
         [[nodiscard]] Result Wake() override;
         void ClearWake() override;
         [[nodiscard]] bool Supports(PlatformFeature feature) const override;
@@ -99,6 +99,7 @@ namespace LWS::internal
         void selectSeat(uint32_t name, uint32_t version);
         void dispatchOnce(PlatformContext& context, int timeoutMilliseconds);
 
+        PlatformContext& fContext;
         bool fInitialized = false;
         bool fHasHostWindowFrame = false;
         wl_display* fDisplay = nullptr;

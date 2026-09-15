@@ -24,6 +24,7 @@ namespace LWS
         /// A null target or target destruction detaches the timer while preserving its configured interval.
         [[nodiscard]] Result SetTargetWindow(Window* window);
         [[nodiscard]] uint32_t GetInterval() const;
+        /// Failed contexts cannot rearm timers; setting zero still stops an existing timer.
         void SetInterval(uint32_t interval);
         void SetCallback(Callback callback);
 
@@ -50,6 +51,7 @@ namespace LWS
         void SetRepeatInterval(uint32_t repeatInterval);
         void SetDueTime(uint32_t dueTime);
         [[nodiscard]] bool GetEnabled() const;
+        /// Failed contexts cannot enable callbacks; disabling remains available for cleanup.
         void Enable(bool enable);
 
       private:

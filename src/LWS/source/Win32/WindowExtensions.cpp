@@ -28,7 +28,7 @@ namespace LWS::Win32
         WindowBackendWin32* backend = GetBackend(window);
         if (backend == nullptr)
             return std::unexpected(Result::NotSupported);
-        if (!window.IsCreated())
+        if (!internal::WindowBackendAccess::HasNativeHandle(window))
             return std::unexpected(Result::InvalidState);
         return reinterpret_cast<HWND>(backend->getHandle());
     }
@@ -49,6 +49,8 @@ namespace LWS::Win32
         if (backend == nullptr)
             return Result::NotSupported;
 
+        if (!internal::WindowBackendAccess::CanConfigure(window))
+            return Result::InvalidState;
         backend->setMenuChar(suppress);
         return Result::Success;
     }

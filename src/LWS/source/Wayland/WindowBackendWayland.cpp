@@ -18,6 +18,7 @@
     #include <sys/mman.h>
     #include <sys/syscall.h>
     #include <unistd.h>
+    #include <utility>
     #include <vector>
 
     #include <wayland-client.h>
@@ -66,6 +67,8 @@ namespace LWS
             wl_buffer* buffer = nullptr;
             void* mapping = MAP_FAILED;
             size_t mappingSize = 0;
+            Size size{};
+            bool busy = false;
         };
 
         struct PresentedBuffer
@@ -93,13 +96,6 @@ namespace LWS
             bool busy = false;
         };
 
-        struct PendingBitmap
-        {
-            std::vector<std::byte> pixels;
-            uint32_t width = 0;
-            uint32_t height = 0;
-        };
-
         struct ToplevelConfigure
         {
             Size size{};
@@ -115,7 +111,6 @@ namespace LWS
             releaseBuffer();
             captionBuffers.clear();
             presentedBuffers.clear();
-            pendingBitmap.reset();
             if (transparentBuffer != nullptr)
                 wl_buffer_destroy(transparentBuffer);
             if (decoration != nullptr)
@@ -204,19 +199,32 @@ namespace LWS
                 mapping = MAP_FAILED;
                 mappingSize = 0;
             }
+            backgroundSize = {};
             bufferReleased = true;
         }
 
         void releaseCaptionBuffer(CaptionBuffer* releasedBuffer)
         {
-            std::erase_if(captionBuffers,
-                          [releasedBuffer](const auto& buffer) { return buffer.get() == releasedBuffer; });
+            releasedBuffer->busy = false;
+            if (captionRepaintPending)
+                owner.paintCaption();
+        }
+
+        void submitBitmap(PresentedBuffer& presented)
+        {
+            presented.busy = true;
+            wl_surface_attach(surface, presented.buffer, 0, 0);
+            if (wl_surface_get_version(surface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
+                wl_surface_damage_buffer(surface, 0, 0, presented.width, presented.height);
+            else
+                wl_surface_damage(surface, 0, 0, owner.fSize.x, owner.fSize.y);
+            wl_surface_commit(surface);
         }
 
         void releasePresentedBuffer(PresentedBuffer* releasedBuffer)
         {
             releasedBuffer->busy = false;
-            if (pendingBitmap.has_value())
+            if (pendingBitmap != nullptr)
                 owner.presentPendingBitmap();
         }
 
@@ -341,8 +349,11 @@ namespace LWS
         size_t mappingSize = 0;
         bool configured = false;
         bool bufferReleased = true;
+        Size backgroundSize{};
         bool repaintPending = false;
-        std::optional<PendingBitmap> pendingBitmap;
+        bool captionRepaintPending = false;
+        // Borrows one idle entry in presentedBuffers; it has not been submitted to the compositor.
+        PresentedBuffer* pendingBitmap = nullptr;
         std::optional<ToplevelConfigure> pendingToplevelConfigure;
         std::vector<std::unique_ptr<CaptionBuffer>> captionBuffers;
         std::vector<std::unique_ptr<PresentedBuffer>> presentedBuffers;
@@ -485,7 +496,7 @@ namespace LWS
                 .configure = NativeState::decorationConfigure,
             };
             zxdg_toplevel_decoration_v1_add_listener(fNativeState->decoration, &decorationListener, fNativeState.get());
-            setWindowStyles(WindowStyle::NoStyle, true);
+            setWindowStyles(fWindowStyles);
         }
 
         if (isChildWindow())
@@ -580,7 +591,7 @@ namespace LWS
         if (fNativeState != nullptr && fVisible)
         {
             fVisible = false;
-            fNativeState->pendingBitmap.reset();
+            fNativeState->pendingBitmap = nullptr;
             const bool hostFramedChild = fNativeState->subsurface != nullptr && fPlatform.hasHostWindowFrame();
             // WSLg keeps the last host buffer visible after a null-buffer commit. Keep the borrowed wl_surface
             // stable, but replace its visible content and input with one transparent pixel until show().
@@ -677,7 +688,7 @@ namespace LWS
     {
         return fTitle;
     }
-    Result WindowBackendWayland::setWindowIcon(const BitmapBuffer*)
+    Result WindowBackendWayland::setWindowIcon(const BitmapBuffer*, bool)
     {
         return Result::NotSupported;
     }
@@ -701,7 +712,7 @@ namespace LWS
         {
             fSize = size;
             if (fNativeState != nullptr)
-                fNativeState->pendingBitmap.reset();
+                fNativeState->pendingBitmap = nullptr;
             updateWindowGeometry();
             updateSubsurfaceInputRegion();
             paintBackground();
@@ -765,11 +776,9 @@ namespace LWS
         return fMaxSize;
     }
 
-    void WindowBackendWayland::setWindowStyles(WindowStyle styles, bool enable)
+    void WindowBackendWayland::setWindowStyles(WindowStyle styles)
     {
-        const auto current = std::to_underlying(fWindowStyles);
-        fWindowStyles = static_cast<WindowStyle>(enable ? current | std::to_underlying(styles)
-                                                        : current & ~std::to_underlying(styles));
+        fWindowStyles = styles;
         updateChildInputRegions();
         if (fNativeState != nullptr && fNativeState->decoration != nullptr)
         {
@@ -1033,24 +1042,12 @@ namespace LWS
 
         const size_t bufferSize = tightPitch * bitmap.height;
         auto& presentedBuffers = fNativeState->presentedBuffers;
+        fNativeState->pendingBitmap = nullptr;
         std::erase_if(
             presentedBuffers, [&](const auto& presented)
             { return !presented->busy && (presented->width != bitmap.width || presented->height != bitmap.height); });
         const auto available = std::ranges::find_if(presentedBuffers,
                                                     [](const auto& presented) { return !presented->busy; });
-
-        // Bound compositor-owned buffers and coalesce later paints until one is released.
-        constexpr size_t maxPresentedBuffers = 3;
-        if (available == presentedBuffers.end() && presentedBuffers.size() >= maxPresentedBuffers)
-        {
-            auto& pending = fNativeState->pendingBitmap;
-            if (!pending.has_value() || pending->pixels.size() != bufferSize)
-                pending.emplace(NativeState::PendingBitmap{.pixels = std::vector<std::byte>(bufferSize)});
-            pending->width = bitmap.width;
-            pending->height = bitmap.height;
-            std::memcpy(pending->pixels.data(), bitmap.pixels.data(), bufferSize);
-            return Result::Success;
-        }
 
         NativeState::PresentedBuffer* presented = nullptr;
         if (available != presentedBuffers.end())
@@ -1102,30 +1099,30 @@ namespace LWS
             presentedBuffers.push_back(std::move(newPresented));
         }
 
+        // Keep the copying API: callers can reuse their pixels on return, without buffer leases or release
+        // synchronization. Copy even a pending frame directly into shared memory, then submit that same buffer.
         std::memcpy(presented->mapping, bitmap.pixels.data(), bufferSize);
-        presented->busy = true;
-        wl_surface_attach(fNativeState->surface, presented->buffer, 0, 0);
-        if (wl_surface_get_version(fNativeState->surface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
-            wl_surface_damage_buffer(fNativeState->surface, 0, 0, framebuffer.x, framebuffer.y);
+        // Up to three busy buffers plus one idle pending buffer; repeated paints reuse that idle entry.
+        constexpr int maxSubmittedBuffers = 3;
+        const auto submitted = std::ranges::count_if(presentedBuffers, [](const auto& buffer) { return buffer->busy; });
+        if (submitted >= maxSubmittedBuffers)
+            fNativeState->pendingBitmap = presented;
         else
-            wl_surface_damage(fNativeState->surface, 0, 0, fSize.x, fSize.y);
-        wl_surface_commit(fNativeState->surface);
+            fNativeState->submitBitmap(*presented);
         return Result::Success;
     }
 
     void WindowBackendWayland::presentPendingBitmap()
     {
-        NativeState::PendingBitmap pending = std::move(*fNativeState->pendingBitmap);
-        fNativeState->pendingBitmap.reset();
-        const BitmapBuffer bitmap{
-            .pixels = pending.pixels,
-            .format = BitmapPixelFormat::Bgra8Premultiplied,
-            .rowOrder = BitmapRowOrder::TopDown,
-            .width = pending.width,
-            .height = pending.height,
-            .rowPitch = 0,
-        };
-        std::ignore = presentBitmap(bitmap);
+        auto* pending = std::exchange(fNativeState->pendingBitmap, nullptr);
+        const Size framebuffer = getFramebufferSize();
+        if (!fVisible || !fNativeState->configured || framebuffer.x <= 0 || framebuffer.y <= 0 ||
+            pending->width != static_cast<uint32_t>(framebuffer.x) ||
+            pending->height != static_cast<uint32_t>(framebuffer.y))
+        {
+            return;
+        }
+        fNativeState->submitBitmap(*pending);
     }
 
     Handle WindowBackendWayland::getHandle() const
@@ -1525,7 +1522,8 @@ namespace LWS
         if (fNativeState->shellSurface != nullptr)
         {
             const bool detachedCaptionVisible = fVisible && showsDetachedCaption();
-            const int32_t captionHeight = detachedCaptionVisible ? internal::waylandCaptionHeight : contentCaptionHeight;
+            const int32_t captionHeight = detachedCaptionVisible ? internal::waylandCaptionHeight
+                                                                 : contentCaptionHeight;
             xdg_surface_set_window_geometry(fNativeState->shellSurface, 0,
                                             detachedCaptionVisible ? -internal::waylandCaptionHeight : 0, fSize.x,
                                             fSize.y + captionHeight);
@@ -1562,15 +1560,17 @@ namespace LWS
         fNativeState->scale = scale;
         if (wl_surface_get_version(fNativeState->surface) >= WL_SURFACE_SET_BUFFER_SCALE_SINCE_VERSION)
         {
-            const int32_t bufferScale = fNativeState->viewport != nullptr ? 1 :
-                                           std::max(1, static_cast<int32_t>(std::lround(scale)));
+            const int32_t bufferScale = fNativeState->viewport != nullptr
+                                            ? 1
+                                            : std::max(1, static_cast<int32_t>(std::lround(scale)));
             wl_surface_set_buffer_scale(fNativeState->surface, bufferScale);
         }
         if (fNativeState->captionSurface != nullptr &&
             wl_surface_get_version(fNativeState->captionSurface) >= WL_SURFACE_SET_BUFFER_SCALE_SINCE_VERSION)
         {
-            const int32_t bufferScale = fNativeState->captionViewport != nullptr ? 1 :
-                                           std::max(1, static_cast<int32_t>(std::lround(scale)));
+            const int32_t bufferScale = fNativeState->captionViewport != nullptr
+                                            ? 1
+                                            : std::max(1, static_cast<int32_t>(std::lround(scale)));
             wl_surface_set_buffer_scale(fNativeState->captionSurface, bufferScale);
         }
         updateWindowGeometry();
@@ -1602,12 +1602,12 @@ namespace LWS
             return;
         }
 
-        fNativeState->releaseBuffer();
         constexpr size_t bytesPerPixel = 4;
         const double scale = fNativeState->scale;
         const double scaledWidth = std::ceil(fSize.x * scale);
-        const double scaledHeight = std::ceil((static_cast<double>(fSize.y) +
-                                               (showsClientSideDecorations() ? internal::waylandCaptionHeight : 0)) * scale);
+        const double scaledHeight = std::ceil(
+            (static_cast<double>(fSize.y) + (showsClientSideDecorations() ? internal::waylandCaptionHeight : 0)) *
+            scale);
         if (scaledWidth > std::numeric_limits<int32_t>::max() || scaledHeight > std::numeric_limits<int32_t>::max())
             return;
         const size_t width = static_cast<size_t>(scaledWidth);
@@ -1624,33 +1624,46 @@ namespace LWS
             return;
         }
 
-        const int fd = createAnonymousFile();
-        if (fd < 0 || ftruncate(fd, static_cast<off_t>(bufferSize)) != 0)
+        void* mapping = fNativeState->mapping;
+        wl_buffer* buffer = fNativeState->buffer;
+        const Size dimensions{static_cast<int32_t>(width), bufferHeight};
+        if (buffer == nullptr || fNativeState->backgroundSize != dimensions)
         {
-            if (fd >= 0)
+            fNativeState->releaseBuffer();
+            const int fd = createAnonymousFile();
+            if (fd < 0 || ftruncate(fd, static_cast<off_t>(bufferSize)) != 0)
+            {
+                if (fd >= 0)
+                    close(fd);
+                return;
+            }
+
+            mapping = mmap(nullptr, bufferSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+            if (mapping == MAP_FAILED)
+            {
                 close(fd);
-            return;
-        }
+                return;
+            }
 
-        void* mapping = mmap(nullptr, bufferSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        if (mapping == MAP_FAILED)
-        {
+            wl_shm_pool* pool = wl_shm_create_pool(fPlatform.sharedMemory(), fd, static_cast<int32_t>(bufferSize));
+            buffer = pool != nullptr ? wl_shm_pool_create_buffer(pool, 0, static_cast<int32_t>(width), bufferHeight,
+                                                                 static_cast<int32_t>(stride), WL_SHM_FORMAT_ARGB8888)
+                                     : nullptr;
+            if (pool != nullptr)
+                wl_shm_pool_destroy(pool);
             close(fd);
-            return;
-        }
+            if (buffer == nullptr)
+            {
+                munmap(mapping, bufferSize);
+                return;
+            }
 
-        wl_shm_pool* pool = wl_shm_create_pool(fPlatform.sharedMemory(), fd, static_cast<int32_t>(bufferSize));
-        wl_buffer* buffer = pool != nullptr
-                                ? wl_shm_pool_create_buffer(pool, 0, static_cast<int32_t>(width), bufferHeight,
-                                                            static_cast<int32_t>(stride), WL_SHM_FORMAT_ARGB8888)
-                                : nullptr;
-        if (pool != nullptr)
-            wl_shm_pool_destroy(pool);
-        close(fd);
-        if (buffer == nullptr)
-        {
-            munmap(mapping, bufferSize);
-            return;
+            fNativeState->buffer = buffer;
+            fNativeState->mapping = mapping;
+            fNativeState->mappingSize = bufferSize;
+            fNativeState->backgroundSize = dimensions;
+            static constexpr wl_buffer_listener bufferListener{.release = NativeState::bufferRelease};
+            wl_buffer_add_listener(buffer, &bufferListener, fNativeState.get());
         }
 
         const uint32_t alpha = fTransparent ? fBackgroundColor.A() : 0xffU;
@@ -1688,12 +1701,7 @@ namespace LWS
                 }
             }
         }
-        fNativeState->buffer = buffer;
-        fNativeState->mapping = mapping;
-        fNativeState->mappingSize = bufferSize;
         fNativeState->bufferReleased = false;
-        static constexpr wl_buffer_listener bufferListener{.release = NativeState::bufferRelease};
-        wl_buffer_add_listener(buffer, &bufferListener, fNativeState.get());
         wl_surface_attach(fNativeState->surface, buffer, 0, 0);
         if (wl_surface_get_version(fNativeState->surface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
         {
@@ -1718,6 +1726,7 @@ namespace LWS
         const bool visible = fVisible && showsDetachedCaption() && fSize.x > 0;
         if (!visible)
         {
+            fNativeState->captionRepaintPending = false;
             wl_surface_attach(fNativeState->captionSurface, nullptr, 0, 0);
             wl_surface_commit(fNativeState->captionSurface);
             fNativeState->captionWidth = 0;
@@ -1735,36 +1744,64 @@ namespace LWS
         const int32_t captionHeight = static_cast<int32_t>(scaledHeight);
         const size_t stride = width * bytesPerPixel;
         const size_t bufferSize = stride * captionHeight;
-        const int fd = createAnonymousFile();
-        if (fd < 0 || bufferSize > static_cast<size_t>(std::numeric_limits<off_t>::max()) ||
-            ftruncate(fd, static_cast<off_t>(bufferSize)) != 0)
+        const Size dimensions{static_cast<int32_t>(width), captionHeight};
+        auto& buffers = fNativeState->captionBuffers;
+        std::erase_if(buffers, [&](const auto& buffer) { return !buffer->busy && buffer->size != dimensions; });
+        const auto available = std::ranges::find_if(buffers, [](const auto& buffer) { return !buffer->busy; });
+        // Two compositor-owned captions are enough; coalesce further paints until either is released.
+        if (available == buffers.end() && buffers.size() >= 2)
         {
-            if (fd >= 0)
+            fNativeState->captionRepaintPending = true;
+            return;
+        }
+        fNativeState->captionRepaintPending = false;
+        NativeState::CaptionBuffer* caption = nullptr;
+        if (available != buffers.end())
+            caption = available->get();
+        else
+        {
+            const int fd = createAnonymousFile();
+            if (fd < 0 || bufferSize > static_cast<size_t>(std::numeric_limits<off_t>::max()) ||
+                ftruncate(fd, static_cast<off_t>(bufferSize)) != 0)
+            {
+                if (fd >= 0)
+                    close(fd);
+                return;
+            }
+
+            void* mapping = mmap(nullptr, bufferSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+            if (mapping == MAP_FAILED)
+            {
                 close(fd);
-            return;
-        }
+                return;
+            }
 
-        void* mapping = mmap(nullptr, bufferSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        if (mapping == MAP_FAILED)
-        {
+            wl_shm_pool* pool = wl_shm_create_pool(fPlatform.sharedMemory(), fd, static_cast<int32_t>(bufferSize));
+            wl_buffer* buffer = pool != nullptr
+                                    ? wl_shm_pool_create_buffer(pool, 0, static_cast<int32_t>(width), captionHeight,
+                                                                static_cast<int32_t>(stride), WL_SHM_FORMAT_ARGB8888)
+                                    : nullptr;
+            if (pool != nullptr)
+                wl_shm_pool_destroy(pool);
             close(fd);
-            return;
-        }
+            if (buffer == nullptr)
+            {
+                munmap(mapping, bufferSize);
+                return;
+            }
 
-        wl_shm_pool* pool = wl_shm_create_pool(fPlatform.sharedMemory(), fd, static_cast<int32_t>(bufferSize));
-        wl_buffer* buffer = pool != nullptr
-                                ? wl_shm_pool_create_buffer(pool, 0, static_cast<int32_t>(width), captionHeight,
-                                                            static_cast<int32_t>(stride), WL_SHM_FORMAT_ARGB8888)
-                                : nullptr;
-        if (pool != nullptr)
-            wl_shm_pool_destroy(pool);
-        close(fd);
-        if (buffer == nullptr)
-        {
-            munmap(mapping, bufferSize);
-            return;
+            auto created = std::make_unique<NativeState::CaptionBuffer>(*fNativeState);
+            created->buffer = buffer;
+            created->mapping = mapping;
+            created->mappingSize = bufferSize;
+            created->size = dimensions;
+            static constexpr wl_buffer_listener bufferListener{.release = NativeState::CaptionBuffer::released};
+            wl_buffer_add_listener(buffer, &bufferListener, created.get());
+            caption = created.get();
+            buffers.push_back(std::move(created));
         }
-
+        auto* buffer = caption->buffer;
+        auto* mapping = caption->mapping;
         auto* pixels = static_cast<uint32_t*>(mapping);
         constexpr uint32_t captionColor = 0xff303030U;
         constexpr uint32_t closeColor = 0xffc42b1cU;
@@ -1799,12 +1836,7 @@ namespace LWS
             }
         }
 
-        auto captionBuffer = std::make_unique<NativeState::CaptionBuffer>(*fNativeState);
-        captionBuffer->buffer = buffer;
-        captionBuffer->mapping = mapping;
-        captionBuffer->mappingSize = bufferSize;
-        static constexpr wl_buffer_listener bufferListener{.release = NativeState::CaptionBuffer::released};
-        wl_buffer_add_listener(buffer, &bufferListener, captionBuffer.get());
+        caption->busy = true;
         wl_surface_attach(fNativeState->captionSurface, buffer, 0, 0);
         if (wl_surface_get_version(fNativeState->captionSurface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
             wl_surface_damage_buffer(fNativeState->captionSurface, 0, 0, static_cast<int32_t>(width), captionHeight);
@@ -1812,7 +1844,6 @@ namespace LWS
             wl_surface_damage(fNativeState->captionSurface, 0, 0, fSize.x, internal::waylandCaptionHeight);
         wl_surface_commit(fNativeState->captionSurface);
         fNativeState->captionWidth = fSize.x;
-        fNativeState->captionBuffers.push_back(std::move(captionBuffer));
     }
 }  // namespace LWS
 

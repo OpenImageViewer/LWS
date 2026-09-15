@@ -13,6 +13,7 @@
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <vector>
 
 #if defined(LWS_HAS_WIN32_BACKEND) || defined(LWS_HAS_WAYLAND_BACKEND)
 
@@ -223,6 +224,37 @@ TEST_CASE("Moved-from cursor and icon values are rejected", "[window][resource]"
     REQUIRE(icon.has_value());
     const auto retainedIcon = std::move(*icon);
     REQUIRE(window.SetWindowIcon(*icon) == LWS::Result::InvalidArgument);
+}
+
+TEST_CASE("Recycled task batches preserve nested drains and capture-destructor posts", "[platform][tasks]")
+{
+    LWS::PlatformContext context;
+    Initialize(context);
+    for (int cycle = 0; cycle < 8; ++cycle)
+    {
+        std::vector<int> order;
+        const auto retire = [&](int* value)
+        {
+            delete value;
+            REQUIRE(context.PostTask([&] { order.push_back(5); }) == LWS::Result::Success);
+            std::ignore = context.ProcessMessages();
+        };
+        auto capture = std::unique_ptr<int, decltype(retire)>(new int, retire);
+        REQUIRE(context.PostTask(
+                    [&, capture = std::move(capture)]
+                    {
+                        order.push_back(1);
+                        LWS::Result posted{};
+                        std::thread worker([&] { posted = context.PostTask([&] { order.push_back(2); }); });
+                        worker.join();
+                        REQUIRE(posted == LWS::Result::Success);
+                        std::ignore = context.ProcessMessages();
+                        order.push_back(3);
+                    }) == LWS::Result::Success);
+        REQUIRE(context.PostTask([&] { order.push_back(4); }) == LWS::Result::Success);
+        std::ignore = context.ProcessMessages();
+        REQUIRE(order == std::vector<int>{1, 2, 3, 4, 5});
+    }
 }
 
 #endif

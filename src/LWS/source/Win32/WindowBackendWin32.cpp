@@ -586,7 +586,7 @@ namespace LWS
         return title;
     }
 
-    Result WindowBackendWin32::setWindowIcon(const BitmapBuffer* icon)
+    Result WindowBackendWin32::setWindowIcon(const BitmapBuffer* icon, bool reuseResource)
     {
         if (icon == nullptr)
         {
@@ -594,6 +594,12 @@ namespace LWS
             applyWindowIcon();
             if (previousIcon != nullptr)
                 DestroyIcon(previousIcon);
+            return Result::Success;
+        }
+        if (reuseResource && fWindowIcon != nullptr)
+        {
+            // Window has retained the same immutable icon. Reapply its handles without rebuilding bitmap objects.
+            applyWindowIcon();
             return Result::Success;
         }
         const auto layout = internal::validateBitmapBuffer(*icon);
@@ -757,11 +763,9 @@ namespace LWS
         return fMaxSize;
     }
 
-    void WindowBackendWin32::setWindowStyles(WindowStyle styles, bool enable)
+    void WindowBackendWin32::setWindowStyles(WindowStyle styles)
     {
-        auto current = std::to_underlying(fWindowStyles);
-        auto requested = std::to_underlying(styles);
-        fWindowStyles = static_cast<WindowStyle>(enable ? (current | requested) : (current & ~requested));
+        fWindowStyles = styles;
         updateWindowStyles();
     }
 
@@ -965,9 +969,10 @@ namespace LWS
         if (fHwnd == nullptr || fDragAndDrop != nullptr)
             return Result::Success;
 
-        auto dragAndDrop = std::make_shared<internal::DragAndDropTarget>(fHwnd,
-                                                                         [this](const std::filesystem::path& path)
-                                                                         { dispatchEvent(EventDragDropFile{path}); });
+        auto dragAndDrop = std::shared_ptr<internal::DragAndDropTarget>(
+            new internal::DragAndDropTarget(fHwnd, [this](const std::filesystem::path& path)
+                                            { dispatchEvent(EventDragDropFile{path}); }),
+            [](internal::DragAndDropTarget* target) { target->Release(); });
         if (FAILED(dragAndDrop->getAttachResult()))
         {
             fDndEnabled = false;
@@ -1012,6 +1017,7 @@ namespace LWS
         WindowBackendWin32* self = reinterpret_cast<WindowBackendWin32*>(GetProp(hWnd, g_windowPropName));
         if (self != nullptr)
         {
+            const internal::WindowBackendAccess::DispatchScope dispatch(self->owner());
             return self->windowProc(hWnd, message, wParam, lParam);
         }
 
@@ -1124,8 +1130,9 @@ namespace LWS
                 break;
 
             case WM_CLOSE:
-                if (dispatchEvent(EventCloseRequested{}) == EventResponse::Handled)
-                    use_default = false;
+                if (dispatchEvent(EventCloseRequested{}) == EventResponse::Unhandled && owner().IsCreated())
+                    std::ignore = owner().Destroy();
+                use_default = false;
                 break;
 
             case WM_DESTROY:

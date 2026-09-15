@@ -15,6 +15,39 @@ namespace LWS::internal
     {
       public:
 
+        // Covers native frames as well as portable dispatch; release builds retain no owner tracking.
+        class DispatchScope final
+        {
+          public:
+
+            explicit DispatchScope(Window& window)
+#ifndef NDEBUG
+                : window_(window)
+#endif
+            {
+#ifndef NDEBUG
+                ++window_.dispatchDepth_;
+#else
+                (void) window;
+#endif
+            }
+            ~DispatchScope()
+            {
+#ifndef NDEBUG
+                --window_.dispatchDepth_;
+#endif
+            }
+            DispatchScope(const DispatchScope&) = delete;
+            DispatchScope& operator=(const DispatchScope&) = delete;
+
+          private:
+
+#ifndef NDEBUG
+            Window& window_;
+#endif
+        };
+        [[nodiscard]] static bool HasNativeHandle(const Window& window);
+        [[nodiscard]] static bool CanConfigure(const Window& window);
         [[nodiscard]] static IWindowBackend* Get(Window& window);
         [[nodiscard]] static const IWindowBackend* Get(const Window& window);
         [[nodiscard]] static EventResponse Dispatch(Window& window, const AnyEvent& event);

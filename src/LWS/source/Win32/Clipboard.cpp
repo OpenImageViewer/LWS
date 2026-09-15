@@ -127,6 +127,8 @@ namespace LWS
     ClipboardFormatType Clipboard::RegisterFormat(const string_type& format)
     {
         platform_.AssertCurrentThread();
+        if (!platform_.IsUsable())
+            return 0;
         auto formatID = RegisterClipboardFormat(format.c_str());
         RegisterFormat(formatID);
         return formatID;
@@ -153,7 +155,7 @@ namespace LWS
     ClipboardResult Clipboard::SetClipboardData(Window& ownerWindow, std::span<const ClipboardDataView> data)
     {
         platform_.AssertCurrentThread();
-        if (&ownerWindow.GetPlatformContext() != &platform_)
+        if (!platform_.IsUsable() || !ownerWindow.IsCreated() || &ownerWindow.GetPlatformContext() != &platform_)
             return ClipboardResult::UnknownError;
         const auto owner = Win32::GetHwnd(ownerWindow);
         if (!owner.has_value())
@@ -247,6 +249,8 @@ namespace LWS
     {
         platform_.AssertCurrentThread();
         ClipboardData result;
+        if (!platform_.IsUsable())
+            return result;
         ClipboardFormatType selectedFormatID{};
 
         for (const auto formatID : fListFormats)

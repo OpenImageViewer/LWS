@@ -26,7 +26,10 @@ namespace LWS
     ///
     /// @par Thread safety
     /// Every operation requires the bound context thread. Debug builds assert affinity; wrong-thread release use is
-    /// undefined. Typed native handles are borrowed and stable only from successful Create() until Destroy() begins.
+    /// undefined. The C++ object must survive all active native/event dispatch, including nested dispatch.
+    /// Destroy() may run from a callback; deleting the executing C++ object may not.
+    /// Typed native handles are borrowed from Create() until native teardown begins, including orderly cleanup
+    /// notification. Backend failure invalidates access immediately. Clients must not destroy the native window directly.
     class Window final
     {
       public:
@@ -100,7 +103,12 @@ namespace LWS
         [[nodiscard]] Result ResetWindowIcon();
 
         [[nodiscard]] Window* GetParent() const;
+        /// Registrations made during a listener traversal become active when its outermost traversal completes.
+        /// Publication precedes retired-capture destruction, which may itself reenter dispatch.
+        /// Destruction notifications include pending registrations so newly attached resources can still clean up.
         [[nodiscard]] std::expected<EventConnection, Result> Listen(EventCallback callback);
+        /// Borrows pixels only for this call; the caller may reuse or release them when it returns.
+        /// Wayland copies into reusable shared memory and coalesces pending frames while the compositor is busy.
         [[nodiscard]] Result PresentBitmap(const BitmapBuffer& bitmap);
 
       private:
@@ -112,6 +120,10 @@ namespace LWS
 
         [[nodiscard]] EventResponse DispatchEvent(const AnyEvent& event);
 
+        [[nodiscard]] bool CanDestroy() const;
+#ifndef NDEBUG
+        size_t dispatchDepth_{};
+#endif
         PlatformContext& platform_;
         class Impl;
         std::unique_ptr<Impl> impl_;

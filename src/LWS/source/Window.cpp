@@ -47,7 +47,24 @@ namespace LWS
         ClientAreaSize clientArea{{800, 600}, {800, 600}};
         bool configured{};
         bool cursorVisible{true};
+        bool notifyingDestroy{};
+        bool nativeTeardown{};
     };
+
+    bool internal::WindowBackendAccess::HasNativeHandle(const Window& window)
+    {
+        window.platform_.AssertCurrentThread();
+        return window.platform_.IsUsable() && !window.impl_->nativeTeardown &&
+               (window.impl_->state == Window::Impl::State::Created ||
+                window.impl_->state == Window::Impl::State::Destroying);
+    }
+
+    bool internal::WindowBackendAccess::CanConfigure(const Window& window)
+    {
+        window.platform_.AssertCurrentThread();
+        return window.platform_.IsUsable() && window.impl_->state != Window::Impl::State::Destroying &&
+               window.impl_->state != Window::Impl::State::Destroyed;
+    }
 
     internal::IWindowBackend* internal::WindowBackendAccess::Get(Window& window)
     {
@@ -71,7 +88,7 @@ namespace LWS
         window.platform_.AssertCurrentThread();
         if (!callback)
             return std::unexpected(Result::InvalidArgument);
-        if (window.impl_->listeners->IsClosed())
+        if (!CanConfigure(window) || window.impl_->listeners->IsClosed())
             return std::unexpected(Result::InvalidState);
         if (window.GetBackendId() != BackendId::Win32)
             return std::unexpected(Result::NotSupported);
@@ -82,6 +99,10 @@ namespace LWS
     bool internal::WindowBackendAccess::DispatchPlatform(Window& window, const Win32::PlatformEvent& event,
                                                          LRESULT& result)
     {
+        const DispatchScope ownerDispatch(window);
+        const PlatformContextAccess::DispatchScope contextDispatch(window.platform_);
+        if (!window.IsCreated())
+            return false;
         return window.impl_->listeners->DispatchPlatform(event, result);
     }
 #endif
@@ -104,6 +125,10 @@ namespace LWS
     Window::~Window()
     {
         platform_.AssertCurrentThread();
+#ifndef NDEBUG
+        assert(dispatchDepth_ == 0 && "Cannot delete a Window involved in active dispatch");
+#endif
+        assert(CanDestroy() && "Cannot delete a Window during conflicting family cleanup");
         std::ignore = Destroy();
         platform_.UnregisterWindow();
     }
@@ -111,18 +136,25 @@ namespace LWS
     Result Window::Create(const WindowConfig& config)
     {
         platform_.AssertCurrentThread();
-        if (impl_->state != Impl::State::PreCreate)
+        if (!platform_.IsUsable() || impl_->state != Impl::State::PreCreate)
             return Result::InvalidState;
         if (config.clientSize.x <= 0 || config.clientSize.y <= 0 ||
-            !ValidSizeLimits(config.minClientSize, config.maxClientSize))
+            !ValidSizeLimits(config.minClientSize, config.maxClientSize) ||
+            (config.showState != WindowShowState::Restored && config.showState != WindowShowState::Maximized &&
+             config.showState != WindowShowState::Minimized))
         {
             return Result::InvalidArgument;
         }
-        if (config.parent != nullptr &&
-            (config.parent == this || !config.parent->IsCreated() || &config.parent->platform_ != &platform_))
+        if (config.parent != nullptr)
         {
-            return Result::InvalidArgument;
+            if (config.parent == this || &config.parent->platform_ != &platform_)
+                return Result::InvalidArgument;
+            if (!config.parent->IsCreated())
+                return Result::InvalidState;
         }
+        if ((config.alwaysOnTop && !platform_.Supports(PlatformFeature::AlwaysOnTop).value_or(false)) ||
+            (GetBackendId() == BackendId::Wayland && config.showState == WindowShowState::Minimized))
+            return Result::NotSupported;
 
         impl_->state = Impl::State::Creating;
         impl_->backend->setParent(config.parent != nullptr ? config.parent->impl_->backend.get() : nullptr);
@@ -173,21 +205,39 @@ namespace LWS
         return Result::Success;
     }
 
+    bool Window::CanDestroy() const
+    {
+        if (impl_->state == Impl::State::Creating || impl_->state == Impl::State::Destroying)
+            return false;
+        for (const Window* parent = impl_->parent; parent != nullptr; parent = parent->impl_->parent)
+            if (parent->impl_->notifyingDestroy)
+                return false;
+        return std::ranges::all_of(impl_->children, [](const Window* child) { return child->CanDestroy(); });
+    }
+
     Result Window::Destroy()
     {
         platform_.AssertCurrentThread();
         if (impl_->state == Impl::State::PreCreate || impl_->state == Impl::State::Destroyed)
             return Result::Success;
-        if (impl_->state != Impl::State::Created)
+        if (!CanDestroy())
             return Result::InvalidState;
 
+        const internal::WindowBackendAccess::DispatchScope ownerDispatch(*this);
+        const internal::PlatformContextAccess::DispatchScope contextDispatch(platform_);
         impl_->state = Impl::State::Destroying;
+        // Parent cleanup precedes child teardown. Requests that would destroy a dependency while a parent's
+        // cleanup listeners are still running are rejected, rather than requiring deferred destruction machinery.
+        impl_->notifyingDestroy = true;
+        std::ignore = DispatchEvent(EventWindowDestroying{platform_.IsUsable()});
+        impl_->notifyingDestroy = false;
         const auto children = impl_->children;
         for (Window* child : children)
         {
             if (std::ranges::find(impl_->children, child) != impl_->children.end())
                 std::ignore = child->Destroy();
         }
+        impl_->nativeTeardown = true;
         impl_->backend->destroy();
         if (impl_->state == Impl::State::Destroying)
             std::ignore = DispatchEvent(EventWindowDestroyed{});
@@ -197,7 +247,7 @@ namespace LWS
     bool Window::IsCreated() const
     {
         platform_.AssertCurrentThread();
-        return impl_->state == Impl::State::Created;
+        return platform_.IsUsable() && impl_->state == Impl::State::Created;
     }
 
     PlatformContext& Window::GetPlatformContext()
@@ -212,6 +262,7 @@ namespace LWS
     }
     BackendId Window::GetBackendId() const
     {
+        platform_.AssertCurrentThread();
         return *platform_.GetBackendId();
     }
 
@@ -295,7 +346,7 @@ namespace LWS
     std::expected<ClientAreaSize, Result> Window::GetClientAreaSize() const
     {
         platform_.AssertCurrentThread();
-        if (!IsConfigured())
+        if (!impl_->configured || !internal::WindowBackendAccess::HasNativeHandle(*this))
             return std::unexpected(Result::InvalidState);
         return impl_->clientArea;
     }
@@ -361,6 +412,9 @@ namespace LWS
             return Result::NotSupported;
 
         Rect area;
+        if (target != CenterTarget::Parent && target != CenterTarget::CurrentMonitor &&
+            target != CenterTarget::PrimaryMonitor)
+            return Result::InvalidArgument;
         if (target == CenterTarget::Parent)
         {
             if (impl_->parent == nullptr)
@@ -397,6 +451,8 @@ namespace LWS
         platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
+        if (mode != WindowMode::Windowed && mode != WindowMode::Fullscreen && mode != WindowMode::FullscreenAllMonitors)
+            return Result::InvalidArgument;
         if (mode == WindowMode::FullscreenAllMonitors && GetBackendId() == BackendId::Wayland)
             return Result::NotSupported;
         const auto nativeMode = mode == WindowMode::Windowed
@@ -421,6 +477,9 @@ namespace LWS
         platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
+        if (state != WindowShowState::Restored && state != WindowShowState::Maximized &&
+            state != WindowShowState::Minimized)
+            return Result::InvalidArgument;
         if (state == WindowShowState::Minimized && GetBackendId() == BackendId::Wayland)
             return Result::NotSupported;
         impl_->backend->setDisplayState(state);
@@ -448,7 +507,7 @@ namespace LWS
     bool Window::IsConfigured() const
     {
         platform_.AssertCurrentThread();
-        return impl_->state == Impl::State::Created && impl_->configured;
+        return IsCreated() && impl_->configured;
     }
 
     Result Window::RequestActivation()
@@ -470,8 +529,9 @@ namespace LWS
     {
         if (!IsCreated())
             return Result::InvalidState;
-        impl_->backend->setWindowStyles(impl_->backend->getWindowStyles(), false);
-        impl_->backend->setWindowStyles(styles.get(), true);
+        if (impl_->backend->getWindowStyles() == styles.get())
+            return Result::Success;
+        impl_->backend->setWindowStyles(styles.get());
         impl_->config.styles = styles;
         return Result::Success;
     }
@@ -565,6 +625,8 @@ namespace LWS
     {
         if (!IsCreated() || impl_->parent != nullptr)
             return Result::InvalidState;
+        if (operation != WindowDragOperation::Move && operation != WindowDragOperation::ResizeNearest)
+            return Result::InvalidArgument;
         if (GetBackendId() != BackendId::Win32)
             return Result::NotSupported;
         impl_->backend->setLockMouseToWindowMode(operation == WindowDragOperation::Move
@@ -578,13 +640,22 @@ namespace LWS
         platform_.AssertCurrentThread();
         if (cursor.resource_ == nullptr)
             return Result::InvalidArgument;
-        if (impl_->state == Impl::State::Destroyed || impl_->state == Impl::State::Destroying)
+        if (!internal::WindowBackendAccess::CanConfigure(*this))
             return Result::InvalidState;
-        if (cursor.IsCustom() && GetBackendId() == BackendId::Wayland)
+        const bool custom = cursor.IsCustom();
+        if (custom && GetBackendId() == BackendId::Wayland)
             return Result::NotSupported;
         if (impl_->state == Impl::State::PreCreate)
         {
             impl_->cursor = std::move(cursor);
+            return Result::Success;
+        }
+        if (impl_->state == Impl::State::Created && custom && impl_->cursorBackend != nullptr &&
+            impl_->cursor.has_value() && impl_->cursor->resource_ == cursor.resource_)
+        {
+            // Custom native cursors depend only on immutable pixels/hotspot, not window DPI. Keep applying
+            // visibility/the current handle: another window may have selected a different cursor meanwhile.
+            impl_->cursorBackend->setVisible(impl_->cursorVisible);
             return Result::Success;
         }
         if (impl_->cursorBackend == nullptr)
@@ -593,9 +664,8 @@ namespace LWS
             impl_->cursorBackend = std::shared_ptr<internal::ICursorBackend>(std::move(nativeCursor));
             impl_->backend->setCursor(impl_->cursorBackend);
         }
-        const Result result = cursor.IsCustom()
-                                  ? impl_->cursorBackend->setCustomCursor(cursor.BitmapData(), cursor.Hotspot())
-                                  : (impl_->cursorBackend->setCursorShape(cursor.Shape()), Result::Success);
+        const Result result = custom ? impl_->cursorBackend->setCustomCursor(cursor.BitmapData(), cursor.Hotspot())
+                                     : (impl_->cursorBackend->setCursorShape(cursor.Shape()), Result::Success);
         if (result == Result::Success)
         {
             impl_->cursor = std::move(cursor);
@@ -607,7 +677,7 @@ namespace LWS
     Result Window::ResetMouseCursor()
     {
         platform_.AssertCurrentThread();
-        if (impl_->state == Impl::State::Destroyed || impl_->state == Impl::State::Destroying)
+        if (!internal::WindowBackendAccess::CanConfigure(*this))
             return Result::InvalidState;
         return SetMouseCursor(Cursor::FromShape(CursorShape::Arrow));
     }
@@ -615,7 +685,7 @@ namespace LWS
     Result Window::SetMouseCursorVisible(bool visible)
     {
         platform_.AssertCurrentThread();
-        if (impl_->state == Impl::State::Destroyed || impl_->state == Impl::State::Destroying)
+        if (!internal::WindowBackendAccess::CanConfigure(*this))
             return Result::InvalidState;
         impl_->cursorVisible = visible;
         if (!impl_->cursor.has_value())
@@ -630,7 +700,7 @@ namespace LWS
         platform_.AssertCurrentThread();
         if (icon.bitmap_ == nullptr)
             return Result::InvalidArgument;
-        if (impl_->state == Impl::State::Destroyed || impl_->state == Impl::State::Destroying)
+        if (!internal::WindowBackendAccess::CanConfigure(*this))
             return Result::InvalidState;
         if (GetBackendId() != BackendId::Win32)
             return Result::NotSupported;
@@ -640,7 +710,9 @@ namespace LWS
             return Result::Success;
         }
         const BitmapBuffer bitmap = icon.GetBuffer();
-        const Result result = impl_->backend->setWindowIcon(&bitmap);
+        const bool reuseResource = impl_->state == Impl::State::Created && impl_->icon.has_value() &&
+                                   impl_->icon->bitmap_ == icon.bitmap_;
+        const Result result = impl_->backend->setWindowIcon(&bitmap, reuseResource);
         if (result == Result::Success)
             impl_->icon = std::move(icon);
         return result;
@@ -649,7 +721,7 @@ namespace LWS
     Result Window::ResetWindowIcon()
     {
         platform_.AssertCurrentThread();
-        if (impl_->state == Impl::State::Destroyed || impl_->state == Impl::State::Destroying)
+        if (!internal::WindowBackendAccess::CanConfigure(*this))
             return Result::InvalidState;
         if (impl_->state == Impl::State::PreCreate)
         {
@@ -678,7 +750,7 @@ namespace LWS
         platform_.AssertCurrentThread();
         if (!callback)
             return std::unexpected(Result::InvalidArgument);
-        if (impl_->listeners->IsClosed())
+        if (!internal::WindowBackendAccess::CanConfigure(*this) || impl_->listeners->IsClosed())
             return std::unexpected(Result::InvalidState);
         const uint64_t id = impl_->listeners->Add(std::move(callback), beforeUserCallbacks);
         return EventConnection(impl_->listeners, id, std::this_thread::get_id());
@@ -704,6 +776,11 @@ namespace LWS
             return EventResponse::Unhandled;
         }
 
+        const bool lifecycle = std::holds_alternative<EventWindowDestroying>(event) ||
+                               std::holds_alternative<EventWindowDestroyed>(event);
+        if (!lifecycle && !IsCreated())
+            return EventResponse::Unhandled;
+
         if (const auto* sizeEvent = std::get_if<EventClientAreaSizeChanged>(&event); sizeEvent != nullptr)
         {
             if (impl_->configured && impl_->clientArea == sizeEvent->size)
@@ -716,7 +793,12 @@ namespace LWS
             impl_->config.showState = stateEvent->state;
 
         if (std::holds_alternative<EventWindowDestroyed>(event))
+        {
             impl_->state = Impl::State::Destroying;
+            impl_->nativeTeardown = true;
+        }
+        const internal::WindowBackendAccess::DispatchScope ownerDispatch(*this);
+        const internal::PlatformContextAccess::DispatchScope contextDispatch(platform_);
         const EventResponse response = impl_->listeners->Dispatch(event);
         if (std::holds_alternative<EventWindowDestroyed>(event))
         {
