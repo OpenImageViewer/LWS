@@ -53,6 +53,7 @@ namespace
             bool holdBuffers{};
             std::vector<wl_resource*> heldBuffers;
             std::vector<uint32_t> submittedBuffers;
+            std::vector<std::string> stateRequests;
         };
         ProtocolServer(bool fractional = false, bool hostFrame = false)
         {
@@ -389,10 +390,25 @@ namespace
                                 .resize = nullptr,
                                 .set_max_size = [](wl_client*, wl_resource*, int32_t, int32_t) {},
                                 .set_min_size = [](wl_client*, wl_resource*, int32_t, int32_t) {},
-                                .set_maximized = [](wl_client*, wl_resource*) {},
+                                .set_maximized =
+                                    [](wl_client*, wl_resource* resource)
+                                {
+                                    static_cast<Surface*>(wl_resource_get_user_data(resource))
+                                        ->stateRequests.push_back("maximized");
+                                },
                                 .unset_maximized = [](wl_client*, wl_resource*) {},
-                                .set_fullscreen = [](wl_client*, wl_resource*, wl_resource*) {},
-                                .unset_fullscreen = [](wl_client*, wl_resource*) {},
+                                .set_fullscreen =
+                                    [](wl_client*, wl_resource* resource, wl_resource*)
+                                {
+                                    static_cast<Surface*>(wl_resource_get_user_data(resource))
+                                        ->stateRequests.push_back("fullscreen");
+                                },
+                                .unset_fullscreen =
+                                    [](wl_client*, wl_resource* resource)
+                                {
+                                    static_cast<Surface*>(wl_resource_get_user_data(resource))
+                                        ->stateRequests.push_back("windowed");
+                                },
                                 .set_minimized = [](wl_client*, wl_resource*) {}};
                             wl_resource_set_implementation(surface.toplevel, &top, &surface, nullptr);
                         },
@@ -781,6 +797,27 @@ TEST_CASE("Wayland metrics retain logical size while native dimensions are unava
     REQUIRE(window.Destroy() == LWS::Result::Success);
     REQUIRE(window.GetClientAreaMetrics().logical == metrics.logical);
     REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
+}
+
+TEST_CASE("Wayland maximization submits the complete target before configuration", "[wayland][protocol][maximize]")
+{
+    ProtocolServer server;
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window window(context);
+    REQUIRE(window.Create(Config()) == LWS::Result::Success);
+    server.Settle(context);
+    const auto surface = LWS::Wayland::GetSurface(window);
+    REQUIRE(surface.has_value());
+    const auto id = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*surface));
+    server.Invoke([&] { server.surfaces.at(id)->stateRequests.clear(); });
+    REQUIRE(window.SetWindowMode(LWS::WindowMode::Fullscreen) == LWS::Result::Success);
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::Success);
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::Success);
+    server.Settle(context);
+    std::vector<std::string> requests;
+    server.Invoke([&] { requests = server.surfaces.at(id)->stateRequests; });
+    REQUIRE(requests == std::vector<std::string>{"fullscreen", "windowed", "maximized", "windowed", "maximized"});
 }
 
 TEST_CASE("Wayland integer and fractional scaling preserve handles and coherent metrics", "[wayland][protocol][scale]")

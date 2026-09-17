@@ -453,20 +453,18 @@ namespace LWS
             return Result::InvalidArgument;
         if (state == WindowShowState::Minimized && platform_.GetBackendId() == BackendId::Wayland)
             return Result::NotSupported;
-        impl_->backend->setDisplayState(state);
+        if (state == WindowShowState::Maximized)
+        {
+            if (impl_->parent != nullptr)
+                return Result::NotSupported;
+            // Request the complete target even when an earlier Wayland configure is still in flight.
+            impl_->backend->maximize();
+        }
+        else
+        {
+            impl_->backend->setDisplayState(state);
+        }
         impl_->config.showState = state;
-        return Result::Success;
-    }
-
-    Result Window::RequestMaximize()
-    {
-        platform_.AssertCurrentThread();
-        if (!IsCreated())
-            return Result::InvalidState;
-        if (impl_->parent != nullptr)
-            return Result::NotSupported;
-        impl_->backend->maximize();
-        impl_->config.showState = WindowShowState::Maximized;
         return Result::Success;
     }
 

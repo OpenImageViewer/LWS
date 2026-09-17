@@ -89,7 +89,7 @@ TEST_CASE("Wayland windowed maximization leaves fullscreen and retains normal si
     LWS::PlatformContext context;
     Initialize(context);
     LWS::Window window(context);
-    REQUIRE(window.RequestMaximize() == LWS::Result::InvalidState);
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::InvalidState);
     LWS::WindowMode expectedMode = LWS::WindowMode::Windowed;
     LWS::WindowShowState expectedState = LWS::WindowShowState::Restored;
     bool confirmed = false;
@@ -138,8 +138,8 @@ TEST_CASE("Wayland windowed maximization leaves fullscreen and retains normal si
     confirmed = false;
     expectedMode = LWS::WindowMode::Windowed;
     expectedState = LWS::WindowShowState::Maximized;
-    REQUIRE(window.RequestMaximize() == LWS::Result::Success);
-    REQUIRE(window.RequestMaximize() == LWS::Result::Success);
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::Success);
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::Success);
     awaitConfigure();
     confirmed = false;
     expectedState = LWS::WindowShowState::Restored;
@@ -149,11 +149,11 @@ TEST_CASE("Wayland windowed maximization leaves fullscreen and retains normal si
     confirmed = false;
     expectedState = LWS::WindowShowState::Maximized;
     REQUIRE(window.SetWindowMode(LWS::WindowMode::Fullscreen) == LWS::Result::Success);
-    REQUIRE(window.RequestMaximize() == LWS::Result::Success);
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::Success);
     awaitConfigure();
     LWS::Window child(context);
     REQUIRE(child.Create({.parent = &window}) == LWS::Result::Success);
-    REQUIRE(child.RequestMaximize() == LWS::Result::NotSupported);
+    REQUIRE(child.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::NotSupported);
 }
 
 TEST_CASE("Wayland child containment uses parent configuration", "[window][parent][wayland]")

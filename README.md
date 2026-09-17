@@ -169,6 +169,11 @@ dimensions. Zero means no application-specified limit on that axis. Values must 
 must be at least its minimum. Native constraints may still apply. Creation uses the same type through
 `WindowConfig::clientSizeLimits`.
 
+`RequestShowState(WindowShowState::Maximized)` requests a windowed, maximized top-level window even from fullscreen.
+Win32 retains the current monitor and saved normal client size where it fits. Wayland sends both leaving-fullscreen
+and maximization requests, even when earlier configuration events are in flight. Success means the request was
+issued; the compositor controls the resulting state and timing. Child maximization returns `NotSupported`.
+
 `SetMouseCursor(Cursor::FromShape(CursorShape::Arrow))` resets the cursor while preserving its visibility.
 `SetWindowIcon(std::nullopt)` clears the custom icon. Both preserve the previous reset operations' lifecycle and
 platform support; a moved-from cursor or engaged moved-from icon remains invalid, and repeated immutable resources
@@ -219,6 +224,8 @@ registrations in that notification. Backend failure invalidates public handle ac
   `clientSizeLimits.minimum`/`clientSizeLimits.maximum`.
 - Replace `ResetMouseCursor()` with `SetMouseCursor(Cursor::FromShape(CursorShape::Arrow))`, and
   `ResetWindowIcon()` with `SetWindowIcon(std::nullopt)`.
+- Replace `RequestMaximize()` with `RequestShowState(WindowShowState::Maximized)`. The latter now also leaves
+  fullscreen and rejects child windows; restore and minimize behavior is unchanged.
 - Boolean queries are `IsVisible()`, `IsTransparent()`, `IsAlwaysOnTop()`, and `IsBackgroundErasureEnabled()`;
   drag-and-drop configuration is `SetDragAndDropEnabled(bool)`. These replace the corresponding `Get...()` methods
   and `EnableDragAndDrop(bool)`. These API migrations have no compatibility aliases; rebuild clients together.

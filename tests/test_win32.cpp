@@ -511,6 +511,32 @@ TEST_CASE("Window metrics are coherent", "[window][metrics][win32]")
     REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
 }
 
+TEST_CASE("Maximized show state always requests windowed maximization", "[window][maximize][win32]")
+{
+    const auto mode = GENERATE(LWS::WindowMode::Windowed, LWS::WindowMode::Fullscreen,
+                               LWS::WindowMode::FullscreenAllMonitors);
+    const auto state = GENERATE(LWS::WindowShowState::Restored, LWS::WindowShowState::Minimized,
+                                LWS::WindowShowState::Maximized);
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(
+        window.Create({.clientSize = {400, 300},
+                       .styles = LWS::WindowStyleFlags(LWS::WindowStyle::Caption | LWS::WindowStyle::ResizableBorder |
+                                                       LWS::WindowStyle::MaximizeButton),
+                       .visible = true}) == LWS::Result::Success);
+    REQUIRE(window.RequestShowState(state) == LWS::Result::Success);
+    REQUIRE(window.SetWindowMode(mode) == LWS::Result::Success);
+    const HMONITOR monitor = MonitorFromWindow(Hwnd(window), MONITOR_DEFAULTTONEAREST);
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::Success);
+    REQUIRE(window.GetWindowMode() == LWS::WindowMode::Windowed);
+    REQUIRE(window.GetShowState() == LWS::WindowShowState::Maximized);
+    REQUIRE(IsZoomed(Hwnd(window)));
+    REQUIRE(MonitorFromWindow(Hwnd(window), MONITOR_DEFAULTTONEAREST) == monitor);
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::Success);
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Restored) == LWS::Result::Success);
+    REQUIRE(window.GetClientAreaMetrics().logical == LWS::LogicalSize{400, 300});
+}
+
 TEST_CASE("Fullscreen restoration preserves placement after moving between DPI scales",
           "[.][window][fullscreen][win32]")
 {
@@ -584,7 +610,7 @@ TEST_CASE("Fullscreen restoration preserves placement after moving between DPI s
             REQUIRE(connection.has_value());
             if (maximizeOnCurrentMonitor)
             {
-                REQUIRE(window.RequestMaximize() == LWS::Result::Success);
+                REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::Success);
                 REQUIRE(window.GetWindowMode() == LWS::WindowMode::Windowed);
                 REQUIRE(window.GetShowState() == LWS::WindowShowState::Maximized);
                 REQUIRE_FALSE(visitedOtherMonitor);
@@ -625,7 +651,7 @@ TEST_CASE("Repeated window mode requests preserve the current placement", "[wind
 {
     Context context;
     LWS::Window window(context.value);
-    REQUIRE(window.RequestMaximize() == LWS::Result::InvalidState);
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::InvalidState);
     REQUIRE(window.Create({.clientSize = {400, 300}, .visible = true}) == LWS::Result::Success);
     REQUIRE(window.SetWindowMode(LWS::WindowMode::Fullscreen) == LWS::Result::Success);
     REQUIRE(window.SetWindowMode(LWS::WindowMode::Windowed) == LWS::Result::Success);
@@ -636,10 +662,10 @@ TEST_CASE("Repeated window mode requests preserve the current placement", "[wind
     REQUIRE(window.RequestShowState(LWS::WindowShowState::Restored) == LWS::Result::Success);
     REQUIRE(window.GetPlacement().position == placement.position);
     REQUIRE(window.GetClientAreaMetrics().logical == placement.clientSize);
-    REQUIRE(window.RequestMaximize() == LWS::Result::Success);
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::Success);
     RECT maximized{};
     REQUIRE(GetWindowRect(Hwnd(window), &maximized));
-    REQUIRE(window.RequestMaximize() == LWS::Result::Success);
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::Success);
     RECT repeated{};
     REQUIRE(GetWindowRect(Hwnd(window), &repeated));
     REQUIRE(repeated.left == maximized.left);
@@ -650,7 +676,7 @@ TEST_CASE("Repeated window mode requests preserve the current placement", "[wind
     REQUIRE(window.GetClientAreaMetrics().logical == placement.clientSize);
     LWS::Window child(context.value);
     REQUIRE(child.Create({.parent = &window}) == LWS::Result::Success);
-    REQUIRE(child.RequestMaximize() == LWS::Result::NotSupported);
+    REQUIRE(child.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::NotSupported);
 }
 
 TEST_CASE("Client area events suppress duplicate native sizes", "[window][metrics][win32]")
