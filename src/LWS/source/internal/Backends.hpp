@@ -36,7 +36,6 @@ namespace LWS
         {
             Point position;
             Size size;
-            WindowShowState displayState{WindowShowState::Restored};
         };
 
         struct NativeWindowConfig

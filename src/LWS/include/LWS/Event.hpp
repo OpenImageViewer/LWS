@@ -14,9 +14,12 @@
 
 namespace LWS
 {
+    /// Publishes a paired logical/pixel update, including pixel-only changes caused by display scaling.
+    /// Pixels are present; unconfigured size/scale updates wait for native configuration.
+    /// GetClientAreaMetrics() reflects this update before listeners run; nested dispatch may replace it.
     struct EventClientAreaSizeChanged
     {
-        ClientAreaSize size;
+        ClientAreaMetrics size;
     };
     struct EventMove
     {

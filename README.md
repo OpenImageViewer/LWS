@@ -107,11 +107,46 @@ future option if a measured client workload justifies the additional contract.
 
 ## Portable and typed APIs
 
-Shared code uses `Window`, `AnyEvent`, coherent `ClientAreaSize`, and logical client coordinates. `WindowConfig` and
-`RequestClientSize()` always describe the drawable client area with `LogicalSize`; native title bars, borders, shadows,
-and other outer decorations are deliberately outside the portable size contract. `ClientAreaSize::pixels` is a
-non-convertible `PixelSize` and is authoritative for native rendering. `Scale()` derives the effective mapping between
-the paired sizes.
+Shared code uses `Window`, `AnyEvent`, `ClientAreaMetrics`, and logical client coordinates. `WindowConfig::clientSize`
+and `WindowPlacementRequest::clientSize` describe the drawable client area with `LogicalSize`; native title bars,
+borders, shadows, and other outer decorations are outside that size contract. `ClientAreaMetrics::pixels` is an
+optional, non-convertible `PixelSize` and is authoritative for native rendering when present.
+
+Logical size is the stable layout size an application aims to preserve when display scaling changes. On Win32,
+logical units are normalized to 96 DPI; on Wayland, they are surface coordinates. A width of 600 logical units uses
+600 pixels at 100% scaling, 900 at 150%, and 1200 at 200%. Logical units do not measure inches or millimetres, and
+resizing, native window constraints, or integer rounding can still change the reported logical dimensions.
+
+`GetClientAreaMetrics()` returns a `ClientAreaMetrics` value directly. When native metrics are available, it pairs
+logical and pixel dimensions from the last published backend update. Size listeners observe that pair before
+running; show-state listeners can run earlier and observe the previous pair. Nested dispatch can publish a newer
+pair before an outer listener resumes. Otherwise, `logical` comes from the backend while created or
+the stored configuration outside that state, and `pixels` is empty. Logical size remains useful for startup layout.
+Pixels are unavailable before initial configuration, during Wayland remapping, and after native teardown or backend
+failure. They can remain available during orderly cleanup even though `IsConfigured()` is false. An available
+zero-sized client area is distinct from missing native metrics. On Wayland, later metrics updates can also result
+from LWS applying size requests without a new compositor acknowledgment. Before initial configuration or while
+remapping, size and scale requests update backend layout state without publishing paired metrics.
+
+Use one snapshot for rendering dimensions and coordinate conversion so both use the same scale:
+
+```cpp
+const auto metrics = window.GetClientAreaMetrics();
+if (const auto scale = metrics.Scale(); scale && metrics.pixels->x > 0 && metrics.pixels->y > 0)
+{
+    ResizeRenderTarget(*metrics.pixels);
+    const auto logicalPosition = window.GetMousePosition();
+    const double pixelX = logicalPosition.x * scale->x;
+    const double pixelY = logicalPosition.y * scale->y;
+    HandlePointerInPixels(pixelX, pixelY);
+}
+```
+
+`ResizeRenderTarget()` and `HandlePointerInPixels()` above represent application code. `Scale()` computes
+`pixels / logical` on each axis, returning `nullopt` if pixels are absent or either logical dimension is zero.
+Rounding can make these effective ratios
+differ between axes and from nominal display scale; use the reported pixel size for render targets. On Win32,
+pixel dimensions come from `GetClientRect()` or native resize notifications.
 
 Wayland scale is compositor-provided per-surface state, not physical-monitor DPI. With `wp_fractional_scale_v1` and
 `wp_viewporter`, LWS allocates each pixel dimension with `ceil(logical * preferredScale)`, uses buffer scale one, and
@@ -119,6 +154,20 @@ sets the viewport destination to the logical size. Without those protocols, LWS 
 outputs containing the surface. A scale change that alters the paired pixel size publishes
 `EventClientAreaSizeChanged` even when logical size is unchanged; clients must use that pixel size rather than monitor
 scale or reconstructed dimensions.
+
+`RequestPlacement()` accepts optional position and logical client size: omitted fields stay unchanged, and an empty
+request or nonpositive supplied size is invalid. Combined Win32 movement/resizing uses one native geometry operation;
+redraw and callbacks retain their own timing. Placement does not issue a show-state request or override one made
+by a geometry listener. Wayland top-level positions cannot be set or queried, so an explicit
+position returns `NotSupported` without applying an accompanying resize. Wayland child position and content can take
+effect on separate parent/child commits. `GetPlacement()` returns optional position and logical client size; it does
+not promise an atomic native observation. Win32 top-level position follows the restored placement in DPI-normalized
+screen coordinates, matching position requests, while child positions are relative to their parent's client area.
+
+`GetClientSizeLimits()` and `SetClientSizeLimits()` exchange a `ClientSizeLimits` with `minimum` and `maximum` logical
+dimensions. Zero means no application-specified limit on that axis. Values must be nonnegative, and a nonzero maximum
+must be at least its minimum. Native constraints may still apply. Creation uses the same type through
+`WindowConfig::clientSizeLimits`.
 
 `SetMouseCursor(Cursor::FromShape(CursorShape::Arrow))` resets the cursor while preserving its visibility.
 `SetWindowIcon(std::nullopt)` clears the custom icon. Both preserve the previous reset operations' lifecycle and
@@ -160,6 +209,14 @@ registrations in that notification. Backend failure invalidates public handle ac
 - Read backend identity through `window.GetPlatformContext().GetBackendId()`; `Window::GetBackendId()` was removed.
   The context getter returns an optional because contexts can exist before initialization; a window is permanently
   bound to an initialized context.
+- Replace `Window::GetClientSize()`/`GetLogicalClientSize()` with `GetClientAreaMetrics().logical`, and
+  `GetClientAreaSize()` with `GetClientAreaMetrics()`. Rename `ClientAreaSize` to `ClientAreaMetrics`; check its
+  optional `pixels` and `Scale()` instead of checking an outer `expected` result.
+- Replace `SetPosition()`, `RequestClientSize()`, and `SetPlacement()` with `RequestPlacement()` supplying only the
+  desired fields. Use `GetPlacement().position` instead of `GetPosition()`.
+- Replace `GetMinClientSize()`, `GetMaxClientSize()`, and `SetMinMaxClientSize()` with `GetClientSizeLimits()` and
+  `SetClientSizeLimits()`. Replace `WindowConfig::minClientSize`/`maxClientSize` with
+  `clientSizeLimits.minimum`/`clientSizeLimits.maximum`.
 - Replace `ResetMouseCursor()` with `SetMouseCursor(Cursor::FromShape(CursorShape::Arrow))`, and
   `ResetWindowIcon()` with `SetWindowIcon(std::nullopt)`.
 - Boolean queries are `IsVisible()`, `IsTransparent()`, `IsAlwaysOnTop()`, and `IsBackgroundErasureEnabled()`;
@@ -205,7 +262,7 @@ caption buttons; `GetWindowStyles()` does not claim every requested decoration w
 | Context/backend identity | Available | Available | Available | Available until C++ destruction |
 | Title, optional position, logical size, placement, min/max, styles, show state, visibility, transparency, always-on-top, erase flag | Stored defaults | Current backend values | Last stored request/observed value | Last stored request/observed value |
 | Window mode | Backend's retained logical mode | Current mode | Retained mode | Retained mode |
-| Coherent client-area metrics | InvalidState | Available after configuration | Last configured metrics before native teardown | InvalidState |
+| Client-area metrics | Logical defaults; pixels absent | Logical size always available; paired pixels after configuration | Last configured pair before native teardown | Stored logical size; pixels absent |
 | Parent | None until successful creation | Bound parent | Relationship remains during notification | Cleared after final destroyed dispatch; retained until cleanup on failure |
 | Focus/pointer-in-client | False | Current observation | False | False |
 | Mouse position | Zero | Current observation | Zero | Zero |

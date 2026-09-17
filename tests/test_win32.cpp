@@ -11,6 +11,7 @@
     #include <LWS/Win32/Platform.hpp>
     #include <LWS/Win32/WindowExtensions.hpp>
     #include <LWS/Window.hpp>
+    #include <LWS/source/Win32/internal/WindowPosHelper.hpp>
 
     #define WIN32_LEAN_AND_MEAN
     #include <Windows.h>
@@ -171,10 +172,10 @@ TEST_CASE("Window basic properties round-trip", "[window][win32]")
     REQUIRE(window.GetTitle() == L"updated");
     REQUIRE(window.SetVisible(true) == LWS::Result::Success);
     REQUIRE(window.IsVisible());
-    REQUIRE(window.SetPosition({120, 140}) == LWS::Result::Success);
-    REQUIRE(window.GetPosition().has_value());
-    REQUIRE(window.RequestClientSize({720, 520}) == LWS::Result::Success);
-    REQUIRE(window.GetClientSize() == LWS::LogicalSize{720, 520});
+    REQUIRE(window.RequestPlacement({.position = LWS::Point{120, 140}}) == LWS::Result::Success);
+    REQUIRE(window.GetPlacement().position.has_value());
+    REQUIRE(window.RequestPlacement({.clientSize = LWS::LogicalSize{720, 520}}) == LWS::Result::Success);
+    REQUIRE(window.GetClientAreaMetrics().logical == LWS::LogicalSize{720, 520});
     REQUIRE(window.SetAlwaysOnTop(true) == LWS::Result::Success);
     REQUIRE(window.IsAlwaysOnTop());
     REQUIRE(window.SetTransparent(true) == LWS::Result::Success);
@@ -248,21 +249,266 @@ TEST_CASE("Window min and max client sizes round-trip", "[window][win32]")
     Context context;
     LWS::Window window(context.value);
     REQUIRE(window.Create() == LWS::Result::Success);
-    REQUIRE(window.SetMinMaxClientSize({100, 120}, {900, 700}) == LWS::Result::Success);
-    REQUIRE(window.GetMinClientSize() == LWS::LogicalSize{100, 120});
-    REQUIRE(window.GetMaxClientSize() == LWS::LogicalSize{900, 700});
+    REQUIRE(window.SetClientSizeLimits({{100, 120}, {900, 700}}) == LWS::Result::Success);
+    REQUIRE(window.GetClientSizeLimits().minimum == LWS::LogicalSize{100, 120});
+    REQUIRE(window.GetClientSizeLimits().maximum == LWS::LogicalSize{900, 700});
+}
+
+TEST_CASE("Placement preserves show-state requests made by resize listeners", "[window][geometry][win32]")
+{
+    const bool combined = GENERATE(false, true);
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(
+        window.Create({.clientSize = {400, 300},
+                       .styles = LWS::WindowStyleFlags(LWS::WindowStyle::Caption | LWS::WindowStyle::ResizableBorder |
+                                                       LWS::WindowStyle::MaximizeButton),
+                       .visible = true}) == LWS::Result::Success);
+    bool requested = false;
+    LWS::Result result = LWS::Result::Failure;
+    auto listener = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (!requested && std::holds_alternative<LWS::EventClientAreaSizeChanged>(event))
+            {
+                requested = true;
+                result = window.RequestShowState(LWS::WindowShowState::Maximized);
+            }
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(listener.has_value());
+    REQUIRE(window.RequestPlacement({.position = combined ? std::optional(LWS::Point{120, 140}) : std::nullopt,
+                                     .clientSize = LWS::LogicalSize{500, 350}}) == LWS::Result::Success);
+    REQUIRE(requested);
+    REQUIRE(result == LWS::Result::Success);
+    REQUIRE(window.GetShowState() == LWS::WindowShowState::Maximized);
+    REQUIRE(IsZoomed(Hwnd(window)));
+}
+
+TEST_CASE("Placement retains ordinary restored and maximized show states", "[window][geometry][win32]")
+{
+    const auto state = GENERATE(LWS::WindowShowState::Restored, LWS::WindowShowState::Maximized);
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(
+        window.Create({.clientSize = {400, 300},
+                       .styles = LWS::WindowStyleFlags(LWS::WindowStyle::Caption | LWS::WindowStyle::ResizableBorder |
+                                                       LWS::WindowStyle::MaximizeButton),
+                       .visible = true}) == LWS::Result::Success);
+    REQUIRE(window.RequestShowState(state) == LWS::Result::Success);
+    REQUIRE(window.RequestPlacement({.position = LWS::Point{120, 140}, .clientSize = LWS::LogicalSize{500, 350}}) ==
+            LWS::Result::Success);
+    REQUIRE(window.GetShowState() == state);
+    REQUIRE((IsZoomed(Hwnd(window)) != FALSE) == (state == LWS::WindowShowState::Maximized));
+}
+
+TEST_CASE("Show-state listeners observe the last published client metrics", "[window][metrics][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(
+        window.Create({.clientSize = {400, 300},
+                       .styles = LWS::WindowStyleFlags(LWS::WindowStyle::Caption | LWS::WindowStyle::ResizableBorder |
+                                                       LWS::WindowStyle::MaximizeButton),
+                       .visible = true}) == LWS::Result::Success);
+    const auto previous = window.GetClientAreaMetrics();
+    bool stateObserved = false;
+    bool metricsObserved = false;
+    auto listener = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (const auto* state = std::get_if<LWS::EventShowStateChanged>(&event))
+            {
+                REQUIRE(state->state == LWS::WindowShowState::Maximized);
+                REQUIRE(window.GetClientAreaMetrics() == previous);
+                REQUIRE_FALSE(metricsObserved);
+                stateObserved = true;
+            }
+            if (const auto* metrics = std::get_if<LWS::EventClientAreaSizeChanged>(&event))
+            {
+                REQUIRE(stateObserved);
+                REQUIRE(window.GetClientAreaMetrics() == metrics->size);
+                metricsObserved = true;
+            }
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(listener.has_value());
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::Success);
+    REQUIRE(stateObserved);
+    REQUIRE(metricsObserved);
+    REQUIRE(window.GetClientAreaMetrics() != previous);
+}
+
+TEST_CASE("Nested show-state changes retain final native metrics", "[window][metrics][win32]")
+{
+    enum class Action
+    {
+        Restore,
+        Resize,
+        Minimize,
+        Destroy,
+    };
+    const auto action = GENERATE(Action::Restore, Action::Resize, Action::Minimize, Action::Destroy);
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.Create({.clientSize = {400, 300},
+                           .styles = LWS::WindowStyle::Caption | LWS::WindowStyle::ResizableBorder |
+                                     LWS::WindowStyle::MaximizeButton,
+                           .visible = true}) == LWS::Result::Success);
+    bool changed = false;
+    LWS::Result nested = LWS::Result::Failure;
+    auto listener = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (const auto* state = std::get_if<LWS::EventShowStateChanged>(&event);
+                state != nullptr && state->state == LWS::WindowShowState::Maximized && !changed)
+            {
+                changed = true;
+                switch (action)
+                {
+                    case Action::Restore:
+                        nested = window.RequestShowState(LWS::WindowShowState::Restored);
+                        break;
+                    case Action::Resize:
+                        nested = window.RequestPlacement({.clientSize = LWS::LogicalSize{500, 350}});
+                        break;
+                    case Action::Minimize:
+                        nested = window.RequestShowState(LWS::WindowShowState::Minimized);
+                        break;
+                    case Action::Destroy:
+                        nested = window.Destroy();
+                        break;
+                }
+            }
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(listener.has_value());
+    REQUIRE(window.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::Success);
+    REQUIRE(changed);
+    REQUIRE(nested == LWS::Result::Success);
+    const auto metrics = window.GetClientAreaMetrics();
+    if (action == Action::Destroy)
+    {
+        REQUIRE_FALSE(window.IsCreated());
+        REQUIRE_FALSE(metrics.pixels.has_value());
+    }
+    else if (action == Action::Minimize)
+    {
+        REQUIRE(window.GetShowState() == LWS::WindowShowState::Minimized);
+        REQUIRE(metrics.logical == LWS::LogicalSize{0, 0});
+        REQUIRE(metrics.pixels == LWS::PixelSize{0, 0});
+    }
+    else
+    {
+        const HWND handle = Hwnd(window);
+        RECT client{};
+        REQUIRE(GetClientRect(handle, &client));
+        REQUIRE(metrics.pixels == LWS::PixelSize{client.right - client.left, client.bottom - client.top});
+        const auto dpi = static_cast<int>(GetDpiForWindow(handle));
+        REQUIRE(dpi > 0);
+        REQUIRE(metrics.logical == LWS::LogicalSize{MulDiv(client.right - client.left, 96, dpi),
+                                                    MulDiv(client.bottom - client.top, 96, dpi)});
+        REQUIRE(window.GetPlacement().clientSize == metrics.logical);
+    }
+}
+
+TEST_CASE("Workspace offsets preserve top and left reservations and tool windows", "[window][geometry][win32]")
+{
+    const bool toolWindow = GENERATE(false, true);
+    const LONG left = GENERATE(0, 40);
+    const LONG top = GENERATE(0, 30);
+    const MONITORINFO monitor{
+        .cbSize = sizeof(MONITORINFO),
+        .rcMonitor = {-1920, -1080, 0, 0},
+        .rcWork = {-1920 + left, -1080 + top, 0, 0},
+    };
+    const auto offset = LWS::internal::WindowPosHelper::workspaceOffset(monitor, toolWindow ? WS_EX_TOOLWINDOW : 0);
+    REQUIRE(offset.x == (toolWindow ? 0 : left));
+    REQUIRE(offset.y == (toolWindow ? 0 : top));
+}
+
+TEST_CASE("Top-level placement positions use screen coordinates across show states", "[window][geometry][win32]")
+{
+    const bool toolWindow = GENERATE(false, true);
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.Create({.clientSize = {400, 300},
+                           .styles = LWS::WindowStyle::Caption | LWS::WindowStyle::ResizableBorder |
+                                     LWS::WindowStyle::MaximizeButton,
+                           .visible = true}) == LWS::Result::Success);
+    const HWND handle = Hwnd(window);
+    if (toolWindow)
+        SetWindowLongPtrW(handle, GWL_EXSTYLE, GetWindowLongPtrW(handle, GWL_EXSTYLE) | WS_EX_TOOLWINDOW);
+    REQUIRE(window.RequestPlacement({.position = LWS::Point{120, 140}, .clientSize = LWS::LogicalSize{400, 300}}) ==
+            LWS::Result::Success);
+    RECT screen{};
+    REQUIRE(GetWindowRect(handle, &screen));
+    const int dpi = static_cast<int>(GetDpiForWindow(handle));
+    REQUIRE(dpi > 0);
+    const LWS::Point position{MulDiv(screen.left, 96, dpi), MulDiv(screen.top, 96, dpi)};
+    REQUIRE(window.GetPlacement().position == position);
+    unsigned moves = 0;
+    auto listener = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (const auto* moved = std::get_if<LWS::EventMove>(&event))
+            {
+                ++moves;
+                CHECK(moved->newPosition == position);
+                CHECK(window.GetPlacement().position == position);
+            }
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(listener.has_value());
+    for (const auto state :
+         {LWS::WindowShowState::Maximized, LWS::WindowShowState::Minimized, LWS::WindowShowState::Restored,
+          LWS::WindowShowState::Minimized, LWS::WindowShowState::Restored, LWS::WindowShowState::Maximized,
+          LWS::WindowShowState::Restored})
+    {
+        REQUIRE(window.RequestShowState(state) == LWS::Result::Success);
+        REQUIRE(window.GetPlacement().position == position);
+    }
+    REQUIRE(moves > 0);
+    REQUIRE(window.RequestPlacement({.position = window.GetPlacement().position}) == LWS::Result::Success);
+    RECT roundtrip{};
+    REQUIRE(GetWindowRect(handle, &roundtrip));
+    REQUIRE(roundtrip.left == screen.left);
+    REQUIRE(roundtrip.top == screen.top);
 }
 
 TEST_CASE("Window metrics are coherent", "[window][metrics][win32]")
 {
     Context context;
     LWS::Window window(context.value);
+    REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
     REQUIRE(window.Create({.clientSize = {400, 300}}) == LWS::Result::Success);
-    const auto size = window.GetClientAreaSize();
-    REQUIRE(size.has_value());
-    REQUIRE(size->logical == window.GetClientSize());
-    REQUIRE(size->pixels.x > 0);
-    REQUIRE(size->Scale().x > 0.0);
+    const auto size = window.GetClientAreaMetrics();
+    REQUIRE(size.pixels.has_value());
+    REQUIRE(size.logical == LWS::LogicalSize{400, 300});
+    RECT client{};
+    REQUIRE(GetClientRect(Hwnd(window), &client));
+    REQUIRE(size.pixels == LWS::PixelSize{client.right - client.left, client.bottom - client.top});
+    REQUIRE(size.Scale().has_value());
+    REQUIRE(size.Scale()->x > 0.0);
+    bool cleanup = false;
+    auto listener = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (std::holds_alternative<LWS::EventWindowDestroying>(event))
+            {
+                cleanup = true;
+                REQUIRE_FALSE(window.IsConfigured());
+                REQUIRE(window.GetClientAreaMetrics() == size);
+            }
+            if (std::holds_alternative<LWS::EventWindowDestroyed>(event))
+                REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(listener.has_value());
+    REQUIRE(window.Destroy() == LWS::Result::Success);
+    REQUIRE(cleanup);
+    REQUIRE(window.GetClientAreaMetrics().logical == size.logical);
+    REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
 }
 
 TEST_CASE("Fullscreen restoration preserves placement after moving between DPI scales",
@@ -315,7 +561,7 @@ TEST_CASE("Fullscreen restoration preserves placement after moving between DPI s
             REQUIRE(SetWindowPos(handle, nullptr, sourceInfo.rcWork.left + 40, sourceInfo.rcWork.top + 40, 800, 600,
                                  SWP_NOZORDER | SWP_NOACTIVATE));
             Pump(context.value);
-            const auto originalSize = window.GetClientSize();
+            const auto originalSize = window.GetClientAreaMetrics().logical;
             RECT originalRect{};
             REQUIRE(GetWindowRect(handle, &originalRect));
             if (maximized)
@@ -352,7 +598,7 @@ TEST_CASE("Fullscreen restoration preserves placement after moving between DPI s
             REQUIRE(window.RequestShowState(LWS::WindowShowState::Restored) == LWS::Result::Success);
             REQUIRE(MonitorFromWindow(handle, MONITOR_DEFAULTTONEAREST) ==
                     (maximizeOnCurrentMonitor ? target : source));
-            const auto restoredSize = window.GetClientSize();
+            const auto restoredSize = window.GetClientAreaMetrics().logical;
             CAPTURE(originalSize.x, originalSize.y, restoredSize.x, restoredSize.y);
             REQUIRE(restoredSize == originalSize);
             RECT restoredRect{};
@@ -383,12 +629,13 @@ TEST_CASE("Repeated window mode requests preserve the current placement", "[wind
     REQUIRE(window.Create({.clientSize = {400, 300}, .visible = true}) == LWS::Result::Success);
     REQUIRE(window.SetWindowMode(LWS::WindowMode::Fullscreen) == LWS::Result::Success);
     REQUIRE(window.SetWindowMode(LWS::WindowMode::Windowed) == LWS::Result::Success);
-    REQUIRE(window.SetPlacement({.position = LWS::Point{120, 80}, .clientSize = {500, 350}}) == LWS::Result::Success);
+    REQUIRE(window.RequestPlacement({.position = LWS::Point{120, 80}, .clientSize = LWS::LogicalSize{500, 350}}) ==
+            LWS::Result::Success);
     const auto placement = window.GetPlacement();
     REQUIRE(window.SetWindowMode(LWS::WindowMode::Windowed) == LWS::Result::Success);
     REQUIRE(window.RequestShowState(LWS::WindowShowState::Restored) == LWS::Result::Success);
     REQUIRE(window.GetPlacement().position == placement.position);
-    REQUIRE(window.GetClientSize() == placement.clientSize);
+    REQUIRE(window.GetClientAreaMetrics().logical == placement.clientSize);
     REQUIRE(window.RequestMaximize() == LWS::Result::Success);
     RECT maximized{};
     REQUIRE(GetWindowRect(Hwnd(window), &maximized));
@@ -400,7 +647,7 @@ TEST_CASE("Repeated window mode requests preserve the current placement", "[wind
     REQUIRE(repeated.right == maximized.right);
     REQUIRE(repeated.bottom == maximized.bottom);
     REQUIRE(window.RequestShowState(LWS::WindowShowState::Restored) == LWS::Result::Success);
-    REQUIRE(window.GetClientSize() == placement.clientSize);
+    REQUIRE(window.GetClientAreaMetrics().logical == placement.clientSize);
     LWS::Window child(context.value);
     REQUIRE(child.Create({.parent = &window}) == LWS::Result::Success);
     REQUIRE(child.RequestMaximize() == LWS::Result::NotSupported);
@@ -419,13 +666,13 @@ TEST_CASE("Client area events suppress duplicate native sizes", "[window][metric
         });
     REQUIRE(connection.has_value());
     REQUIRE(window.Create({.clientSize = {400, 300}}) == LWS::Result::Success);
-    REQUIRE(window.RequestClientSize({400, 300}) == LWS::Result::Success);
+    REQUIRE(window.RequestPlacement({.clientSize = LWS::LogicalSize{400, 300}}) == LWS::Result::Success);
     const unsigned confirmedChanges = changes;
-    REQUIRE(window.RequestClientSize({400, 300}) == LWS::Result::Success);
+    REQUIRE(window.RequestPlacement({.clientSize = LWS::LogicalSize{400, 300}}) == LWS::Result::Success);
     REQUIRE(changes == confirmedChanges);
-    REQUIRE(window.RequestClientSize({500, 350}) == LWS::Result::Success);
+    REQUIRE(window.RequestPlacement({.clientSize = LWS::LogicalSize{500, 350}}) == LWS::Result::Success);
     REQUIRE(changes == confirmedChanges + 1);
-    REQUIRE(window.GetClientAreaSize()->logical == LWS::LogicalSize{500, 350});
+    REQUIRE(window.GetClientAreaMetrics().logical == LWS::LogicalSize{500, 350});
 }
 
 TEST_CASE("Child placement preserves logical client geometry", "[window][geometry][parent][win32]")
@@ -436,16 +683,20 @@ TEST_CASE("Child placement preserves logical client geometry", "[window][geometr
     REQUIRE(parent.Create({.clientSize = {800, 600}}) == LWS::Result::Success);
     REQUIRE(child.Create({.parent = &parent, .position = LWS::Point{100, 80}, .clientSize = {200, 300}}) ==
             LWS::Result::Success);
-    REQUIRE(child.GetPosition() == LWS::Point{100, 80});
+    REQUIRE(child.GetPlacement().position == LWS::Point{100, 80});
 
     const HWND handle = Hwnd(child);
     SetWindowLongPtrW(handle, GWL_STYLE, GetWindowLongPtrW(handle, GWL_STYLE) | WS_VSCROLL);
     SetWindowPos(handle, nullptr, 0, 0, 0, 0,
                  SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-    REQUIRE(child.SetPlacement({.position = LWS::Point{300, 120}, .clientSize = {200, 300}}) == LWS::Result::Success);
-    REQUIRE(child.GetPosition() == LWS::Point{300, 120});
-    REQUIRE(child.GetClientSize() == LWS::LogicalSize{200, 300});
-    REQUIRE(child.GetClientAreaSize()->logical == child.GetClientSize());
+    REQUIRE(child.RequestPlacement({.position = LWS::Point{300, 120}, .clientSize = LWS::LogicalSize{200, 300}}) ==
+            LWS::Result::Success);
+    REQUIRE(child.GetPlacement().position == LWS::Point{300, 120});
+    REQUIRE(child.GetClientAreaMetrics().logical == LWS::LogicalSize{200, 300});
+    RECT client{};
+    REQUIRE(GetClientRect(handle, &client));
+    REQUIRE(child.GetClientAreaMetrics().pixels ==
+            LWS::PixelSize{client.right - client.left, client.bottom - client.top});
 }
 
 TEST_CASE("Parent configuration creates a child relationship", "[window][parent][win32]")
@@ -621,8 +872,8 @@ TEST_CASE("Native resize limits measure the logical client area", "[window][metr
 {
     Context context;
     LWS::Window window(context.value);
-    REQUIRE(window.Create({.clientSize = {400, 300},
-                           .styles = LWS::WindowStyle::Caption | LWS::WindowStyle::ResizableBorder}) ==
+    REQUIRE(window.Create(
+                {.clientSize = {400, 300}, .styles = LWS::WindowStyle::Caption | LWS::WindowStyle::ResizableBorder}) ==
             LWS::Result::Success);
     const HWND handle = Hwnd(window);
     RECT outer{};
@@ -631,14 +882,15 @@ TEST_CASE("Native resize limits measure the logical client area", "[window][metr
     REQUIRE(GetClientRect(handle, &client));
     const LONG borderWidth = outer.right - outer.left - client.right;
     const LONG borderHeight = outer.bottom - outer.top - client.bottom;
-    const auto scale = window.GetClientAreaSize()->Scale();
-    REQUIRE(window.SetMinMaxClientSize({100, 120}, {900, 700}) == LWS::Result::Success);
+    const auto scale = window.GetClientAreaMetrics().Scale();
+    REQUIRE(scale.has_value());
+    REQUIRE(window.SetClientSizeLimits({{100, 120}, {900, 700}}) == LWS::Result::Success);
     MINMAXINFO limits{};
     SendMessageW(handle, WM_GETMINMAXINFO, 0, reinterpret_cast<LPARAM>(&limits));
-    REQUIRE(limits.ptMinTrackSize.x == static_cast<LONG>(std::lround(100 * scale.x)) + borderWidth);
-    REQUIRE(limits.ptMinTrackSize.y == static_cast<LONG>(std::lround(120 * scale.y)) + borderHeight);
-    REQUIRE(limits.ptMaxTrackSize.x == static_cast<LONG>(std::lround(900 * scale.x)) + borderWidth);
-    REQUIRE(limits.ptMaxTrackSize.y == static_cast<LONG>(std::lround(700 * scale.y)) + borderHeight);
+    REQUIRE(limits.ptMinTrackSize.x == static_cast<LONG>(std::lround(100 * scale->x)) + borderWidth);
+    REQUIRE(limits.ptMinTrackSize.y == static_cast<LONG>(std::lround(120 * scale->y)) + borderHeight);
+    REQUIRE(limits.ptMaxTrackSize.x == static_cast<LONG>(std::lround(900 * scale->x)) + borderWidth);
+    REQUIRE(limits.ptMaxTrackSize.y == static_cast<LONG>(std::lround(700 * scale->y)) + borderHeight);
 }
 
 TEST_CASE("A shape replaces a custom cursor", "[cursor][win32]")
@@ -651,7 +903,8 @@ TEST_CASE("A shape replaces a custom cursor", "[cursor][win32]")
     REQUIRE(window.Create() == LWS::Result::Success);
     REQUIRE(window.SetMouseCursor(*custom) == LWS::Result::Success);
     REQUIRE(window.SetMouseCursor(LWS::Cursor::FromShape(LWS::CursorShape::Hand)) == LWS::Result::Success);
-    SendMessageW(Hwnd(window), WM_SETCURSOR, reinterpret_cast<WPARAM>(Hwnd(window)), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+    SendMessageW(Hwnd(window), WM_SETCURSOR, reinterpret_cast<WPARAM>(Hwnd(window)),
+                 MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
     REQUIRE(GetCursor() == LoadCursorW(nullptr, IDC_HAND));
 }
 
@@ -788,9 +1041,11 @@ TEST_CASE("Cursor visibility stays local to the window client area", "[cursor][v
     const int initialVisibilityCount = ShowCursor(TRUE);
     ShowCursor(FALSE);
     REQUIRE(hidden.SetMouseCursorVisible(false) == LWS::Result::Success);
-    SendMessageW(Hwnd(hidden), WM_SETCURSOR, reinterpret_cast<WPARAM>(Hwnd(hidden)), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+    SendMessageW(Hwnd(hidden), WM_SETCURSOR, reinterpret_cast<WPARAM>(Hwnd(hidden)),
+                 MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
     REQUIRE(GetCursor() == nullptr);
-    SendMessageW(Hwnd(visible), WM_SETCURSOR, reinterpret_cast<WPARAM>(Hwnd(visible)), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+    SendMessageW(Hwnd(visible), WM_SETCURSOR, reinterpret_cast<WPARAM>(Hwnd(visible)),
+                 MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
     REQUIRE(GetCursor() == LoadCursorW(nullptr, IDC_ARROW));
     const int finalVisibilityCount = ShowCursor(TRUE);
     ShowCursor(FALSE);
@@ -804,15 +1059,16 @@ TEST_CASE("Posted work cannot starve native window input", "[platform][task][win
     LWS::Window window(context.value);
     REQUIRE(window.Create() == LWS::Result::Success);
     bool keyReceived{};
-    auto connection = window.Listen([&](const LWS::AnyEvent& event)
-    {
-        if (std::holds_alternative<LWS::EventKeyDown>(event))
+    auto connection = window.Listen(
+        [&](const LWS::AnyEvent& event)
         {
-            keyReceived = true;
-            context.value.RequestQuit();
-        }
-        return LWS::EventResponse::Unhandled;
-    });
+            if (std::holds_alternative<LWS::EventKeyDown>(event))
+            {
+                keyReceived = true;
+                context.value.RequestQuit();
+            }
+            return LWS::EventResponse::Unhandled;
+        });
     REQUIRE(connection.has_value());
     unsigned batches{};
     std::function<void()> postAgain;
@@ -857,26 +1113,29 @@ TEST_CASE("Initial client dimensions are preserved on each monitor", "[window][m
 {
     Context context;
     std::vector<RECT> monitors;
-    REQUIRE(EnumDisplayMonitors(nullptr, nullptr,
+    REQUIRE(EnumDisplayMonitors(
+        nullptr, nullptr,
         [](HMONITOR, HDC, LPRECT rectangle, LPARAM data) -> BOOL
         {
             reinterpret_cast<std::vector<RECT>*>(data)->push_back(*rectangle);
             return TRUE;
-        }, reinterpret_cast<LPARAM>(&monitors)));
+        },
+        reinterpret_cast<LPARAM>(&monitors)));
     const auto primary = context.value.GetPrimaryMonitor();
     REQUIRE(primary.has_value());
     const double systemScale = primary->contentScale.x;
     for (const RECT& monitor : monitors)
     {
         LWS::Window window(context.value);
-        REQUIRE(window.Create({.position = LWS::Point{
-                                  static_cast<int32_t>(std::lround((monitor.left + 50) / systemScale)),
-                                  static_cast<int32_t>(std::lround((monitor.top + 50) / systemScale))},
-                               .clientSize = {400, 300}}) == LWS::Result::Success);
-        const auto size = window.GetClientSize();
+        REQUIRE(
+            window.Create({.position = LWS::Point{static_cast<int32_t>(std::lround((monitor.left + 50) / systemScale)),
+                                                  static_cast<int32_t>(std::lround((monitor.top + 50) / systemScale))},
+                           .clientSize = {400, 300}}) == LWS::Result::Success);
+        const auto size = window.GetClientAreaMetrics().logical;
         INFO("monitor origin " << monitor.left << ", " << monitor.top << "; system scale " << systemScale
-             << "; actual logical client " << size.x << " x " << size.y
-             << "; pixels " << window.GetClientAreaSize()->pixels.x << " x " << window.GetClientAreaSize()->pixels.y);
+                               << "; actual logical client " << size.x << " x " << size.y << "; pixels "
+                               << window.GetClientAreaMetrics().pixels->x << " x "
+                               << window.GetClientAreaMetrics().pixels->y);
         REQUIRE(size == LWS::LogicalSize{400, 300});
     }
 }

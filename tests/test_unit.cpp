@@ -54,12 +54,31 @@ TEST_CASE("WindowConfig has expected defaults", "[config]")
     REQUIRE(cfg.eraseBackground == true);
     REQUIRE(cfg.alwaysOnTop == false);
     REQUIRE(cfg.transparent == false);
-    REQUIRE(cfg.minClientSize.x == 0);
-    REQUIRE(cfg.minClientSize.y == 0);
-    REQUIRE(cfg.maxClientSize.x == 0);
-    REQUIRE(cfg.maxClientSize.y == 0);
+    REQUIRE(cfg.clientSizeLimits.minimum.x == 0);
+    REQUIRE(cfg.clientSizeLimits.minimum.y == 0);
+    REQUIRE(cfg.clientSizeLimits.maximum.x == 0);
+    REQUIRE(cfg.clientSizeLimits.maximum.y == 0);
     REQUIRE(cfg.styles == LWS::WindowStyle::NoStyle);
     REQUIRE(cfg.showState == LWS::WindowShowState::Restored);
+}
+
+TEST_CASE("Client metrics distinguish unavailable pixels and undefined scale", "[metrics]")
+{
+    LWS::ClientAreaMetrics metrics{.logical = {600, 400}};
+    REQUIRE_FALSE(metrics.pixels.has_value());
+    REQUIRE_FALSE(metrics.Scale().has_value());
+    metrics.pixels = LWS::PixelSize{900, 600};
+    REQUIRE(metrics.Scale() == LWS::ContentScale{1.5, 1.5});
+    metrics = {.logical = {101, 51}, .pixels = LWS::PixelSize{127, 64}};
+    REQUIRE(metrics.Scale()->x == 127.0 / 101.0);
+    REQUIRE(metrics.Scale()->y == 64.0 / 51.0);
+    metrics.logical.x = 0;
+    REQUIRE_FALSE(metrics.Scale().has_value());
+    metrics.logical = {101, 0};
+    REQUIRE_FALSE(metrics.Scale().has_value());
+    metrics = {.logical = {0, 0}, .pixels = LWS::PixelSize{0, 0}};
+    REQUIRE(metrics.pixels.has_value());
+    REQUIRE_FALSE(metrics.Scale().has_value());
 }
 
 TEST_CASE("Cursor values are immutable cheap copies", "[cursor][lifetime]")
@@ -84,7 +103,7 @@ TEST_CASE("Cursor validates custom bitmap hotspots", "[cursor][bitmap]")
 // ---------------------------------------------------------------------------
 TEST_CASE("AnyEvent variant holds a coherent client area and can be visited", "[event]")
 {
-    LWS::AnyEvent ev = LWS::EventClientAreaSizeChanged{{{1280, 720}, {2560, 1440}}};
+    LWS::AnyEvent ev = LWS::EventClientAreaSizeChanged{{{1280, 720}, LWS::PixelSize{2560, 1440}}};
     bool visited = false;
     std::visit(
         [&](const auto& e)
@@ -92,8 +111,10 @@ TEST_CASE("AnyEvent variant holds a coherent client area and can be visited", "[
             if constexpr (std::is_same_v<std::decay_t<decltype(e)>, LWS::EventClientAreaSizeChanged>)
             {
                 REQUIRE(e.size.logical.x == 1280);
-                REQUIRE(e.size.pixels.x == 2560);
-                REQUIRE(e.size.Scale().x == 2.0);
+                REQUIRE(e.size.pixels.has_value());
+                REQUIRE(e.size.pixels->x == 2560);
+                REQUIRE(e.size.Scale().has_value());
+                REQUIRE(e.size.Scale()->x == 2.0);
                 visited = true;
             }
         },

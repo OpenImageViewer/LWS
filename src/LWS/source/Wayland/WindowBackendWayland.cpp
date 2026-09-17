@@ -717,11 +717,11 @@ namespace LWS
             updateSubsurfaceInputRegion();
             paintBackground();
             paintCaption();
-            if (fNativeState != nullptr)
+            if (fNativeState != nullptr && fNativeState->configured)
             {
                 const Size framebuffer = getFramebufferSize();
                 std::ignore = dispatchEvent(
-                    EventClientAreaSizeChanged{{{fSize.x, fSize.y}, {framebuffer.x, framebuffer.y}}});
+                    EventClientAreaSizeChanged{{{fSize.x, fSize.y}, PixelSize{framebuffer.x, framebuffer.y}}});
             }
             updateChildInputRegions();
         }
@@ -752,8 +752,6 @@ namespace LWS
         setSize(placement.size);
         if (positionChanged && !sizeChanged)
             updateSubsurfaceInputRegion();
-        if (placement.displayState != fDisplayState)
-            setDisplayState(placement.displayState);
     }
 
     void WindowBackendWayland::setMinMaxSize(Size minSize, Size maxSize)
@@ -885,11 +883,11 @@ namespace LWS
         updateWindowGeometry();
         if (displayStateChanged)
             std::ignore = dispatchEvent(EventShowStateChanged{displayState});
-        if (fNativeState != nullptr)
+        if (fNativeState != nullptr && fNativeState->configured)
         {
             const Size framebuffer = getFramebufferSize();
             std::ignore = dispatchEvent(
-                EventClientAreaSizeChanged{{{fSize.x, fSize.y}, {framebuffer.x, framebuffer.y}}});
+                EventClientAreaSizeChanged{{{fSize.x, fSize.y}, PixelSize{framebuffer.x, framebuffer.y}}});
         }
         updateChildInputRegions();
     }
@@ -1580,8 +1578,13 @@ namespace LWS
             fPlatform.applyCursor(*this, *fNativeState->frameCursorShape, true);
         else
             applyClientCursor();
-        const Size framebuffer = getFramebufferSize();
-        std::ignore = dispatchEvent(EventClientAreaSizeChanged{{{fSize.x, fSize.y}, {framebuffer.x, framebuffer.y}}});
+        // Size events establish public readiness; keep preconfigure scale updates local.
+        if (fNativeState->configured)
+        {
+            const Size framebuffer = getFramebufferSize();
+            std::ignore = dispatchEvent(
+                EventClientAreaSizeChanged{{{fSize.x, fSize.y}, PixelSize{framebuffer.x, framebuffer.y}}});
+        }
         if (fNativeState != nullptr && fVisible && fNativeState->configured)
         {
             paintBackground();

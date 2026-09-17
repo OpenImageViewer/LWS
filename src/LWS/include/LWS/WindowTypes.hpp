@@ -21,6 +21,9 @@ namespace LWS
 
     class Window;
 
+    /// Layout dimensions in 96-DPI units on Win32 or surface coordinates on Wayland.
+    /// Applications aim to preserve this size across display-scale changes while pixel dimensions change.
+    /// Resizing, native constraints, and integer rounding can still change the reported logical size.
     struct LogicalSize
     {
         int32_t x{};
@@ -30,6 +33,7 @@ namespace LWS
         bool operator==(const LogicalSize&) const = default;
     };
 
+    /// Raster dimensions in pixels, used to size render targets and presentation buffers.
     struct PixelSize
     {
         int32_t x{};
@@ -88,6 +92,24 @@ namespace LWS
         LogicalSize clientSize;
     };
 
+    /// Omitted fields remain unchanged. Position follows WindowPlacement coordinates;
+    /// clientSize excludes decorations and uses logical layout units.
+    struct WindowPlacementRequest
+    {
+        std::optional<Point> position;
+        std::optional<LogicalSize> clientSize;
+    };
+
+    /// Application-specified client-area resize limits in logical units.
+    /// Zero leaves that axis unconstrained by the application; native limits may still apply.
+    struct ClientSizeLimits
+    {
+        LogicalSize minimum{};
+        LogicalSize maximum{};
+
+        bool operator==(const ClientSizeLimits&) const = default;
+    };
+
     struct ContentScale
     {
         double x{1.0};
@@ -96,22 +118,34 @@ namespace LWS
         auto operator<=>(const ContentScale&) const = default;
     };
 
-    struct ClientAreaSize
+    /// Client-area dimensions excluding title bars, borders, and other decorations.
+    /// When pixels are available, both dimensions describe the same backend update.
+    /// Window::GetClientAreaMetrics() documents their source and availability.
+    struct ClientAreaMetrics
     {
-        /// Observed drawable client size in 96-DPI logical units or Wayland surface coordinates.
+        /// Client-area dimensions in logical layout units.
         LogicalSize logical;
-        /// Exact pixel dimensions required by the native renderer or presentation buffer.
-        PixelSize pixels;
+        /// Exact rendering dimensions, absent when native metrics are unavailable.
+        /// An available zero-sized client area is distinct from unavailable metrics.
+        std::optional<PixelSize> pixels;
 
-        [[nodiscard]] ContentScale Scale() const
+        /// Effective pixels per logical unit on each axis, derived from this pair.
+        /// Integer rounding can make the axes differ from each other and from nominal display scale.
+        /// Returns nullopt when pixels are absent or either logical dimension is zero.
+        [[nodiscard]] std::optional<ContentScale> Scale() const
         {
-            return {
-                static_cast<double>(pixels.x) / logical.x,
-                static_cast<double>(pixels.y) / logical.y,
-            };
+            std::optional<ContentScale> scale;
+            if (pixels.has_value() && logical.x != 0 && logical.y != 0)
+            {
+                scale = ContentScale{
+                    static_cast<double>(pixels->x) / logical.x,
+                    static_cast<double>(pixels->y) / logical.y,
+                };
+            }
+            return scale;
         }
 
-        bool operator==(const ClientAreaSize&) const = default;
+        bool operator==(const ClientAreaMetrics&) const = default;
     };
 
     struct WindowConfig
@@ -129,7 +163,6 @@ namespace LWS
         bool alwaysOnTop{false};
         bool transparent{false};
         bool dragAndDropEnabled{false};
-        LogicalSize minClientSize{};
-        LogicalSize maxClientSize{};
+        ClientSizeLimits clientSizeLimits;
     };
 }  // namespace LWS

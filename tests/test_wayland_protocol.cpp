@@ -180,6 +180,7 @@ namespace
         }
         std::vector<std::unique_ptr<Seat>> seats;
         std::map<uint32_t, std::unique_ptr<Surface>> surfaces;
+        bool configureOnCommit{true};
         unsigned cursorRequests{};
         uint32_t cursorSerial{};
         bool cursorHidden{};
@@ -318,7 +319,7 @@ namespace
                             [](wl_client*, wl_resource* resource)
                         {
                             auto& surface = *static_cast<Surface*>(wl_resource_get_user_data(resource));
-                            if (surface.toplevel && !surface.configured)
+                            if (surface.toplevel && !surface.configured && surface.server->configureOnCommit)
                             {
                                 surface.configured = true;
                                 wl_array states{};
@@ -588,6 +589,200 @@ TEST_CASE("Wayland cursor selection stays local through focus and capability tra
     REQUIRE(serial == 99);
 }
 
+TEST_CASE("Wayland resize and scale wait for native configuration", "[wayland][protocol][metrics]")
+{
+    bool fractional = false;
+    SECTION("integer") {}
+    SECTION("fractional")
+    {
+        fractional = true;
+    }
+    ProtocolServer server(fractional);
+    server.Invoke([&] { server.configureOnCommit = false; });
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window window(context);
+    unsigned updates{};
+    auto listener = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (const auto* metrics = std::get_if<LWS::EventClientAreaSizeChanged>(&event))
+            {
+                ++updates;
+                REQUIRE(window.IsConfigured());
+                REQUIRE(metrics->size.pixels.has_value());
+                REQUIRE(window.GetClientAreaMetrics() == metrics->size);
+            }
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(listener.has_value());
+    auto config = Config();
+    config.visible = true;
+    REQUIRE(window.Create(config) == LWS::Result::Success);
+    const auto surface = LWS::Wayland::GetSurface(window);
+    REQUIRE(surface.has_value());
+    const auto id = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*surface));
+    server.Settle(context);
+    for (int phase = 0; phase < 2; ++phase)
+    {
+        CAPTURE(phase);
+        if (phase != 0)
+            REQUIRE(window.SetVisible(false) == LWS::Result::Success);
+        const auto before = updates;
+        REQUIRE_FALSE(window.IsConfigured());
+        REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
+        const LWS::LogicalSize requested{200 + phase * 100, 100 + phase * 100};
+        REQUIRE(window.RequestPlacement({.clientSize = requested}) == LWS::Result::Success);
+        REQUIRE(window.GetClientAreaMetrics().logical == requested);
+        REQUIRE_FALSE(window.IsConfigured());
+        REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
+        server.Invoke(
+            [&]
+            {
+                server.EnterOutput(id);
+                if (fractional)
+                    server.Fractional(id, phase == 0 ? 150 : 240);
+                else
+                    server.Scale(phase + 2);
+            });
+        server.Settle(context);
+        REQUIRE_FALSE(window.IsConfigured());
+        REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
+        REQUIRE(updates == before);
+        if (phase != 0)
+        {
+            REQUIRE(window.SetVisible(true) == LWS::Result::Success);
+            server.Settle(context);
+            REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
+        }
+        server.Invoke(
+            [&]
+            {
+                auto& native = *server.surfaces.at(id);
+                wl_array states{};
+                xdg_toplevel_send_configure(native.toplevel, 0, 0, &states);
+                xdg_surface_send_configure(native.shell, phase + 1);
+            });
+        server.Settle(context);
+        REQUIRE(window.IsConfigured());
+        REQUIRE(window.GetClientAreaMetrics().logical == requested);
+        const double scale = fractional ? (phase == 0 ? 1.25 : 2.0) : phase + 2;
+        REQUIRE(window.GetClientAreaMetrics().pixels ==
+                LWS::PixelSize{static_cast<int32_t>(requested.x * scale), static_cast<int32_t>(requested.y * scale)});
+        REQUIRE(updates == before + 1);
+    }
+}
+
+TEST_CASE("Wayland show-state listeners observe the last published metrics", "[wayland][protocol][metrics]")
+{
+    bool hideFromState = false;
+    SECTION("published metrics") {}
+    SECTION("hide before metrics")
+    {
+        hideFromState = true;
+    }
+    ProtocolServer server;
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window window(context);
+    auto config = Config();
+    config.visible = true;
+    REQUIRE(window.Create(config) == LWS::Result::Success);
+    server.Settle(context);
+    const auto previous = window.GetClientAreaMetrics();
+    bool stateObserved = false;
+    bool metricsObserved = false;
+    auto listener = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (const auto* state = std::get_if<LWS::EventShowStateChanged>(&event))
+            {
+                REQUIRE(state->state == LWS::WindowShowState::Maximized);
+                REQUIRE(window.GetClientAreaMetrics() == previous);
+                REQUIRE_FALSE(metricsObserved);
+                stateObserved = true;
+                if (hideFromState)
+                    REQUIRE(window.SetVisible(false) == LWS::Result::Success);
+            }
+            if (const auto* metrics = std::get_if<LWS::EventClientAreaSizeChanged>(&event))
+            {
+                REQUIRE(stateObserved);
+                REQUIRE(window.GetClientAreaMetrics() == metrics->size);
+                metricsObserved = true;
+            }
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(listener.has_value());
+    const auto surface = LWS::Wayland::GetSurface(window);
+    REQUIRE(surface.has_value());
+    const auto id = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*surface));
+    server.Invoke(
+        [&]
+        {
+            auto& native = *server.surfaces.at(id);
+            uint32_t maximized = XDG_TOPLEVEL_STATE_MAXIMIZED;
+            wl_array states{sizeof(maximized), sizeof(maximized), &maximized};
+            xdg_toplevel_send_configure(native.toplevel, 640, 480, &states);
+            xdg_surface_send_configure(native.shell, 2);
+        });
+    server.Settle(context);
+    REQUIRE(stateObserved);
+    if (hideFromState)
+    {
+        REQUIRE_FALSE(metricsObserved);
+        REQUIRE_FALSE(window.IsConfigured());
+        REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
+    }
+    else
+    {
+        REQUIRE(metricsObserved);
+        REQUIRE(window.GetClientAreaMetrics() != previous);
+    }
+}
+
+TEST_CASE("Wayland metrics retain logical size while native dimensions are unavailable", "[wayland][protocol][metrics]")
+{
+    ProtocolServer server;
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window window(context);
+    REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
+    auto config = Config();
+    config.visible = true;
+    REQUIRE(window.Create(config) == LWS::Result::Success);
+    REQUIRE(window.GetClientAreaMetrics().logical == config.clientSize);
+    REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
+    REQUIRE(window.RequestPlacement({.position = LWS::Point{10, 20}, .clientSize = LWS::LogicalSize{300, 200}}) ==
+            LWS::Result::NotSupported);
+    REQUIRE(window.GetClientAreaMetrics().logical == config.clientSize);
+    REQUIRE_FALSE(window.GetPlacement().position.has_value());
+    server.Settle(context);
+    const auto metrics = window.GetClientAreaMetrics();
+    REQUIRE(metrics.pixels.has_value());
+    REQUIRE(window.SetVisible(false) == LWS::Result::Success);
+    REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
+    REQUIRE(window.GetClientAreaMetrics().logical == metrics.logical);
+    REQUIRE(window.SetVisible(true) == LWS::Result::Success);
+    REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
+    const auto surface = LWS::Wayland::GetSurface(window);
+    REQUIRE(surface.has_value());
+    const auto id = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*surface));
+    server.Settle(context);
+    server.Invoke(
+        [&]
+        {
+            auto& native = *server.surfaces.at(id);
+            wl_array states{};
+            xdg_toplevel_send_configure(native.toplevel, 0, 0, &states);
+            xdg_surface_send_configure(native.shell, 2);
+        });
+    server.Settle(context);
+    REQUIRE(window.GetClientAreaMetrics() == metrics);
+    REQUIRE(window.Destroy() == LWS::Result::Success);
+    REQUIRE(window.GetClientAreaMetrics().logical == metrics.logical);
+    REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
+}
+
 TEST_CASE("Wayland integer and fractional scaling preserve handles and coherent metrics", "[wayland][protocol][scale]")
 {
     bool fractional = false;
@@ -623,8 +818,8 @@ TEST_CASE("Wayland integer and fractional scaling preserve handles and coherent 
                 server.Fractional(id, 240);
         });
     server.Settle(context);
-    REQUIRE(window.GetClientAreaSize()->logical == LWS::LogicalSize{101, 51});
-    REQUIRE(window.GetClientAreaSize()->pixels == LWS::PixelSize{202, 102});
+    REQUIRE(window.GetClientAreaMetrics().logical == LWS::LogicalSize{101, 51});
+    REQUIRE(window.GetClientAreaMetrics().pixels == LWS::PixelSize{202, 102});
     const auto before = events;
     server.Invoke([&] { server.Scale(2); });
     server.Settle(context);
@@ -633,7 +828,7 @@ TEST_CASE("Wayland integer and fractional scaling preserve handles and coherent 
     {
         server.Invoke([&] { server.Fractional(id, 150); });
         server.Settle(context);
-        REQUIRE(window.GetClientAreaSize()->pixels == LWS::PixelSize{127, 64});
+        REQUIRE(window.GetClientAreaMetrics().pixels == LWS::PixelSize{127, 64});
         const auto scaled = events;
         server.Invoke(
             [&]
@@ -643,7 +838,7 @@ TEST_CASE("Wayland integer and fractional scaling preserve handles and coherent 
             });
         server.Settle(context);
         REQUIRE(events == scaled);
-        REQUIRE(window.GetClientAreaSize()->pixels == LWS::PixelSize{127, 64});
+        REQUIRE(window.GetClientAreaMetrics().pixels == LWS::PixelSize{127, 64});
     }
     REQUIRE(LWS::Wayland::GetSurface(window) == surface);
     int bufferScale{};
@@ -669,7 +864,9 @@ TEST_CASE("Wayland bitmap staging preserves borrowed pixels and compositor owner
 
     const auto present = [&](uint32_t color)
     {
-        const auto size = window.GetClientAreaSize()->pixels;
+        const auto metrics = window.GetClientAreaMetrics();
+        REQUIRE(metrics.pixels.has_value());
+        const auto size = *metrics.pixels;
         std::vector<uint32_t> pixels(static_cast<size_t>(size.x) * size.y, color);
         REQUIRE(window.PresentBitmap({.pixels = std::as_bytes(std::span(pixels)),
                                       .width = static_cast<uint32_t>(size.x),
@@ -755,7 +952,7 @@ TEST_CASE("Wayland bitmap staging preserves borrowed pixels and compositor owner
                 server.Scale(2);
             });
         server.Settle(context);
-        REQUIRE(window.GetClientAreaSize()->pixels == LWS::PixelSize{202, 102});
+        REQUIRE(window.GetClientAreaMetrics().pixels == LWS::PixelSize{202, 102});
         release();
         check({0xff000002, 0xff000003});
         release();

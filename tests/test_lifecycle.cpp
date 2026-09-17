@@ -178,6 +178,7 @@ TEST_CASE("Fatal failure invalidates handles and preserves diagnostic through te
                     cleaned = true;
                     REQUIRE_FALSE(destroying->nativeResourcesAvailable);
                     REQUIRE_FALSE(HasHandle(window));
+                    REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
                 }
                 return LWS::EventResponse::Unhandled;
             });
@@ -190,6 +191,8 @@ TEST_CASE("Fatal failure invalidates handles and preserves diagnostic through te
         REQUIRE_FALSE(later);
         REQUIRE_FALSE(window.IsCreated());
         REQUIRE_FALSE(HasHandle(window));
+        REQUIRE(window.GetClientAreaMetrics().logical == LWS::LogicalSize{800, 600});
+        REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
         REQUIRE(window.SetVisible(true) == LWS::Result::InvalidState);
         REQUIRE_FALSE(window.Listen([](const auto&) { return LWS::EventResponse::Unhandled; }));
         REQUIRE_FALSE(context.Supports(LWS::PlatformFeature::Clipboard));

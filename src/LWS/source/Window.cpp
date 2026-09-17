@@ -13,8 +13,9 @@
 
 namespace
 {
-    bool ValidSizeLimits(LWS::LogicalSize minimum, LWS::LogicalSize maximum)
+    bool ValidSizeLimits(const LWS::ClientSizeLimits& limits)
     {
+        const auto& [minimum, maximum] = limits;
         return minimum.x >= 0 && minimum.y >= 0 && maximum.x >= 0 && maximum.y >= 0 &&
                (maximum.x == 0 || minimum.x <= maximum.x) && (maximum.y == 0 || minimum.y <= maximum.y);
     }
@@ -44,7 +45,7 @@ namespace LWS
         std::vector<Window*> children;
         State state{State::PreCreate};
         WindowConfig config;
-        ClientAreaSize clientArea{{800, 600}, {800, 600}};
+        ClientAreaMetrics clientArea{{800, 600}, std::nullopt};
         bool configured{};
         bool cursorVisible{true};
         bool notifyingDestroy{};
@@ -138,8 +139,7 @@ namespace LWS
         platform_.AssertCurrentThread();
         if (!platform_.IsUsable() || impl_->state != Impl::State::PreCreate)
             return Result::InvalidState;
-        if (config.clientSize.x <= 0 || config.clientSize.y <= 0 ||
-            !ValidSizeLimits(config.minClientSize, config.maxClientSize) ||
+        if (config.clientSize.x <= 0 || config.clientSize.y <= 0 || !ValidSizeLimits(config.clientSizeLimits) ||
             (config.showState != WindowShowState::Restored && config.showState != WindowShowState::Maximized &&
              config.showState != WindowShowState::Minimized))
         {
@@ -168,8 +168,8 @@ namespace LWS
             .eraseBackground = config.eraseBackground,
             .alwaysOnTop = config.alwaysOnTop,
             .transparent = config.transparent,
-            .minSize = static_cast<Size>(config.minClientSize),
-            .maxSize = static_cast<Size>(config.maxClientSize),
+            .minSize = static_cast<Size>(config.clientSizeLimits.minimum),
+            .maxSize = static_cast<Size>(config.clientSizeLimits.maximum),
         };
         impl_->backend->setBackgroundColor(config.backgroundColor);
         Result result = Result::Success;
@@ -199,7 +199,7 @@ namespace LWS
             impl_->parent->impl_->children.push_back(this);
         const Size clientSize = impl_->backend->getClientSize();
         const Size framebufferSize = impl_->backend->getFramebufferSize();
-        impl_->clientArea = {{clientSize.x, clientSize.y}, {framebufferSize.x, framebufferSize.y}};
+        impl_->clientArea = {{clientSize.x, clientSize.y}, PixelSize{framebufferSize.x, framebufferSize.y}};
         impl_->configured = impl_->backend->isConfigured();
         impl_->state = Impl::State::Created;
         return Result::Success;
@@ -296,105 +296,81 @@ namespace LWS
         return IsCreated() ? impl_->backend->getVisible() : impl_->config.visible;
     }
 
-    Result Window::SetPosition(Point position)
+    ClientAreaMetrics Window::GetClientAreaMetrics() const
     {
         platform_.AssertCurrentThread();
-        if (!IsCreated())
-            return Result::InvalidState;
-        if (platform_.GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
-            return Result::NotSupported;
-        impl_->backend->setPosition(position);
-        impl_->config.position = position;
-        return Result::Success;
-    }
-
-    std::optional<Point> Window::GetPosition() const
-    {
-        platform_.AssertCurrentThread();
-        if (platform_.GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
-            return std::nullopt;
-        return IsCreated() ? std::optional(impl_->backend->getPosition()) : impl_->config.position;
-    }
-
-    Result Window::RequestClientSize(LogicalSize size)
-    {
-        platform_.AssertCurrentThread();
-        if (!IsCreated())
-            return Result::InvalidState;
-        if (size.x <= 0 || size.y <= 0)
-            return Result::InvalidArgument;
-        impl_->backend->setSize(static_cast<Size>(size));
-        impl_->config.clientSize = size;
-        return Result::Success;
-    }
-
-    LogicalSize Window::GetClientSize() const
-    {
-        platform_.AssertCurrentThread();
-        if (!IsCreated())
-            return impl_->config.clientSize;
-        const Size size = impl_->backend->getClientSize();
-        return {size.x, size.y};
-    }
-
-    std::expected<ClientAreaSize, Result> Window::GetClientAreaSize() const
-    {
-        platform_.AssertCurrentThread();
+        ClientAreaMetrics metrics = impl_->clientArea;
         if (!impl_->configured || !internal::WindowBackendAccess::HasNativeHandle(*this))
-            return std::unexpected(Result::InvalidState);
-        return impl_->clientArea;
+        {
+            const Size logical = IsCreated() ? impl_->backend->getClientSize()
+                                             : static_cast<Size>(impl_->config.clientSize);
+            metrics = {{logical.x, logical.y}, std::nullopt};
+        }
+        return metrics;
     }
 
-    Result Window::SetPlacement(const WindowPlacement& placement)
+    Result Window::RequestPlacement(const WindowPlacementRequest& request)
     {
         platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
-        if (placement.clientSize.x <= 0 || placement.clientSize.y <= 0)
+        if ((!request.position.has_value() && !request.clientSize.has_value()) ||
+            (request.clientSize.has_value() && (request.clientSize->x <= 0 || request.clientSize->y <= 0)))
             return Result::InvalidArgument;
-        if (placement.position.has_value() && platform_.GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
+        if (request.position.has_value() && platform_.GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
             return Result::NotSupported;
-        if (!placement.position.has_value())
-            return RequestClientSize(placement.clientSize);
 
-        impl_->backend->setPlacement(
-            {*placement.position, static_cast<Size>(placement.clientSize), impl_->config.showState});
-        impl_->config.position = placement.position;
-        impl_->config.clientSize = placement.clientSize;
+        if (request.position.has_value() && request.clientSize.has_value())
+        {
+            impl_->backend->setPlacement({*request.position, static_cast<Size>(*request.clientSize)});
+        }
+        else if (request.position.has_value())
+        {
+            impl_->backend->setPosition(*request.position);
+        }
+        else
+        {
+            impl_->backend->setSize(static_cast<Size>(*request.clientSize));
+        }
+        if (request.position.has_value())
+            impl_->config.position = request.position;
+        if (request.clientSize.has_value())
+            impl_->config.clientSize = *request.clientSize;
         return Result::Success;
     }
 
     WindowPlacement Window::GetPlacement() const
     {
-        return {GetPosition(), GetClientSize()};
+        platform_.AssertCurrentThread();
+        std::optional<Point> position;
+        if (platform_.GetBackendId() != BackendId::Wayland || impl_->parent != nullptr)
+            position = IsCreated() ? std::optional(impl_->backend->getPosition()) : impl_->config.position;
+        return {position, GetClientAreaMetrics().logical};
     }
 
-    Result Window::SetMinMaxClientSize(LogicalSize minimum, LogicalSize maximum)
+    Result Window::SetClientSizeLimits(ClientSizeLimits limits)
     {
         platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
-        if (!ValidSizeLimits(minimum, maximum))
+        if (!ValidSizeLimits(limits))
             return Result::InvalidArgument;
-        impl_->backend->setMinMaxSize(static_cast<Size>(minimum), static_cast<Size>(maximum));
-        impl_->config.minClientSize = minimum;
-        impl_->config.maxClientSize = maximum;
+        impl_->backend->setMinMaxSize(static_cast<Size>(limits.minimum), static_cast<Size>(limits.maximum));
+        impl_->config.clientSizeLimits = limits;
         return Result::Success;
     }
 
-    LogicalSize Window::GetMinClientSize() const
+    ClientSizeLimits Window::GetClientSizeLimits() const
     {
-        if (!IsCreated())
-            return impl_->config.minClientSize;
-        const Size size = impl_->backend->getMinSize();
-        return {size.x, size.y};
-    }
-    LogicalSize Window::GetMaxClientSize() const
-    {
-        if (!IsCreated())
-            return impl_->config.maxClientSize;
-        const Size size = impl_->backend->getMaxSize();
-        return {size.x, size.y};
+        platform_.AssertCurrentThread();
+        ClientSizeLimits limits = impl_->config.clientSizeLimits;
+        if (IsCreated())
+        {
+            const Size minimum = impl_->backend->getMinSize();
+            const Size maximum = impl_->backend->getMaxSize();
+            limits = {{minimum.x, minimum.y}, {maximum.x, maximum.y}};
+        }
+        return limits;
     }
 
     Result Window::Center(CenterTarget target)
@@ -413,7 +389,7 @@ namespace LWS
         {
             if (impl_->parent == nullptr)
                 return Result::InvalidState;
-            const LogicalSize parentSize = impl_->parent->GetClientSize();
+            const LogicalSize parentSize = impl_->parent->GetClientAreaMetrics().logical;
             area = {{0, 0}, {parentSize.x, parentSize.y}};
         }
         else
@@ -435,9 +411,10 @@ namespace LWS
                         scalePoint(area.RightBottom(), monitor->contentScale)};
             }
         }
-        const LogicalSize size = GetClientSize();
+        const LogicalSize size = GetClientAreaMetrics().logical;
         const Point origin = area.LeftTop();
-        return SetPosition({origin.x + (area.GetWidth() - size.x) / 2, origin.y + (area.GetHeight() - size.y) / 2});
+        return RequestPlacement(
+            {.position = Point{origin.x + (area.GetWidth() - size.x) / 2, origin.y + (area.GetHeight() - size.y) / 2}});
     }
 
     Result Window::SetWindowMode(WindowMode mode)

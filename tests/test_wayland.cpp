@@ -76,8 +76,8 @@ TEST_CASE("Wayland top-level positions and multi-monitor fullscreen are unsuppor
     Initialize(context);
     LWS::Window window(context);
     REQUIRE(window.Create() == LWS::Result::Success);
-    REQUIRE(window.SetPosition({20, 30}) == LWS::Result::NotSupported);
-    REQUIRE_FALSE(window.GetPosition().has_value());
+    REQUIRE(window.RequestPlacement({.position = LWS::Point{20, 30}}) == LWS::Result::NotSupported);
+    REQUIRE_FALSE(window.GetPlacement().position.has_value());
     REQUIRE(window.SetWindowMode(LWS::WindowMode::FullscreenAllMonitors) == LWS::Result::NotSupported);
     REQUIRE(window.SetAlwaysOnTop(true) == LWS::Result::NotSupported);
     REQUIRE(window.BeginWindowDrag(LWS::WindowDragOperation::Move) == LWS::Result::NotSupported);
@@ -101,14 +101,15 @@ TEST_CASE("Wayland windowed maximization leaves fullscreen and retains normal si
             if (std::holds_alternative<LWS::EventPaint>(event) && window.IsConfigured())
             {
                 // Commit each configured state, including intermediate ones, so the compositor can map the surface.
-                const auto area = window.GetClientAreaSize();
-                pixels.resize(static_cast<size_t>(area->pixels.x) * area->pixels.y * 4, std::byte{0xff});
+                const auto area = window.GetClientAreaMetrics();
+                REQUIRE(area.pixels.has_value());
+                pixels.resize(static_cast<size_t>(area.pixels->x) * area.pixels->y * 4, std::byte{0xff});
                 presentation = window.PresentBitmap({
                     .pixels = pixels,
                     .format = LWS::BitmapPixelFormat::Bgra8Premultiplied,
-                    .width = static_cast<uint32_t>(area->pixels.x),
-                    .height = static_cast<uint32_t>(area->pixels.y),
-                    .rowPitch = static_cast<uint32_t>(area->pixels.x) * 4U,
+                    .width = static_cast<uint32_t>(area.pixels->x),
+                    .height = static_cast<uint32_t>(area.pixels->y),
+                    .rowPitch = static_cast<uint32_t>(area.pixels->x) * 4U,
                 });
                 confirmed = window.GetWindowMode() == expectedMode && window.GetShowState() == expectedState;
             }
@@ -129,7 +130,7 @@ TEST_CASE("Wayland windowed maximization leaves fullscreen and retains normal si
     REQUIRE(window.Create({.clientSize = {320, 240}, .visible = true, .eraseBackground = false}) ==
             LWS::Result::Success);
     awaitConfigure();
-    const auto original = window.GetClientSize();
+    const auto original = window.GetClientAreaMetrics().logical;
     confirmed = false;
     expectedMode = LWS::WindowMode::Fullscreen;
     REQUIRE(window.SetWindowMode(expectedMode) == LWS::Result::Success);
@@ -144,7 +145,7 @@ TEST_CASE("Wayland windowed maximization leaves fullscreen and retains normal si
     expectedState = LWS::WindowShowState::Restored;
     REQUIRE(window.RequestShowState(expectedState) == LWS::Result::Success);
     awaitConfigure();
-    REQUIRE(window.GetClientSize() == original);
+    REQUIRE(window.GetClientAreaMetrics().logical == original);
     confirmed = false;
     expectedState = LWS::WindowShowState::Maximized;
     REQUIRE(window.SetWindowMode(LWS::WindowMode::Fullscreen) == LWS::Result::Success);
@@ -185,7 +186,7 @@ TEST_CASE("Wayland emits portable coherent metric events", "[window][event][wayl
         [&](const LWS::AnyEvent& event)
         {
             if (const auto* size = std::get_if<LWS::EventClientAreaSizeChanged>(&event))
-                observed = size->size.logical.x > 0 && size->size.pixels.x > 0;
+                observed = size->size.logical.x > 0 && size->size.pixels.has_value() && size->size.pixels->x > 0;
             return LWS::EventResponse::Unhandled;
         });
     REQUIRE(connection.has_value());
@@ -198,7 +199,7 @@ TEST_CASE("Wayland emits portable coherent metric events", "[window][event][wayl
     }
     REQUIRE(observed);
     REQUIRE(window.IsConfigured());
-    REQUIRE(window.GetClientAreaSize().has_value());
+    REQUIRE(window.GetClientAreaMetrics().pixels.has_value());
 }
 
 TEST_CASE("Wayland custom cursors fail without changing standard selection", "[cursor][wayland]")

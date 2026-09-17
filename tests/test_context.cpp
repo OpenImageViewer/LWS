@@ -21,25 +21,26 @@ namespace
 {
     void Initialize(LWS::PlatformContext& context)
     {
-#ifdef LWS_HAS_WIN32_BACKEND
+    #ifdef LWS_HAS_WIN32_BACKEND
         REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);
         REQUIRE(context.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::Success);
-#else
+    #else
         REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
-#endif
+    #endif
     }
-}
+}  // namespace
 
 TEST_CASE("Context shutdown cannot destroy an active message dispatcher", "[platform][lifetime]")
 {
     LWS::PlatformContext context;
     Initialize(context);
     LWS::Result nested = LWS::Result::Failure;
-    REQUIRE(context.PostTask([&]
-                            {
-                                nested = context.Shutdown();
-                                context.RequestQuit();
-                            }) == LWS::Result::Success);
+    REQUIRE(context.PostTask(
+                [&]
+                {
+                    nested = context.Shutdown();
+                    context.RequestQuit();
+                }) == LWS::Result::Success);
     SECTION("Nonblocking dispatch")
     {
         std::ignore = context.ProcessMessages();
@@ -72,8 +73,7 @@ TEST_CASE("A service created by a shutdown task keeps the context active", "[pla
     LWS::PlatformContext context;
     Initialize(context);
     std::unique_ptr<LWS::Clipboard> clipboard;
-    REQUIRE(context.PostTask([&] { clipboard = std::make_unique<LWS::Clipboard>(context); }) ==
-            LWS::Result::Success);
+    REQUIRE(context.PostTask([&] { clipboard = std::make_unique<LWS::Clipboard>(context); }) == LWS::Result::Success);
     REQUIRE(context.Shutdown() == LWS::Result::InvalidState);
     REQUIRE(context.IsUsable());
     REQUIRE(clipboard != nullptr);
@@ -131,16 +131,17 @@ TEST_CASE("Window destruction tolerates child callbacks removing siblings", "[wi
     REQUIRE(second->Create({.parent = &parent}) == LWS::Result::Success);
     LWS::Result recursive = LWS::Result::Failure;
     unsigned destroyed = 0;
-    auto listener = first.Listen([&](const LWS::AnyEvent& event)
-                                 {
-                                     if (std::holds_alternative<LWS::EventWindowDestroyed>(event))
-                                     {
-                                         ++destroyed;
-                                         recursive = first.Destroy();
-                                         second.reset();
-                                     }
-                                     return LWS::EventResponse::Unhandled;
-                                 });
+    auto listener = first.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (std::holds_alternative<LWS::EventWindowDestroyed>(event))
+            {
+                ++destroyed;
+                recursive = first.Destroy();
+                second.reset();
+            }
+            return LWS::EventResponse::Unhandled;
+        });
     REQUIRE(listener.has_value());
     REQUIRE(parent.Destroy() == LWS::Result::Success);
     REQUIRE(destroyed == 1);
@@ -154,12 +155,68 @@ TEST_CASE("Client size constraints reject inverted bounds before native requests
     LWS::PlatformContext context;
     Initialize(context);
     LWS::Window window(context);
-    REQUIRE(window.Create({.minClientSize = {100, 50}, .maxClientSize = {99, 200}}) ==
-            LWS::Result::InvalidArgument);
+    REQUIRE(window.GetClientSizeLimits() == LWS::ClientSizeLimits{});
+    REQUIRE(window.SetClientSizeLimits({}) == LWS::Result::InvalidState);
+    REQUIRE(window.Create({.clientSizeLimits = {{100, 50}, {99, 200}}}) == LWS::Result::InvalidArgument);
     REQUIRE(window.Create() == LWS::Result::Success);
-    REQUIRE(window.SetMinMaxClientSize({100, 50}, {99, 200}) == LWS::Result::InvalidArgument);
-    REQUIRE(window.SetMinMaxClientSize({100, 50}, {200, 49}) == LWS::Result::InvalidArgument);
-    REQUIRE(window.SetMinMaxClientSize({100, 50}, {0, 200}) == LWS::Result::Success);
+    REQUIRE(window.SetClientSizeLimits({{100, 50}, {99, 200}}) == LWS::Result::InvalidArgument);
+    REQUIRE(window.SetClientSizeLimits({{100, 50}, {200, 49}}) == LWS::Result::InvalidArgument);
+    REQUIRE(window.SetClientSizeLimits({{100, 50}, {0, 200}}) == LWS::Result::Success);
+    const LWS::ClientSizeLimits limits{{100, 50}, {0, 200}};
+    REQUIRE(window.GetClientSizeLimits() == limits);
+    REQUIRE(window.SetClientSizeLimits({{-1, 0}, {0, 0}}) == LWS::Result::InvalidArgument);
+    REQUIRE(window.SetClientSizeLimits({{0, 0}, {0, -1}}) == LWS::Result::InvalidArgument);
+    REQUIRE(window.GetClientSizeLimits() == limits);
+    REQUIRE(window.Destroy() == LWS::Result::Success);
+    REQUIRE(window.GetClientSizeLimits() == limits);
+}
+
+TEST_CASE("Placement requests preserve omitted fields and reject partial invalid updates", "[window][geometry]")
+{
+    LWS::PlatformContext context;
+    Initialize(context);
+    LWS::Window parent(context), child(context);
+    REQUIRE(child.GetClientAreaMetrics().logical == LWS::LogicalSize{800, 600});
+    REQUIRE_FALSE(child.GetClientAreaMetrics().pixels.has_value());
+    REQUIRE(child.RequestPlacement({.clientSize = LWS::LogicalSize{200, 100}}) == LWS::Result::InvalidState);
+    REQUIRE(parent.Create() == LWS::Result::Success);
+    REQUIRE(child.Create({.parent = &parent,
+                          .position = LWS::Point{20, 30},
+                          .clientSize = {200, 100},
+                          .clientSizeLimits = {{20, 10}, {900, 700}}}) == LWS::Result::Success);
+    REQUIRE(child.GetClientSizeLimits() == LWS::ClientSizeLimits{{20, 10}, {900, 700}});
+    unsigned resizes{};
+    auto listener = child.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (const auto* changed = std::get_if<LWS::EventClientAreaSizeChanged>(&event))
+            {
+                ++resizes;
+                REQUIRE(changed->size.pixels.has_value());
+                REQUIRE(child.GetClientAreaMetrics() == changed->size);
+            }
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(listener.has_value());
+    REQUIRE(child.RequestPlacement({.position = LWS::Point{40, 50}}) == LWS::Result::Success);
+    REQUIRE(child.GetPlacement().position == LWS::Point{40, 50});
+    REQUIRE(child.GetPlacement().clientSize == LWS::LogicalSize{200, 100});
+    REQUIRE(resizes == 0);
+    REQUIRE(child.RequestPlacement({.clientSize = LWS::LogicalSize{300, 150}}) == LWS::Result::Success);
+    REQUIRE(child.GetPlacement().position == LWS::Point{40, 50});
+    REQUIRE(child.GetPlacement().clientSize == LWS::LogicalSize{300, 150});
+    REQUIRE(resizes == 1);
+    REQUIRE(child.RequestPlacement({.position = LWS::Point{60, 70}, .clientSize = LWS::LogicalSize{320, 160}}) ==
+            LWS::Result::Success);
+    REQUIRE(child.GetPlacement().position == LWS::Point{60, 70});
+    REQUIRE(child.GetPlacement().clientSize == LWS::LogicalSize{320, 160});
+    REQUIRE(resizes == 2);
+    REQUIRE(child.RequestPlacement({}) == LWS::Result::InvalidArgument);
+    REQUIRE(child.RequestPlacement({.position = LWS::Point{80, 90}, .clientSize = LWS::LogicalSize{0, 200}}) ==
+            LWS::Result::InvalidArgument);
+    REQUIRE(child.GetPlacement().position == LWS::Point{60, 70});
+    REQUIRE(child.GetPlacement().clientSize == LWS::LogicalSize{320, 160});
+    REQUIRE(resizes == 2);
 }
 
 TEST_CASE("Window cursor and icon resets retain pre-create and teardown behavior", "[window][resource]")
@@ -205,12 +262,12 @@ TEST_CASE("Timer targets detach before handled destruction notifications", "[tim
     Initialize(context);
     LWS::Window window(context);
     REQUIRE(window.Create() == LWS::Result::Success);
-    auto listener = window.Listen([](const LWS::AnyEvent& event)
-                                  {
-                                      return std::holds_alternative<LWS::EventWindowDestroyed>(event)
-                                                 ? LWS::EventResponse::Handled
-                                                 : LWS::EventResponse::Unhandled;
-                                  });
+    auto listener = window.Listen(
+        [](const LWS::AnyEvent& event)
+        {
+            return std::holds_alternative<LWS::EventWindowDestroyed>(event) ? LWS::EventResponse::Handled
+                                                                            : LWS::EventResponse::Unhandled;
+        });
     REQUIRE(listener.has_value());
     LWS::Timer timer(context);
     REQUIRE(timer.SetTargetWindow(&window) == LWS::Result::Success);

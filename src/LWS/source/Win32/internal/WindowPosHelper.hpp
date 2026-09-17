@@ -33,6 +33,16 @@ namespace LWS::internal
             SWP_NOSENDCHANGING |
             SWP_DEFERERASE;
 
+        // Normal placements use workspace coordinates except for tool windows.
+        // Adding this offset converts them to screen coordinates; subtracting reverses it.
+        static constexpr POINT workspaceOffset(const MONITORINFO& monitor, DWORD extendedStyle)
+        {
+            POINT offset{};
+            if ((extendedStyle & WS_EX_TOOLWINDOW) == 0)
+                offset = {monitor.rcWork.left - monitor.rcMonitor.left, monitor.rcWork.top - monitor.rcMonitor.top};
+            return offset;
+        }
+
         static UINT flagsForOp(WindowPosOp op)
         {
             switch (op)

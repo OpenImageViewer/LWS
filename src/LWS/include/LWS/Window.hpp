@@ -54,17 +54,57 @@ namespace LWS
         [[nodiscard]] Result SetVisible(bool visible);
         [[nodiscard]] bool IsVisible() const;
 
-        [[nodiscard]] Result SetPosition(Point position);
-        [[nodiscard]] std::optional<Point> GetPosition() const;
-        /// Requests a drawable client area in logical units; native outer decorations are excluded.
-        [[nodiscard]] Result RequestClientSize(LogicalSize size);
-        [[nodiscard]] LogicalSize GetClientSize() const;
-        [[nodiscard]] std::expected<ClientAreaSize, Result> GetClientAreaSize() const;
-        [[nodiscard]] Result SetPlacement(const WindowPlacement& placement);
+        /// Returns the last published client-area size in both logical units and pixels.
+        /// The client area excludes title bars, borders, and other window decorations.
+        ///
+        /// `logical` is the stable layout size the application aims to preserve when
+        /// display scaling changes. It describes the space used for UI layout and
+        /// requested window sizes, independently of how many pixels draw that space.
+        /// On Win32, these are 96-DPI units; on Wayland, they are surface coordinates.
+        ///
+        /// For example, preserving a width of 600 logical units means:
+        /// - At 100% scaling: 600 pixels.
+        /// - At 150% scaling: 900 pixels.
+        /// - At 200% scaling: 1200 pixels.
+        /// The logical width stays 600 while the pixel width changes.
+        /// Resizing, native window constraints, or rounding can still change the
+        /// reported logical size; it is not a fixed measurement in inches or millimetres.
+        ///
+        /// `pixels`, when present, is the exact client-area size needed for rendering.
+        /// On Win32, it comes from native client dimensions. On Wayland, each logical
+        /// dimension is multiplied by the surface scale and rounded upward.
+        ///
+        /// When pixels are available, both sizes describe the same backend update.
+        /// Size listeners observe the published pair before running; show-state listeners
+        /// can run before that publication and still observe the previous pair.
+        /// Nested dispatch can publish a newer pair before an outer listener resumes.
+        /// Scale() returns pixels per logical unit on each axis, including rounding;
+        /// it returns nullopt if pixels are absent or either logical dimension is zero.
+        /// Use `logical` for UI layout and `pixels` for rendering dimensions.
+        ///
+        /// When native metrics are unavailable, logical size comes from the backend
+        /// while created or the stored configuration otherwise, and pixels is nullopt.
+        /// This includes initial Wayland configuration, remapping, and native teardown
+        /// or backend failure. Pixels can remain available during orderly cleanup.
+        [[nodiscard]] ClientAreaMetrics GetClientAreaMetrics() const;
+
+        /// Requests movement, resizing, or both; omitted fields remain unchanged.
+        /// Does not issue a show-state request or override one made by a geometry listener.
+        /// Requires a created window and at least one field. Supplied size must be positive.
+        /// Explicit position on a Wayland top-level window returns NotSupported without resizing.
+        /// Win32 submits combined geometry in one native operation. Wayland child position
+        /// and content may take effect on separate commits; completion is not synchronous.
+        [[nodiscard]] Result RequestPlacement(const WindowPlacementRequest& request);
+        /// Returns logical client size and optional position, using stored values outside creation.
+        /// Win32 top-level position is the restored placement in DPI-normalized screen coordinates;
+        /// child position is relative to the parent's client area. Wayland top-level position is unavailable.
+        /// Position and size are not an atomic native observation.
         [[nodiscard]] WindowPlacement GetPlacement() const;
-        [[nodiscard]] Result SetMinMaxClientSize(LogicalSize minimum, LogicalSize maximum);
-        [[nodiscard]] LogicalSize GetMinClientSize() const;
-        [[nodiscard]] LogicalSize GetMaxClientSize() const;
+        /// Sets application resize limits for a created window. Dimensions must be nonnegative;
+        /// each nonzero maximum must be at least its minimum. Zero means no application limit on that axis.
+        [[nodiscard]] Result SetClientSizeLimits(ClientSizeLimits limits);
+        /// Returns backend limits while created, otherwise stored configuration limits, in logical units.
+        [[nodiscard]] ClientSizeLimits GetClientSizeLimits() const;
         [[nodiscard]] Result Center(CenterTarget target);
 
         [[nodiscard]] Result SetWindowMode(WindowMode mode);

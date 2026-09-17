@@ -538,8 +538,10 @@ namespace LWS
             const int height = std::min<int>(outer.y, monitor.rcWork.bottom - monitor.rcWork.top);
             RECT bounds = monitor.rcWork;
             if ((extendedStyle & WS_EX_TOOLWINDOW) == 0)
-                OffsetRect(&bounds, monitor.rcMonitor.left - monitor.rcWork.left,
-                           monitor.rcMonitor.top - monitor.rcWork.top);
+            {
+                const POINT offset = internal::WindowPosHelper::workspaceOffset(monitor, extendedStyle);
+                OffsetRect(&bounds, -offset.x, -offset.y);
+            }
             WINDOWPLACEMENT placement = fSavedFullScreenPlacement;
             const int left = std::clamp(placement.rcNormalPosition.left, bounds.left, bounds.right - width);
             const int top = std::clamp(placement.rcNormalPosition.top, bounds.top, bounds.bottom - height);
@@ -669,12 +671,15 @@ namespace LWS
         }
 
         POINT position{};
-        if (fParentBackend != nullptr)
+        // WM_MOVE can precede WM_SIZE, so use native state rather than the last published show state.
+        if (fParentBackend != nullptr || (GetWindowLongPtrW(fHwnd, GWL_STYLE) & (WS_MINIMIZE | WS_MAXIMIZE)) == 0)
         {
+            // Restored top-level geometry is already in screen coordinates.
             RECT rectangle{};
             GetWindowRect(fHwnd, &rectangle);
             position = {rectangle.left, rectangle.top};
-            ScreenToClient(reinterpret_cast<HWND>(fParentBackend->getHandle()), &position);
+            if (fParentBackend != nullptr)
+                ScreenToClient(reinterpret_cast<HWND>(fParentBackend->getHandle()), &position);
         }
         else
         {
@@ -682,6 +687,15 @@ namespace LWS
             placement.length = sizeof(placement);
             GetWindowPlacement(fHwnd, &placement);
             position = {placement.rcNormalPosition.left, placement.rcNormalPosition.top};
+            const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
+            MONITORINFO monitor{sizeof(MONITORINFO)};
+            if ((extendedStyle & WS_EX_TOOLWINDOW) == 0 &&
+                GetMonitorInfoW(MonitorFromWindow(fHwnd, MONITOR_DEFAULTTONEAREST), &monitor))
+            {
+                const POINT offset = internal::WindowPosHelper::workspaceOffset(monitor, extendedStyle);
+                position.x += offset.x;
+                position.y += offset.y;
+            }
         }
         return logicalFromPhysical(Point{position.x, position.y}, fDpi);
     }
@@ -743,8 +757,6 @@ namespace LWS
         const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
         const Size outerSize = outerSizeForLogicalClient(placement.size, style, extendedStyle, fDpi);
         internal::WindowPosHelper::setPlacement(fHwnd, position.x, position.y, outerSize.x, outerSize.y);
-        if (placement.displayState != fDisplayState)
-            setDisplayState(placement.displayState);
     }
 
     void WindowBackendWin32::setMinMaxSize(Size minSize, Size maxSize)
@@ -945,8 +957,8 @@ namespace LWS
         const double scale = static_cast<double>(fDpi) / 96.0;
         const Size logicalSize{static_cast<int32_t>(std::lround(framebufferSize.x / scale)),
                                static_cast<int32_t>(std::lround(framebufferSize.y / scale))};
-        std::ignore = dispatchEvent(
-            EventClientAreaSizeChanged{{{logicalSize.x, logicalSize.y}, {framebufferSize.x, framebufferSize.y}}});
+        std::ignore = dispatchEvent(EventClientAreaSizeChanged{
+            {{logicalSize.x, logicalSize.y}, PixelSize{framebufferSize.x, framebufferSize.y}}});
     }
 
     Result WindowBackendWin32::enableDragAndDrop(bool enable)
@@ -1164,13 +1176,18 @@ namespace LWS
                         break;
                 }
 
+                Size framebufferSize{static_cast<int32_t>(LOWORD(lParam)), static_cast<int32_t>(HIWORD(lParam))};
                 if (new_state != fDisplayState)
                 {
                     fDisplayState = new_state;
                     std::ignore = dispatchEvent(EventShowStateChanged{fDisplayState});
+                    if (fHwnd == nullptr)
+                        break;
+                    // A state listener can synchronously resize, restore, or minimize the native window.
+                    // Observe its final geometry instead of replaying the outer WM_SIZE dimensions.
+                    framebufferSize = fDisplayState == WindowShowState::Minimized ? Size{} : getFramebufferSize();
                 }
 
-                const Size framebufferSize{static_cast<int32_t>(LOWORD(lParam)), static_cast<int32_t>(HIWORD(lParam))};
                 dispatchClientAreaSizeChanged(framebufferSize);
                 break;
             }
