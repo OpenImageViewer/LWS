@@ -145,6 +145,8 @@ registrations in that notification. Backend failure invalidates public handle ac
 
 ## Lifecycle and migration
 
+- File-dialog filters are a `ListFileDialogFilters` collection of `FileDialogFilter` values. Store/pass that collection
+  directly instead of constructing a `FileDialogFilterBuilder` and calling `GetFilters()`.
 - `RunMessageLoop()` and `ProcessMessages()` return `LoopResult`. A host loop must compare explicitly with `Continue`,
   `Quit`, or `Failed`; the old Boolean use of `ProcessMessages()` requires a source update. `RunMessageLoop()` never
   returns `Continue`. Quit is sticky, including across repeated loop calls, and failure takes precedence.

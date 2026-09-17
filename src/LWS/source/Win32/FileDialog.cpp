@@ -20,7 +20,7 @@ namespace
         COMDLG_FILTERSPEC filter{};
     };
 
-    std::vector<ComDlgFilterStorage> BuildFilters(const LWS::FileDialogFilterBuilder::ListFileDialogFilters& filters)
+    std::vector<ComDlgFilterStorage> BuildFilters(const LWS::ListFileDialogFilters& filters)
     {
         std::vector<ComDlgFilterStorage> storage(filters.size());
         for (size_t i = 0; i < filters.size(); ++i)
@@ -49,15 +49,7 @@ namespace
 
 namespace LWS
 {
-    FileDialogFilterBuilder::FileDialogFilterBuilder(const ListFileDialogFilters& filters) : fFilters(filters) {}
-
-    const FileDialogFilterBuilder::ListFileDialogFilters& FileDialogFilterBuilder::GetFilters() const
-    {
-        return fFilters;
-    }
-
-    FileDialogResult FileDialog::Show(FileDialogType dialogType,
-                                      const FileDialogFilterBuilder::ListFileDialogFilters& filters,
+    FileDialogResult FileDialog::Show(FileDialogType dialogType, const ListFileDialogFilters& filters,
                                       const file_dialog_string_type& title, Window& ownerWindow,
                                       const file_dialog_string_type& defaultExtension, uint32_t filterIndex,
                                       file_dialog_string_type defaultFileName, file_dialog_string_type& outFilename)
@@ -73,8 +65,7 @@ namespace LWS
         return result;
     }
 
-    FileDialogResult FileDialog::Show(FileDialogType dialogType,
-                                      const FileDialogFilterBuilder::ListFileDialogFilters& filters,
+    FileDialogResult FileDialog::Show(FileDialogType dialogType, const ListFileDialogFilters& filters,
                                       const file_dialog_string_type& title, Window& ownerWindow,
                                       const file_dialog_string_type& defaultExtension, uint32_t filterIndex,
                                       file_dialog_string_type defaultFileName, ListFileDialogFileNames& outFilenames)

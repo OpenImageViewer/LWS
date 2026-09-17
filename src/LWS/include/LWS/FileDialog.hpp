@@ -2,7 +2,6 @@
 
 #include <LWS/Window.hpp>
 
-#include <optional>
 #include <vector>
 
 namespace LWS
@@ -24,42 +23,24 @@ namespace LWS
         UnknownError,
     };
 
-    class FileDialogFilterBuilder
+    struct FileDialogFilter
     {
-      public:
-
-        using ListExtensions = std::vector<file_dialog_string_type>;
-
-        struct FileDialogFilter
-        {
-            file_dialog_string_type description;
-            ListExtensions extensions;
-        };
-
-        using ListFileDialogFilters = std::vector<FileDialogFilter>;
-
-        FileDialogFilterBuilder() = default;
-        explicit FileDialogFilterBuilder(const ListFileDialogFilters& filters);
-
-        [[nodiscard]] const ListFileDialogFilters& GetFilters() const;
-
-      private:
-
-        ListFileDialogFilters fFilters;
+        file_dialog_string_type description;
+        std::vector<file_dialog_string_type> extensions;
     };
+
+    using ListFileDialogFilters = std::vector<FileDialogFilter>;
 
     class FileDialog
     {
       public:
 
-        static FileDialogResult Show(FileDialogType dialogType,
-                                     const FileDialogFilterBuilder::ListFileDialogFilters& filters,
+        static FileDialogResult Show(FileDialogType dialogType, const ListFileDialogFilters& filters,
                                      const file_dialog_string_type& title, Window& ownerWindow,
                                      const file_dialog_string_type& defaultExtension, uint32_t filterIndex,
                                      file_dialog_string_type defaultFileName, file_dialog_string_type& outFilename);
 
-        static FileDialogResult Show(FileDialogType dialogType,
-                                     const FileDialogFilterBuilder::ListFileDialogFilters& filters,
+        static FileDialogResult Show(FileDialogType dialogType, const ListFileDialogFilters& filters,
                                      const file_dialog_string_type& title, Window& ownerWindow,
                                      const file_dialog_string_type& defaultExtension, uint32_t filterIndex,
                                      file_dialog_string_type defaultFileName, ListFileDialogFileNames& outFilenames);

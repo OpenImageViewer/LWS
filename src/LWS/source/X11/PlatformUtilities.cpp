@@ -44,20 +44,15 @@ namespace LWS
         return ClipboardResult::UnknownError;
     }
 
-    FileDialogFilterBuilder::FileDialogFilterBuilder(const ListFileDialogFilters& filters) : fFilters(filters) {}
-    const FileDialogFilterBuilder::ListFileDialogFilters& FileDialogFilterBuilder::GetFilters() const
-    {
-        return fFilters;
-    }
-    FileDialogResult FileDialog::Show(FileDialogType, const FileDialogFilterBuilder::ListFileDialogFilters&,
-                                      const file_dialog_string_type&, Window&, const file_dialog_string_type&, uint32_t,
-                                      file_dialog_string_type, file_dialog_string_type&)
+    FileDialogResult FileDialog::Show(FileDialogType, const ListFileDialogFilters&, const file_dialog_string_type&,
+                                      Window&, const file_dialog_string_type&, uint32_t, file_dialog_string_type,
+                                      file_dialog_string_type&)
     {
         return FileDialogResult::UnknownError;
     }
-    FileDialogResult FileDialog::Show(FileDialogType, const FileDialogFilterBuilder::ListFileDialogFilters&,
-                                      const file_dialog_string_type&, Window&, const file_dialog_string_type&, uint32_t,
-                                      file_dialog_string_type, ListFileDialogFileNames&)
+    FileDialogResult FileDialog::Show(FileDialogType, const ListFileDialogFilters&, const file_dialog_string_type&,
+                                      Window&, const file_dialog_string_type&, uint32_t, file_dialog_string_type,
+                                      ListFileDialogFileNames&)
     {
         return FileDialogResult::UnknownError;
     }
