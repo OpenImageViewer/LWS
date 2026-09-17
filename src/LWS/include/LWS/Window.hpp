@@ -48,7 +48,6 @@ namespace LWS
 
         [[nodiscard]] PlatformContext& GetPlatformContext();
         [[nodiscard]] const PlatformContext& GetPlatformContext() const;
-        [[nodiscard]] BackendId GetBackendId() const;
 
         [[nodiscard]] Result SetTitle(const string_type& title);
         [[nodiscard]] string_type GetTitle() const;

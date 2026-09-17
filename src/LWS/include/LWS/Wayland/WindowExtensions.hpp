@@ -15,7 +15,6 @@ namespace LWS
 
 namespace LWS::Wayland
 {
-    [[nodiscard]] std::expected<wl_surface*, Result> GetSurface(Window& window);
     [[nodiscard]] std::expected<wl_surface*, Result> GetSurface(const Window& window);
     [[nodiscard]] std::expected<wl_display*, Result> GetDisplay(Window& window);
     [[nodiscard]] Result SetAppId(Window& window, std::string_view appId);

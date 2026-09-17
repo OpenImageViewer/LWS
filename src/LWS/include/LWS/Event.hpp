@@ -80,16 +80,10 @@ namespace LWS
     {
         std::filesystem::path fileName;
     };
-    struct EventRawPlatform
-    {
-        uint32_t platformType;
-        void* platformData = nullptr;
-    };
-
     using AnyEvent =
         std::variant<EventClientAreaSizeChanged, EventMove, EventCloseRequested, EventWindowDestroyed, EventFocusGained,
                      EventFocusLost, EventShowStateChanged, EventKeyDown, EventKeyUp, EventMouseMove, EventMouseButton,
-                     EventMouseWheel, EventPaint, EventDragDropFile, EventRawPlatform, EventWindowDestroying>;
+                     EventMouseWheel, EventPaint, EventDragDropFile, EventWindowDestroying>;
 
     enum class EventResponse
     {

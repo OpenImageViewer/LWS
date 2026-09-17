@@ -19,6 +19,7 @@ namespace LWS::internal
 {
     class ListenerState;
     class PlatformContextAccess;
+    class WindowBackendAccess;
 }  // namespace LWS::internal
 
 namespace LWS
@@ -129,8 +130,6 @@ namespace LWS
         [[nodiscard]] std::expected<MonitorDesc, Result> GetPrimaryMonitor(bool allowRefresh = false);
         [[nodiscard]] std::expected<Rect, Result> GetBoundingMonitorArea() const;
 
-        void AssertCurrentThread() const noexcept;
-
       private:
 
         friend class Window;
@@ -140,6 +139,9 @@ namespace LWS
         friend class Clipboard;
         friend class internal::ListenerState;
         friend class internal::PlatformContextAccess;
+        friend class internal::WindowBackendAccess;
+
+        void AssertCurrentThread() const noexcept;
 
         void InvokeUserTask(std::move_only_function<void()>& task) noexcept;
         void ReportUnhandledException(std::exception_ptr exception) noexcept;

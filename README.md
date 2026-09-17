@@ -147,6 +147,13 @@ registrations in that notification. Backend failure invalidates public handle ac
 
 - File-dialog filters are a `ListFileDialogFilters` collection of `FileDialogFilter` values. Store/pass that collection
   directly instead of constructing a `FileDialogFilterBuilder` and calling `GetFilters()`.
+- `Win32::GetHwnd()` and `Wayland::GetSurface()` take `const Window&`; mutable-window calls continue to work.
+- Portable `AnyEvent` no longer includes the unused `EventRawPlatform`; use the existing typed platform listeners.
+- `PlatformContext::AssertCurrentThread()` is private; clients can query `IsCurrentThread()`.
+
+- Read backend identity through `window.GetPlatformContext().GetBackendId()`; `Window::GetBackendId()` was removed.
+  The context getter returns an optional because contexts can exist before initialization; a window is permanently
+  bound to an initialized context.
 - `RunMessageLoop()` and `ProcessMessages()` return `LoopResult`. A host loop must compare explicitly with `Continue`,
   `Quit`, or `Failed`; the old Boolean use of `ProcessMessages()` requires a source update. `RunMessageLoop()` never
   returns `Continue`. Quit is sticky, including across repeated loop calls, and failure takes precedence.

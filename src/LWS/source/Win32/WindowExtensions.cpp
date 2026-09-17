@@ -9,33 +9,16 @@
 
 namespace LWS::Win32
 {
-    namespace
-    {
-        WindowBackendWin32* GetBackend(Window& window)
-        {
-            window.GetPlatformContext().AssertCurrentThread();
-            internal::IWindowBackend* backend = internal::WindowBackendAccess::Get(window);
-            if (backend == nullptr || backend->backend() != BackendId::Win32)
-                return nullptr;
-
-            // Built-in BackendId values identify their concrete backend type.
-            return static_cast<WindowBackendWin32*>(backend);
-        }
-    }  // namespace
-
-    std::expected<HWND, Result> GetHwnd(Window& window)
-    {
-        WindowBackendWin32* backend = GetBackend(window);
-        if (backend == nullptr)
-            return std::unexpected(Result::NotSupported);
-        if (!internal::WindowBackendAccess::HasNativeHandle(window))
-            return std::unexpected(Result::InvalidState);
-        return reinterpret_cast<HWND>(backend->getHandle());
-    }
-
     std::expected<HWND, Result> GetHwnd(const Window& window)
     {
-        return GetHwnd(const_cast<Window&>(window));
+        // HasNativeHandle enforces affinity and the native lifetime boundary.
+        const bool available = internal::WindowBackendAccess::HasNativeHandle(window);
+        const auto* backend = internal::WindowBackendAccess::Get(window);
+        if (backend == nullptr || backend->backend() != BackendId::Win32)
+            return std::unexpected(Result::NotSupported);
+        if (!available)
+            return std::unexpected(Result::InvalidState);
+        return reinterpret_cast<HWND>(backend->getHandle());
     }
 
     std::expected<EventConnection, Result> Listen(Window& window, PlatformCallback callback)
@@ -45,13 +28,13 @@ namespace LWS::Win32
 
     Result SetMenuChar(Window& window, bool suppress)
     {
-        WindowBackendWin32* backend = GetBackend(window);
-        if (backend == nullptr)
+        const bool configurable = internal::WindowBackendAccess::CanConfigure(window);
+        auto* backend = internal::WindowBackendAccess::Get(window);
+        if (backend == nullptr || backend->backend() != BackendId::Win32)
             return Result::NotSupported;
-
-        if (!internal::WindowBackendAccess::CanConfigure(window))
+        if (!configurable)
             return Result::InvalidState;
-        backend->setMenuChar(suppress);
+        static_cast<WindowBackendWin32*>(backend)->setMenuChar(suppress);
         return Result::Success;
     }
 }  // namespace LWS::Win32

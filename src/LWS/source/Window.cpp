@@ -90,7 +90,7 @@ namespace LWS
             return std::unexpected(Result::InvalidArgument);
         if (!CanConfigure(window) || window.impl_->listeners->IsClosed())
             return std::unexpected(Result::InvalidState);
-        if (window.GetBackendId() != BackendId::Win32)
+        if (window.platform_.GetBackendId() != BackendId::Win32)
             return std::unexpected(Result::NotSupported);
         const uint64_t id = window.impl_->listeners->AddPlatform(std::move(callback));
         return EventConnection(window.impl_->listeners, id, std::this_thread::get_id());
@@ -153,7 +153,7 @@ namespace LWS
                 return Result::InvalidState;
         }
         if ((config.alwaysOnTop && !platform_.Supports(PlatformFeature::AlwaysOnTop).value_or(false)) ||
-            (GetBackendId() == BackendId::Wayland && config.showState == WindowShowState::Minimized))
+            (platform_.GetBackendId() == BackendId::Wayland && config.showState == WindowShowState::Minimized))
             return Result::NotSupported;
 
         impl_->state = Impl::State::Creating;
@@ -260,12 +260,6 @@ namespace LWS
         platform_.AssertCurrentThread();
         return platform_;
     }
-    BackendId Window::GetBackendId() const
-    {
-        platform_.AssertCurrentThread();
-        return *platform_.GetBackendId();
-    }
-
     Result Window::SetTitle(const string_type& title)
     {
         platform_.AssertCurrentThread();
@@ -289,7 +283,7 @@ namespace LWS
             return Result::InvalidState;
         if (visible == impl_->backend->getVisible())
             return Result::Success;
-        if (GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
+        if (platform_.GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
             impl_->configured = false;
         visible ? impl_->backend->show() : impl_->backend->hide();
         impl_->config.visible = visible;
@@ -307,7 +301,7 @@ namespace LWS
         platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
-        if (GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
+        if (platform_.GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
             return Result::NotSupported;
         impl_->backend->setPosition(position);
         impl_->config.position = position;
@@ -317,7 +311,7 @@ namespace LWS
     std::optional<Point> Window::GetPosition() const
     {
         platform_.AssertCurrentThread();
-        if (GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
+        if (platform_.GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
             return std::nullopt;
         return IsCreated() ? std::optional(impl_->backend->getPosition()) : impl_->config.position;
     }
@@ -358,7 +352,7 @@ namespace LWS
             return Result::InvalidState;
         if (placement.clientSize.x <= 0 || placement.clientSize.y <= 0)
             return Result::InvalidArgument;
-        if (placement.position.has_value() && GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
+        if (placement.position.has_value() && platform_.GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
             return Result::NotSupported;
         if (!placement.position.has_value())
             return RequestClientSize(placement.clientSize);
@@ -408,7 +402,7 @@ namespace LWS
         platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
-        if (GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
+        if (platform_.GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
             return Result::NotSupported;
 
         Rect area;
@@ -430,7 +424,7 @@ namespace LWS
             if (!monitor.has_value())
                 return monitor.error();
             area = monitor->workRect;
-            if (GetBackendId() == BackendId::Win32)
+            if (platform_.GetBackendId() == BackendId::Win32)
             {
                 const auto scalePoint = [](Point point, ContentScale scale)
                 {
@@ -453,7 +447,7 @@ namespace LWS
             return Result::InvalidState;
         if (mode != WindowMode::Windowed && mode != WindowMode::Fullscreen && mode != WindowMode::FullscreenAllMonitors)
             return Result::InvalidArgument;
-        if (mode == WindowMode::FullscreenAllMonitors && GetBackendId() == BackendId::Wayland)
+        if (mode == WindowMode::FullscreenAllMonitors && platform_.GetBackendId() == BackendId::Wayland)
             return Result::NotSupported;
         const auto nativeMode = mode == WindowMode::Windowed
                                     ? internal::FullScreenState::Windowed
@@ -480,7 +474,7 @@ namespace LWS
         if (state != WindowShowState::Restored && state != WindowShowState::Maximized &&
             state != WindowShowState::Minimized)
             return Result::InvalidArgument;
-        if (state == WindowShowState::Minimized && GetBackendId() == BackendId::Wayland)
+        if (state == WindowShowState::Minimized && platform_.GetBackendId() == BackendId::Wayland)
             return Result::NotSupported;
         impl_->backend->setDisplayState(state);
         impl_->config.showState = state;
@@ -514,7 +508,7 @@ namespace LWS
     {
         if (!IsCreated())
             return Result::InvalidState;
-        if (GetBackendId() != BackendId::Win32 || impl_->parent != nullptr)
+        if (platform_.GetBackendId() != BackendId::Win32 || impl_->parent != nullptr)
             return Result::NotSupported;
         impl_->backend->setForeground();
         return Result::Success;
@@ -627,7 +621,7 @@ namespace LWS
             return Result::InvalidState;
         if (operation != WindowDragOperation::Move && operation != WindowDragOperation::ResizeNearest)
             return Result::InvalidArgument;
-        if (GetBackendId() != BackendId::Win32)
+        if (platform_.GetBackendId() != BackendId::Win32)
             return Result::NotSupported;
         impl_->backend->setLockMouseToWindowMode(operation == WindowDragOperation::Move
                                                      ? internal::LockMouseToWindowMode::LockMove
@@ -643,7 +637,7 @@ namespace LWS
         if (!internal::WindowBackendAccess::CanConfigure(*this))
             return Result::InvalidState;
         const bool custom = cursor.IsCustom();
-        if (custom && GetBackendId() == BackendId::Wayland)
+        if (custom && platform_.GetBackendId() == BackendId::Wayland)
             return Result::NotSupported;
         if (impl_->state == Impl::State::PreCreate)
         {
@@ -702,7 +696,7 @@ namespace LWS
             return Result::InvalidArgument;
         if (!internal::WindowBackendAccess::CanConfigure(*this))
             return Result::InvalidState;
-        if (GetBackendId() != BackendId::Win32)
+        if (platform_.GetBackendId() != BackendId::Win32)
             return Result::NotSupported;
         if (impl_->state == Impl::State::PreCreate)
         {

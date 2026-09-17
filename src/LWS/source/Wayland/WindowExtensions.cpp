@@ -12,7 +12,7 @@ namespace LWS::Wayland
     {
         WindowBackendWayland* GetBackend(Window& window)
         {
-            window.GetPlatformContext().AssertCurrentThread();
+            std::ignore = window.GetPlatformContext();
             auto* backend = internal::WindowBackendAccess::Get(window);
             return backend != nullptr && backend->backend() == BackendId::Wayland
                        ? static_cast<WindowBackendWayland*>(backend)
@@ -20,19 +20,16 @@ namespace LWS::Wayland
         }
     }  // namespace
 
-    std::expected<wl_surface*, Result> GetSurface(Window& window)
-    {
-        auto* backend = GetBackend(window);
-        if (backend == nullptr)
-            return std::unexpected(Result::NotSupported);
-        if (!internal::WindowBackendAccess::HasNativeHandle(window))
-            return std::unexpected(Result::InvalidState);
-        return static_cast<wl_surface*>(backend->surface());
-    }
-
     std::expected<wl_surface*, Result> GetSurface(const Window& window)
     {
-        return GetSurface(const_cast<Window&>(window));
+        const bool available = internal::WindowBackendAccess::HasNativeHandle(window);
+        const auto* backend = internal::WindowBackendAccess::Get(window);
+        if (backend == nullptr || backend->backend() != BackendId::Wayland)
+            return std::unexpected(Result::NotSupported);
+        if (!available)
+            return std::unexpected(Result::InvalidState);
+        const auto* native = static_cast<const WindowBackendWayland*>(backend);
+        return static_cast<wl_surface*>(native->surface());
     }
 
     std::expected<wl_display*, Result> GetDisplay(Window& window)
