@@ -162,6 +162,24 @@ TEST_CASE("Client size constraints reject inverted bounds before native requests
     REQUIRE(window.SetMinMaxClientSize({100, 50}, {0, 200}) == LWS::Result::Success);
 }
 
+TEST_CASE("Window cursor and icon resets retain pre-create and teardown behavior", "[window][resource]")
+{
+    LWS::PlatformContext context;
+    Initialize(context);
+    LWS::Window window(context);
+    REQUIRE(window.SetMouseCursor(LWS::Cursor::FromShape(LWS::CursorShape::Hand)) == LWS::Result::Success);
+    REQUIRE(window.SetMouseCursorVisible(false) == LWS::Result::Success);
+    REQUIRE(window.SetMouseCursor(LWS::Cursor::FromShape(LWS::CursorShape::Arrow)) == LWS::Result::Success);
+    REQUIRE(window.SetWindowIcon(std::nullopt) == LWS::Result::Success);
+    REQUIRE(window.Create() == LWS::Result::Success);
+    REQUIRE(window.SetMouseCursor(LWS::Cursor::FromShape(LWS::CursorShape::Arrow)) == LWS::Result::Success);
+    REQUIRE(window.SetWindowIcon(std::nullopt) ==
+            (context.GetBackendId() == LWS::BackendId::Win32 ? LWS::Result::Success : LWS::Result::NotSupported));
+    REQUIRE(window.Destroy() == LWS::Result::Success);
+    REQUIRE(window.SetMouseCursor(LWS::Cursor::FromShape(LWS::CursorShape::Arrow)) == LWS::Result::InvalidState);
+    REQUIRE(window.SetWindowIcon(std::nullopt) == LWS::Result::InvalidState);
+}
+
 TEST_CASE("Exception handlers may replace themselves during dispatch", "[platform][callback]")
 {
     LWS::PlatformContext context;

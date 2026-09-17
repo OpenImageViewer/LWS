@@ -125,7 +125,7 @@ TEST_CASE("MTA context keeps ordinary windowing available", "[platform][com][win
                 Context context;
                 LWS::Window window(context.value);
                 REQUIRE(window.Create() == LWS::Result::Success);
-                REQUIRE(window.EnableDragAndDrop(true) != LWS::Result::Success);
+                REQUIRE(window.SetDragAndDropEnabled(true) != LWS::Result::Success);
             }
             CoUninitialize();
         });
@@ -170,15 +170,15 @@ TEST_CASE("Window basic properties round-trip", "[window][win32]")
     REQUIRE(window.SetTitle(L"updated") == LWS::Result::Success);
     REQUIRE(window.GetTitle() == L"updated");
     REQUIRE(window.SetVisible(true) == LWS::Result::Success);
-    REQUIRE(window.GetVisible());
+    REQUIRE(window.IsVisible());
     REQUIRE(window.SetPosition({120, 140}) == LWS::Result::Success);
     REQUIRE(window.GetPosition().has_value());
     REQUIRE(window.RequestClientSize({720, 520}) == LWS::Result::Success);
     REQUIRE(window.GetClientSize() == LWS::LogicalSize{720, 520});
     REQUIRE(window.SetAlwaysOnTop(true) == LWS::Result::Success);
-    REQUIRE(window.GetAlwaysOnTop());
+    REQUIRE(window.IsAlwaysOnTop());
     REQUIRE(window.SetTransparent(true) == LWS::Result::Success);
-    REQUIRE(window.GetTransparent());
+    REQUIRE(window.IsTransparent());
 }
 
 TEST_CASE("Window icons apply before creation, replace, and reset", "[window][icon][win32]")
@@ -204,7 +204,7 @@ TEST_CASE("Window icons apply before creation, replace, and reset", "[window][ic
     REQUIRE(replacementBig != initialBig);
     REQUIRE(WindowIconHandle(handle, ICON_SMALL) == replacementBig);
 
-    REQUIRE(window.ResetWindowIcon() == LWS::Result::Success);
+    REQUIRE(window.SetWindowIcon(std::nullopt) == LWS::Result::Success);
     REQUIRE(WindowIconHandle(handle, ICON_BIG) == nullptr);
     REQUIRE(WindowIconHandle(handle, ICON_SMALL) == nullptr);
 }
@@ -574,7 +574,7 @@ TEST_CASE("Custom cursors validate and apply copied pixels", "[cursor][bitmap][w
     REQUIRE(window.SetMouseCursor(*cursor) == LWS::Result::Success);
     REQUIRE(window.Create() == LWS::Result::Success);
     REQUIRE(window.SetMouseCursorVisible(false) == LWS::Result::Success);
-    REQUIRE(window.ResetMouseCursor() == LWS::Result::Success);
+    REQUIRE(window.SetMouseCursor(LWS::Cursor::FromShape(LWS::CursorShape::Arrow)) == LWS::Result::Success);
 }
 
 TEST_CASE("Timer can target windows in its context", "[timer][win32]")

@@ -80,8 +80,8 @@ TEST_CASE("Unchanged immutable resources retain native objects across window tra
     REQUIRE(GetCursor() != firstCursor);
     REQUIRE(first.SetWindowIcon(*replacementIcon) == LWS::Result::Success);
     REQUIRE(SendMessageW(hwnd, WM_GETICON, ICON_BIG, 0) != bigIcon);
-    REQUIRE(first.ResetMouseCursor() == LWS::Result::Success);
-    REQUIRE(first.ResetWindowIcon() == LWS::Result::Success);
+    REQUIRE(first.SetMouseCursor(LWS::Cursor::FromShape(LWS::CursorShape::Arrow)) == LWS::Result::Success);
+    REQUIRE(first.SetWindowIcon(std::nullopt) == LWS::Result::Success);
     REQUIRE(SendMessageW(hwnd, WM_GETICON, ICON_BIG, 0) == 0);
     REQUIRE(first.Destroy() == LWS::Result::Success);
     REQUIRE(first.SetMouseCursor(*cursor) == LWS::Result::InvalidState);

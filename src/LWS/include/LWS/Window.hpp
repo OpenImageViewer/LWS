@@ -52,7 +52,7 @@ namespace LWS
         [[nodiscard]] Result SetTitle(const string_type& title);
         [[nodiscard]] string_type GetTitle() const;
         [[nodiscard]] Result SetVisible(bool visible);
-        [[nodiscard]] bool GetVisible() const;
+        [[nodiscard]] bool IsVisible() const;
 
         [[nodiscard]] Result SetPosition(Point position);
         [[nodiscard]] std::optional<Point> GetPosition() const;
@@ -82,24 +82,26 @@ namespace LWS
         [[nodiscard]] Result SetWindowStyles(WindowStyleFlags styles);
         [[nodiscard]] WindowStyleFlags GetWindowStyles() const;
         [[nodiscard]] Result SetAlwaysOnTop(bool onTop);
-        [[nodiscard]] bool GetAlwaysOnTop() const;
+        [[nodiscard]] bool IsAlwaysOnTop() const;
         [[nodiscard]] Result SetTransparent(bool transparent);
-        [[nodiscard]] bool GetTransparent() const;
+        [[nodiscard]] bool IsTransparent() const;
         [[nodiscard]] Result SetBackgroundColor(LLUtils::Color color);
         [[nodiscard]] Result SetEraseBackground(bool erase);
-        [[nodiscard]] bool GetEraseBackground() const;
-        [[nodiscard]] Result EnableDragAndDrop(bool enable);
+        [[nodiscard]] bool IsBackgroundErasureEnabled() const;
+        [[nodiscard]] Result SetDragAndDropEnabled(bool enable);
 
         [[nodiscard]] bool IsMouseInClientRect() const;
         [[nodiscard]] Point GetMousePosition() const;
         [[nodiscard]] Result SetPointerLocked(bool locked);
         [[nodiscard]] Result BeginWindowDrag(WindowDragOperation operation);
 
+        /// Applies a cursor while preserving visibility; select CursorShape::Arrow to reset.
+        /// May be configured before Create(); a moved-from cursor is invalid.
         [[nodiscard]] Result SetMouseCursor(Cursor cursor);
-        [[nodiscard]] Result ResetMouseCursor();
         [[nodiscard]] Result SetMouseCursorVisible(bool visible);
-        [[nodiscard]] Result SetWindowIcon(WindowIcon icon);
-        [[nodiscard]] Result ResetWindowIcon();
+        /// Applies a custom icon, or clears it for nullopt, retaining native resource reuse.
+        /// May be configured before Create(); an engaged moved-from icon is invalid.
+        [[nodiscard]] Result SetWindowIcon(std::optional<WindowIcon> icon);
 
         [[nodiscard]] Window* GetParent() const;
         /// Registrations made during a listener traversal become active when its outermost traversal completes.

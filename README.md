@@ -118,8 +118,14 @@ Wayland scale is compositor-provided per-surface state, not physical-monitor DPI
 sets the viewport destination to the logical size. Without those protocols, LWS uses the maximum integer scale of the
 outputs containing the surface. A scale change that alters the paired pixel size publishes
 `EventClientAreaSizeChanged` even when logical size is unchanged; clients must use that pixel size rather than monitor
-scale or reconstructed dimensions. Platform
-translation units may opt into typed extensions:
+scale or reconstructed dimensions.
+
+`SetMouseCursor(Cursor::FromShape(CursorShape::Arrow))` resets the cursor while preserving its visibility.
+`SetWindowIcon(std::nullopt)` clears the custom icon. Both preserve the previous reset operations' lifecycle and
+platform support; a moved-from cursor or engaged moved-from icon remains invalid, and repeated immutable resources
+retain native handle reuse.
+
+Platform translation units may opt into typed extensions:
 
 ```cpp
 #ifdef LWS_HAS_WIN32_BACKEND
@@ -154,6 +160,11 @@ registrations in that notification. Backend failure invalidates public handle ac
 - Read backend identity through `window.GetPlatformContext().GetBackendId()`; `Window::GetBackendId()` was removed.
   The context getter returns an optional because contexts can exist before initialization; a window is permanently
   bound to an initialized context.
+- Replace `ResetMouseCursor()` with `SetMouseCursor(Cursor::FromShape(CursorShape::Arrow))`, and
+  `ResetWindowIcon()` with `SetWindowIcon(std::nullopt)`.
+- Boolean queries are `IsVisible()`, `IsTransparent()`, `IsAlwaysOnTop()`, and `IsBackgroundErasureEnabled()`;
+  drag-and-drop configuration is `SetDragAndDropEnabled(bool)`. These replace the corresponding `Get...()` methods
+  and `EnableDragAndDrop(bool)`. These API migrations have no compatibility aliases; rebuild clients together.
 - `RunMessageLoop()` and `ProcessMessages()` return `LoopResult`. A host loop must compare explicitly with `Continue`,
   `Quit`, or `Failed`; the old Boolean use of `ProcessMessages()` requires a source update. `RunMessageLoop()` never
   returns `Continue`. Quit is sticky, including across repeated loop calls, and failure takes precedence.

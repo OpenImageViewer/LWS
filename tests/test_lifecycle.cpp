@@ -637,7 +637,7 @@ TEST_CASE("Invalid window requests preserve state", "[lifecycle][capability]")
     unsupported.alwaysOnTop = true;
     REQUIRE(window.Create(unsupported) == LWS::Result::NotSupported);
     REQUIRE_FALSE(window.IsCreated());
-    REQUIRE_FALSE(window.GetAlwaysOnTop());
+    REQUIRE_FALSE(window.IsAlwaysOnTop());
     #endif
     REQUIRE(window.Create() == LWS::Result::Success);
     REQUIRE(window.SetWindowMode(static_cast<LWS::WindowMode>(99)) == LWS::Result::InvalidArgument);
@@ -647,7 +647,7 @@ TEST_CASE("Invalid window requests preserve state", "[lifecycle][capability]")
     REQUIRE(window.GetShowState() == state);
     #ifdef LWS_HAS_WAYLAND_BACKEND
     REQUIRE(window.SetAlwaysOnTop(true) == LWS::Result::NotSupported);
-    REQUIRE_FALSE(window.GetAlwaysOnTop());
+    REQUIRE_FALSE(window.IsAlwaysOnTop());
     #endif
 }
 #endif

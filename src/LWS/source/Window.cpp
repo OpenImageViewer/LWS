@@ -290,7 +290,7 @@ namespace LWS
         return Result::Success;
     }
 
-    bool Window::GetVisible() const
+    bool Window::IsVisible() const
     {
         platform_.AssertCurrentThread();
         return IsCreated() ? impl_->backend->getVisible() : impl_->config.visible;
@@ -549,7 +549,7 @@ namespace LWS
         return Result::Success;
     }
 
-    bool Window::GetAlwaysOnTop() const
+    bool Window::IsAlwaysOnTop() const
     {
         return IsCreated() ? impl_->backend->getAlwaysOnTop() : impl_->config.alwaysOnTop;
     }
@@ -563,7 +563,7 @@ namespace LWS
         return Result::Success;
     }
 
-    bool Window::GetTransparent() const
+    bool Window::IsTransparent() const
     {
         return IsCreated() ? impl_->backend->getTransparent() : impl_->config.transparent;
     }
@@ -586,12 +586,12 @@ namespace LWS
         return Result::Success;
     }
 
-    bool Window::GetEraseBackground() const
+    bool Window::IsBackgroundErasureEnabled() const
     {
         return IsCreated() ? impl_->backend->getEraseBackground() : impl_->config.eraseBackground;
     }
 
-    Result Window::EnableDragAndDrop(bool enable)
+    Result Window::SetDragAndDropEnabled(bool enable)
     {
         if (!IsCreated())
             return Result::InvalidState;
@@ -668,14 +668,6 @@ namespace LWS
         return result;
     }
 
-    Result Window::ResetMouseCursor()
-    {
-        platform_.AssertCurrentThread();
-        if (!internal::WindowBackendAccess::CanConfigure(*this))
-            return Result::InvalidState;
-        return SetMouseCursor(Cursor::FromShape(CursorShape::Arrow));
-    }
-
     Result Window::SetMouseCursorVisible(bool visible)
     {
         platform_.AssertCurrentThread();
@@ -689,42 +681,36 @@ namespace LWS
         return Result::Success;
     }
 
-    Result Window::SetWindowIcon(WindowIcon icon)
+    Result Window::SetWindowIcon(std::optional<WindowIcon> icon)
     {
         platform_.AssertCurrentThread();
-        if (icon.bitmap_ == nullptr)
+        if (icon.has_value() && icon->bitmap_ == nullptr)
             return Result::InvalidArgument;
         if (!internal::WindowBackendAccess::CanConfigure(*this))
             return Result::InvalidState;
-        if (platform_.GetBackendId() != BackendId::Win32)
+        if (icon.has_value() && platform_.GetBackendId() != BackendId::Win32)
             return Result::NotSupported;
+        Result result = Result::Success;
         if (impl_->state == Impl::State::PreCreate)
         {
             impl_->icon = std::move(icon);
-            return Result::Success;
         }
-        const BitmapBuffer bitmap = icon.GetBuffer();
-        const bool reuseResource = impl_->state == Impl::State::Created && impl_->icon.has_value() &&
-                                   impl_->icon->bitmap_ == icon.bitmap_;
-        const Result result = impl_->backend->setWindowIcon(&bitmap, reuseResource);
-        if (result == Result::Success)
-            impl_->icon = std::move(icon);
-        return result;
-    }
-
-    Result Window::ResetWindowIcon()
-    {
-        platform_.AssertCurrentThread();
-        if (!internal::WindowBackendAccess::CanConfigure(*this))
-            return Result::InvalidState;
-        if (impl_->state == Impl::State::PreCreate)
+        else
         {
-            impl_->icon.reset();
-            return Result::Success;
+            if (icon.has_value())
+            {
+                const BitmapBuffer bitmap = icon->GetBuffer();
+                const bool reuseResource = impl_->state == Impl::State::Created && impl_->icon.has_value() &&
+                                           impl_->icon->bitmap_ == icon->bitmap_;
+                result = impl_->backend->setWindowIcon(&bitmap, reuseResource);
+            }
+            else
+            {
+                result = impl_->backend->setWindowIcon(nullptr);
+            }
+            if (result == Result::Success)
+                impl_->icon = std::move(icon);
         }
-        const Result result = impl_->backend->setWindowIcon(nullptr);
-        if (result == Result::Success)
-            impl_->icon.reset();
         return result;
     }
 
