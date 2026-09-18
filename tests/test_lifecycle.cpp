@@ -363,13 +363,13 @@ TEST_CASE("Conditional service propagation stops after failure and preserves ord
     Start(context);
     LLUtils::Event<void()> serviceEvent;
     unsigned calls = 0;
-    auto firstConnection = serviceEvent.Connect(
+    auto firstSubscription = serviceEvent.Subscribe(
         [&]
         {
             ++calls;
             LWS::internal::PlatformContextAccess::Fail(context, 1, "service callback");
         });
-    auto secondConnection = serviceEvent.Connect([&] { ++calls; });
+    auto secondSubscription = serviceEvent.Subscribe([&] { ++calls; });
     serviceEvent.RaiseWhile([&] { return context.IsUsable(); });
     REQUIRE(calls == 1);
     serviceEvent.Raise();
