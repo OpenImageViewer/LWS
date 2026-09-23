@@ -12,6 +12,9 @@
     #include <sys/eventfd.h>
     #include <tuple>
     #include <unistd.h>
+    #ifdef LWS_HAS_TOPLEVEL_ICON
+        #include <xdg-toplevel-icon-v1-client-protocol.h>
+    #endif
 
 namespace LWS::internal
 {
@@ -116,6 +119,8 @@ namespace LWS::internal
             return fDataDeviceController.supported();
         if (feature == PlatformFeature::FileDialog)
             return true;
+        if (feature == PlatformFeature::WindowIcon)
+            return fIconManager != nullptr;
         return feature == PlatformFeature::HostWindowFrame && fHasHostWindowFrame;
     }
 
@@ -280,6 +285,22 @@ namespace LWS::internal
         {
             state.fDataDeviceController.bindManager(registry, name, version);
         }
+    #ifdef LWS_HAS_TOPLEVEL_ICON
+        else if (std::strcmp(interface, xdg_toplevel_icon_manager_v1_interface.name) == 0)
+        {
+            state.fIconManager = static_cast<xdg_toplevel_icon_manager_v1*>(
+                wl_registry_bind(registry, name, &xdg_toplevel_icon_manager_v1_interface, 1));
+            static const xdg_toplevel_icon_manager_v1_listener listener{
+                [](void* data, xdg_toplevel_icon_manager_v1*, int32_t size)
+                {
+                    auto& sizes = static_cast<WaylandPlatformState*>(data)->fIconSizes;
+                    if (size > 0 && size <= 256 && std::ranges::find(sizes, size) == sizes.end())
+                        sizes.push_back(size);
+                },
+                [](void*, xdg_toplevel_icon_manager_v1*) {}};
+            xdg_toplevel_icon_manager_v1_add_listener(state.fIconManager, &listener, &state);
+        }
+    #endif
         else if (std::strcmp(interface, "weston_rdprail_shell") == 0)
         {
             state.fHasHostWindowFrame = true;
@@ -469,6 +490,12 @@ namespace LWS::internal
         fSeatController.reset();
         fOutputManager.reset();
         fWindows.clear();
+    #ifdef LWS_HAS_TOPLEVEL_ICON
+        if (fIconManager)
+            xdg_toplevel_icon_manager_v1_destroy(fIconManager);
+    #endif
+        fIconManager = nullptr;
+        fIconSizes.clear();
         if (fShell != nullptr)
             xdg_wm_base_destroy(fShell);
         if (fDecorationManager != nullptr)

@@ -608,6 +608,21 @@ namespace LWS
         if (!layout.has_value() || icon->format != BitmapPixelFormat::Bgra8Premultiplied)
             return Result::InvalidArgument;
 
+        // The legacy AND mask must be deterministic even when every alpha byte is zero.
+        const size_t maskPitch = (size_t(icon->width) + 15) / 16 * 2;
+        std::vector<std::byte> maskBits;
+        try
+        {
+            maskBits.resize(maskPitch * icon->height, std::byte{0});
+        }
+        catch (const std::bad_alloc&)
+        {
+            return Result::Failure;
+        }
+        for (uint32_t y = 0; y < icon->height; ++y)
+            for (uint32_t x = 0; x < icon->width; ++x)
+                if (icon->pixels[size_t(y) * icon->rowPitch + size_t(x) * 4 + 3] == std::byte{0})
+                    maskBits[size_t(icon->height - 1 - y) * maskPitch + x / 8] |= std::byte(0x80U >> (x % 8));
         BITMAPV5HEADER header{};
         header.bV5Size = sizeof(header);
         header.bV5Width = static_cast<LONG>(icon->width);
@@ -630,7 +645,8 @@ namespace LWS
         for (uint32_t row = 0; row < icon->height; ++row)
             std::memcpy(static_cast<std::byte*>(targetPixels) + row * rowBytes,
                         icon->pixels.data() + row * icon->rowPitch, rowBytes);
-        HBITMAP mask = CreateBitmap(static_cast<int>(icon->width), static_cast<int>(icon->height), 1, 1, nullptr);
+        HBITMAP mask = CreateBitmap(static_cast<int>(icon->width), static_cast<int>(icon->height), 1, 1,
+                                    maskBits.data());
         ICONINFO info{.fIcon = TRUE, .hbmMask = mask, .hbmColor = color};
         HICON nativeIcon = mask != nullptr ? CreateIconIndirect(&info) : nullptr;
         DeleteObject(color);

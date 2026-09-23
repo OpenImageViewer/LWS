@@ -27,6 +27,7 @@ namespace LWS
 {
     class WindowBackendWayland;
 }
+struct xdg_toplevel_icon_manager_v1;
 
 namespace LWS::internal
 {
@@ -76,6 +77,8 @@ namespace LWS::internal
         [[nodiscard]] WaylandDataDeviceController& dataDevice() { return fDataDeviceController; }
         [[nodiscard]] uint32_t inputSerial() const { return fSeatController.inputSerial(); }
         [[nodiscard]] bool hasKeyboardFocus() const { return fSeatController.hasKeyboardFocus(); }
+        [[nodiscard]] xdg_toplevel_icon_manager_v1* iconManager() const { return fIconManager; }
+        [[nodiscard]] const std::vector<int32_t>& iconSizes() const { return fIconSizes; }
         [[nodiscard]] wl_compositor* compositor() const { return fCompositor; }
         [[nodiscard]] wl_subcompositor* subcompositor() const { return fSubcompositor; }
         [[nodiscard]] wl_shm* sharedMemory() const { return fSharedMemory; }
@@ -114,6 +117,8 @@ namespace LWS::internal
         wl_compositor* fCompositor = nullptr;
         wl_subcompositor* fSubcompositor = nullptr;
         wl_shm* fSharedMemory = nullptr;
+        xdg_toplevel_icon_manager_v1* fIconManager = nullptr;
+        std::vector<int32_t> fIconSizes;
         xdg_wm_base* fShell = nullptr;
         zxdg_decoration_manager_v1* fDecorationManager = nullptr;
         zwp_pointer_constraints_v1* fPointerConstraints = nullptr;

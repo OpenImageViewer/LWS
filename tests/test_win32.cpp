@@ -209,6 +209,21 @@ TEST_CASE("Window icons apply before creation, replace, and reset", "[window][ic
     REQUIRE(window.SetWindowIcon(std::nullopt) == LWS::Result::Success);
     REQUIRE(WindowIconHandle(handle, ICON_BIG) == nullptr);
     REQUIRE(WindowIconHandle(handle, ICON_SMALL) == nullptr);
+    const std::array<std::byte, 16> clearPixels{};
+    auto transparent = LWS::WindowIcon::FromBitmap(
+        {clearPixels, LWS::BitmapPixelFormat::Bgra8Premultiplied, LWS::BitmapRowOrder::TopDown, 2, 2, 8});
+    REQUIRE(transparent);
+    REQUIRE(window.SetWindowIcon(*transparent) == LWS::Result::Success);
+    ICONINFO info{};
+    REQUIRE(GetIconInfo(WindowIconHandle(handle, ICON_SMALL), &info));
+    BITMAP mask{};
+    REQUIRE(GetObject(info.hbmMask, sizeof(mask), &mask) == sizeof(mask));
+    std::vector<std::byte> bits(size_t(mask.bmWidthBytes) * mask.bmHeight);
+    const auto bytes = GetBitmapBits(info.hbmMask, LONG(bits.size()), bits.data());
+    DeleteObject(info.hbmMask);
+    DeleteObject(info.hbmColor);
+    REQUIRE(bytes == LONG(bits.size()));
+    REQUIRE((std::to_integer<unsigned>(bits.front()) & 0xc0U) == 0xc0U);
 }
 
 TEST_CASE("Failed creation preserves a window icon for retry", "[window][icon][win32]")
