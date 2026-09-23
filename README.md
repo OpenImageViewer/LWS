@@ -317,14 +317,29 @@ DPI scenarios run in separate child processes because process DPI initialization
 | `src/LWS/source` | Portable implementation and private native backends |
 | `tests` | Unit and platform integration tests |
 
-## UI platform services
+## LWSUI and settings integration
 
-Wayland timers use timerfd in the context wait loop; callbacks run on the owning context thread.
+The optional `LWSUI::LWSUI` target provides controls, layout, text rendering, popups,
+focus/capture and bitmap presentation without a JSON dependency. `LWS_BUILD_UI` defaults
+on for Windows/Wayland and off for the unavailable X11 scaffold. `LWSUI_BUILD_DEMO`
+controls the controls-only showcase. Dependency builds compile LWSUI only when linked
+(or explicitly requested); standalone builds include it. LWSSettings is a separate consumer.
+
+UIHost coalesces deferred work, layout and painting through PlatformContext::PostTask.
+Numeric holds arm their own timers; idle hosts have no periodic tick or tree traversal.
+Wayland timers use timerfd in the context wait loop, and clipboard transfers wait on
+pipe readiness and their actual timeout. Portal dialogs still use a nested timed D-Bus
+pump; converting that path remains a separate asynchronous-dialog design.
+
+UI hosts borrow a context-bound Window; editors borrow the caller's PlatformContext.
+Use upstream Listen/EventConnection and ClientAreaMetrics, with logical input/layout
+and exact pixel buffers. Rendering pauses while pixels are unavailable or zero-sized.
+Canvas accepts per-axis ContentScale so fractional-scale rounding stays aligned.
 
 AnyEvent additionally carries EventTextInput (committed UTF-8), EventMouseLeave and
 EventMouseCaptureLost. Explicit capture is a Win32 extension:
 `LWS::Win32::SetMouseCapture(window, capture)` in `LWS/Win32/WindowExtensions.hpp`.
-Wayland retains implicit button-drag capture. The existing EventResponse and non-cancellable cleanup events
+UIHost uses it on Windows; Wayland retains implicit button-drag capture. The existing EventResponse and non-cancellable cleanup events
 keep their upstream semantics. Windows retained bitmap presentation borrows caller
 pixels only for the call and copies them for repaint.
 
@@ -332,15 +347,75 @@ TextClipboard.hpp provides UI-thread SetClipboardText/RequestClipboardText helpe
 using a Window's context. Text is valid UTF-8 without embedded NUL. Reads may complete
 immediately and are cancelled when the native owner or context becomes unavailable.
 Wayland uses the context's data device alongside URI drag/drop and requires an input
-serial for writing.
-
-Portal dialogs retain the existing Window& owner and filter APIs;
+serial for writing. Portal dialogs retain the existing Window& owner and filter APIs;
 until xdg-foreign parenting exists they enforce owner modality within LWS.
 
 Wayland SetWindowIcon uses upstream WindowIcon values and the optional
 xdg-toplevel-icon-v1 protocol. Unsupported compositors still return NotSupported;
-No public bitmap enlargement API is added.
+UI headers provide an always-visible icon. No public bitmap enlargement API is added.
+
+LWSUI::Event is the UI-layer notification type. Owned connections disconnect safely
+on destruction and may outlive their publisher; dispatch retains stable callables and
+new registrations start with the next notification. This isolates UI requirements from
+the pinned LLUtils Event lifetime contract without changing that dependency.
+
+### Context menus
+
+LWSUI controls can supply flat command menus through `SetContextMenuProvider`.
+Right-click or Shift+F10 requests the nearest provider on the target or its ancestors,
+within the active popup. A registered provider returning no items suppresses the menu;
+clearing the provider restores ancestor lookup. TextBox supplies Cut, Copy, Paste, and
+Select All by default, including disabled editing actions for read-only text.
+
+```cpp
+control.SetContextMenuProvider([](LWSUI::Control&, const LWSUI::ContextMenuRequest&) {
+    return std::vector<LWSUI::ContextMenuItem>{
+        {"Refresh", "F5", [](LWSUI::Control& owner) { owner.Invalidate(); }},
+        LWSUI::ContextMenuItem::Separator(),
+        {"Unavailable action", "", {}, false}
+    };
+});
+```
+
+Providers run on request; item availability and optional `checked` states are snapshots.
+Shortcut hints are descriptive, not key bindings, and checkmarks do not toggle themselves.
+`UIHost::ShowContextMenu` and `CloseContextMenu` support programmatic invocation.
+Menus retain editor focus and drafts, including inside a modal color picker. Up/Down,
+Home/End, Enter/Space navigate and activate; Escape/Tab or an outside click dismiss.
+Outside clicks are consumed. Commands execute through an owner-checked `Post` after
+closing the menu; detached or unavailable owners are skipped. Callbacks must respect
+the existing structural-edit lifetime rules and must not capture shorter-lived objects.
+Long menus scroll using existing menu theme metrics. Submenus, icons, native menus,
+and automatic shortcut registration are intentionally deferred.
+
+### Theme presets
+
+`LWSUI::MakeTheme(ThemePreset::Dark/Light/Warm)` returns a complete palette with the same
+font and geometry defaults. Dark is the original default. Apply a palette through the
+existing UIHost theme update path; close transient popups first so they reopen with the
+new style. The controls-only demo's Palette button demonstrates live switching.
+Settings-specific sections, JSON profiles, Save/Revert, and the F6 editor remain in
+LWSSettings; LWSUI has no persistence or theme registry.
+
+Popup replacement returns a success flag: callers must only use the new popup's controls
+when OpenPopup succeeds. Rejected validation preserves the current popup, and window
+resizing cancels transient popups through their normal rollback callback.
+TextBox uses native point hit-testing for bidirectional text and measures only the active
+caret and visual extent, avoiding an all-character caret map on every edit.
 
 The Windows LWSLib target exports `UNICODE`, `_UNICODE`, and `NOMINMAX` as public
 usage requirements, so core-only consumers see the same string ABI and compatible
-Windows headers as the library.
+Windows headers as the library. LWSUI inherits these requirements.
+
+`TreeView::Row` is a fixed property row, constructed with owned name/editor controls
+and an optional trailing action. Use NameControl(), EditorControl(), and ActionControl()
+to access those roles. It no longer exposes Grid column configuration; measurement and
+arrangement share one column calculation. As with other composites, callers must not
+mutate the owned structure through a base-container cast. Derived controls retain the
+protected capture helpers; host detachment/capture plumbing and handle lifetime records
+are implementation-private. Logical focus may survive hiding/disabling a parent, but
+input cannot reach that unavailable subtree, and Focus rejects foreign-host controls.
+
+When LWSUI is enabled, LWSTests also covers event connection mutation and lifetime,
+UTF-8 editing and validation, popup cancellation, deferred context-menu commands,
+and scrolling without losing editor drafts. Core-only builds omit these UI tests.
