@@ -60,6 +60,10 @@ namespace LWS::internal
         };
         [[nodiscard]] static PlatformBackend* GetBackend(PlatformContext& context);
         static void DrainTasks(PlatformContext& context);
+        static void ReportUnhandledException(PlatformContext& context, std::exception_ptr exception) noexcept
+        {
+            context.ReportUnhandledException(exception);
+        }
         static void DiscardFailedTasks(PlatformContext& context);
         // Called only by a backend on the context thread; keeps native objects alive for client teardown.
         static void Fail(PlatformContext& context, int nativeError, std::string_view operation);

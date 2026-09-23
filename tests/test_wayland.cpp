@@ -6,6 +6,7 @@
     #include <LWS/Timer.hpp>
     #include <LWS/Wayland/WindowExtensions.hpp>
     #include <LWS/Window.hpp>
+    #include <LWS/TextClipboard.hpp>
     #include <LWS/source/Wayland/internal/PlatformState.hpp>
     #include <LWS/source/Wayland/internal/KeyCodeLinux.hpp>
     #include <LWS/source/Wayland/internal/WindowBackendWayland.hpp>
@@ -183,6 +184,8 @@ namespace LWS::internal
             REQUIRE(text == "a\xc3\xa9" + longResult);
             press(KEY_G);
             REQUIRE(text == "a\xc3\xa9" + longResult + "done");
+            REQUIRE(SetClipboardText(owner, std::string_view("a\0b", 3)) == ClipboardResult::UnknownError);
+            REQUIRE(SetClipboardText(owner, std::string_view("\xc0\xaf", 2)) == ClipboardResult::UnknownError);
             unsigned repeated = 0;
             auto destroy = owner.Listen(
                 [&](const AnyEvent& event)
