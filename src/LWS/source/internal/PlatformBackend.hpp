@@ -58,6 +58,7 @@ namespace LWS::internal
 
             PlatformContext& context_;
         };
+        [[nodiscard]] static PlatformBackend* GetBackend(PlatformContext& context);
         static void DrainTasks(PlatformContext& context);
         static void DiscardFailedTasks(PlatformContext& context);
         // Called only by a backend on the context thread; keeps native objects alive for client teardown.

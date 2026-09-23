@@ -163,6 +163,16 @@ namespace LWS::internal
         return std::make_unique<WindowBackendWayland>(owner, *this);
     }
 
+    void WaylandPlatformState::registerTimer(int descriptor, std::function<void()> callback)
+    {
+        fTimers.emplace(descriptor, std::make_shared<std::function<void()>>(std::move(callback)));
+    }
+
+    void WaylandPlatformState::unregisterTimer(int descriptor)
+    {
+        fTimers.erase(descriptor);
+    }
+
     void WaylandPlatformState::registerWindow(wl_surface* surface, WindowBackendWayland& window,
                                               WaylandSurfaceRole role)
     {
@@ -347,10 +357,19 @@ namespace LWS::internal
             return;
         }
 
+        struct PreparedRead
+        {
+            wl_display* display;
+            ~PreparedRead()
+            {
+                if (display)
+                    wl_display_cancel_read(display);
+            }
+        } prepared{fDisplay};
+        // Descriptor snapshots allocate; cancellation must also happen if allocation throws.
         const int flushResult = wl_display_flush(fDisplay);
         if (flushResult < 0 && errno != EAGAIN)
         {
-            wl_display_cancel_read(fDisplay);
             fail("wl_display_flush");
             return;
         }
@@ -359,7 +378,7 @@ namespace LWS::internal
         constexpr size_t WakeDescriptor = 1;
         constexpr size_t KeyRepeatDescriptor = 2;
         constexpr size_t DropDescriptor = 3;
-        pollfd descriptors[]{
+        std::vector<pollfd> descriptors{
             {.fd = wl_display_get_fd(fDisplay),
              .events = static_cast<short>(POLLIN | (flushResult < 0 ? POLLOUT : 0)),
              .revents = 0},
@@ -367,9 +386,14 @@ namespace LWS::internal
             {.fd = fSeatController.pollDescriptor(), .events = POLLIN, .revents = 0},
             {.fd = fDragAndDropController.pollDescriptor(), .events = POLLIN, .revents = 0},
         };
-        const int pollResult = poll(descriptors, std::size(descriptors), timeoutMilliseconds);
+        const size_t timerOffset = descriptors.size();
+        std::vector<std::pair<int, std::shared_ptr<std::function<void()>>>> timers(fTimers.begin(), fTimers.end());
+        for (const auto& [descriptor, callback] : timers)
+            descriptors.push_back({.fd = descriptor, .events = POLLIN, .revents = 0});
+        const int pollResult = poll(descriptors.data(), descriptors.size(), timeoutMilliseconds);
         const int pollError = errno;
         // Every successful prepare_read is paired before callbacks or early failure returns.
+        prepared.display = nullptr;
         if (pollResult > 0 && (descriptors[DisplayDescriptor].revents & POLLIN) != 0)
         {
             if (wl_display_read_events(fDisplay) < 0)
@@ -394,6 +418,34 @@ namespace LWS::internal
         }
         if (pollResult > 0 && (descriptors[WakeDescriptor].revents & POLLIN) != 0)
             PlatformContextAccess::DrainTasks(context);
+        for (size_t index = 0;
+             index < timers.size() && context.IsUsable() && !PlatformContextAccess::QuitRequested(context); ++index)
+        {
+            const auto& [descriptor, callback] = timers[index];
+            const auto current = fTimers.find(descriptor);
+            if (current == fTimers.end() || current->second != callback)
+                continue;
+            const short events = descriptors[timerOffset + index].revents;
+            if ((events & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+            {
+                PlatformContextAccess::Fail(context, EBADF, "Wayland timer descriptor");
+                break;
+            }
+            if ((events & POLLIN) == 0)
+                continue;
+            uint64_t expirations{};
+            ssize_t count;
+            do
+            {
+                count = read(descriptor, &expirations, sizeof(expirations));
+            } while (count < 0 && errno == EINTR);
+            // Nested message dispatch may already have consumed this expiration. Coalesce
+            // accumulated expirations into one callback, as the old posted-task path did.
+            if (count == sizeof(expirations))
+                (*callback)();
+            else if (count < 0 && errno != EAGAIN)
+                PlatformContextAccess::Fail(context, errno, "read timerfd");
+        }
         if (context.IsUsable() && pollResult > 0 && (descriptors[KeyRepeatDescriptor].revents & POLLIN) != 0)
             fSeatController.dispatchKeyRepeats();
         if (context.IsUsable() && pollResult > 0)

@@ -409,6 +409,13 @@ namespace LWS::internal
         // Destructors run without the queue mutex, and may release windows/services or attempt another post.
     }
 
+    PlatformBackend* PlatformContextAccess::GetBackend(PlatformContext& context)
+    {
+        context.AssertCurrentThread();
+        assert(context.IsUsable());
+        return context.impl_->backend.get();
+    }
+
     void PlatformContextAccess::DrainTasks(PlatformContext& context)
     {
         std::vector<std::move_only_function<void()>> tasks;

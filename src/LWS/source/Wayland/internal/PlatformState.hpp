@@ -60,6 +60,9 @@ namespace LWS::internal
         [[nodiscard]] Rect GetBoundingMonitorArea() const override;
         [[nodiscard]] std::unique_ptr<IWindowBackend> CreateWindowBackend(Window& owner) override;
 
+        void registerTimer(int descriptor, std::function<void()> callback);
+        void unregisterTimer(int descriptor);
+
         void registerWindow(wl_surface* surface, WindowBackendWayland& window,
                             WaylandSurfaceRole role = WaylandSurfaceRole::Content);
         void unregisterWindow(wl_surface* surface);
@@ -115,6 +118,8 @@ namespace LWS::internal
         wp_fractional_scale_manager_v1* fFractionalScaleManager = nullptr;
         wp_viewporter* fViewporter = nullptr;
         int fWakeDescriptor = -1;
+        // Registration identity prevents an old poll result from reaching a reused descriptor.
+        std::unordered_map<int, std::shared_ptr<std::function<void()>>> fTimers;
         WaylandSeatController fSeatController;
         WaylandDragAndDropController fDragAndDropController;
         WaylandOutputManager fOutputManager;

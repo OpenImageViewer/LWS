@@ -319,6 +319,8 @@ DPI scenarios run in separate child processes because process DPI initialization
 
 ## UI platform services
 
+Wayland timers use timerfd in the context wait loop; callbacks run on the owning context thread.
+
 AnyEvent additionally carries EventTextInput (committed UTF-8), EventMouseLeave and
 EventMouseCaptureLost. Explicit capture is a Win32 extension:
 `LWS::Win32::SetMouseCapture(window, capture)` in `LWS/Win32/WindowExtensions.hpp`.

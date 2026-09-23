@@ -410,15 +410,50 @@ TEST_CASE("Wayland timer callbacks marshal through the context", "[timer][waylan
 {
     LWS::PlatformContext context;
     Initialize(context);
-    bool fired{};
-    LWS::HighPrecisionTimer timer(context, [&] { fired = true; });
-    timer.SetDueTime(1);
-    timer.SetRepeatInterval(0);
-    timer.Enable(true);
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-    while (!fired && std::chrono::steady_clock::now() < deadline)
-        std::ignore = context.ProcessMessages();
-    REQUIRE(fired);
+    const auto ownerThread = std::this_thread::get_id();
+    unsigned calls{};
+    bool onOwnerThread = true;
+    std::unique_ptr<LWS::HighPrecisionTimer> timer;
+    bool destroyOnCallback = false;
+    bool repeat = false;
+    bool nested = false;
+    SECTION("Immediate one-shot wakes a blocking loop") {}
+    SECTION("Repeating timer can disable itself")
+    {
+        repeat = true;
+    }
+    SECTION("Callback can destroy its timer")
+    {
+        destroyOnCallback = true;
+    }
+    SECTION("Nested dispatch consumes readiness only once")
+    {
+        nested = true;
+    }
+    timer = std::make_unique<LWS::HighPrecisionTimer>(context,
+                                                      [&]
+                                                      {
+                                                          ++calls;
+                                                          onOwnerThread = onOwnerThread &&
+                                                                          std::this_thread::get_id() == ownerThread;
+                                                          if (nested)
+                                                              std::ignore = context.ProcessMessages();
+                                                          if (repeat && calls < 3)
+                                                              return;
+                                                          if (destroyOnCallback)
+                                                              timer.reset();
+                                                          else
+                                                              timer->Enable(false);
+                                                          context.RequestQuit();
+                                                      });
+    timer->SetDueTime(0);
+    timer->SetRepeatInterval(repeat ? 1 : 0);
+    timer->Enable(true);
+    REQUIRE(context.RunMessageLoop() == LWS::LoopResult::Quit);
+    REQUIRE(calls == (repeat ? 3 : 1));
+    REQUIRE(onOwnerThread);
+    if (timer)
+        REQUIRE_FALSE(timer->GetEnabled());
 }
 
 TEST_CASE("Wayland configure tolerates destruction from paint callbacks", "[window][event][wayland]")
@@ -460,14 +495,32 @@ TEST_CASE("Wayland timer restart discards an already queued expiration", "[timer
     LWS::PlatformContext context;
     Initialize(context);
     unsigned callbacks{};
-    LWS::HighPrecisionTimer timer(context, [&] { ++callbacks; });
-    timer.SetDueTime(1);
-    timer.SetRepeatInterval(0);
-    timer.Enable(true);
+    auto timer = std::make_unique<LWS::HighPrecisionTimer>(context, [&] { ++callbacks; });
+    timer->SetDueTime(1);
+    timer->SetRepeatInterval(0);
+    timer->Enable(true);
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
-    timer.Enable(false);
-    timer.SetDueTime(60'000);
-    timer.Enable(true);
+    SECTION("Restart before dispatch")
+    {
+        timer->Enable(false);
+        timer->SetDueTime(60'000);
+        timer->Enable(true);
+    }
+    SECTION("Restart while dispatching a ready descriptor snapshot")
+    {
+        REQUIRE(context.PostTask([&] { timer->SetDueTime(60'000); }) == LWS::Result::Success);
+    }
+    SECTION("Destroy and replace while dispatching a ready descriptor snapshot")
+    {
+        REQUIRE(context.PostTask(
+                    [&]
+                    {
+                        timer.reset();
+                        timer = std::make_unique<LWS::HighPrecisionTimer>(context, [&] { ++callbacks; });
+                        timer->SetDueTime(60'000);
+                        timer->Enable(true);
+                    }) == LWS::Result::Success);
+    }
     std::ignore = context.ProcessMessages();
     REQUIRE(callbacks == 0);
 }
