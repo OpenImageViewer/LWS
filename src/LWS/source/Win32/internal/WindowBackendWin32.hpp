@@ -2,6 +2,7 @@
 #ifdef LWS_PLATFORM_WIN32
 
     #include <Windows.h>
+    #include <LWS/Bitmap.hpp>
 
     #include <LWS/source/internal/Backends.hpp>
     #include <LWS/Win32/EventWin32.hpp>
@@ -58,6 +59,7 @@ namespace LWS
         Point getMousePosition() const override;
         void setLockMouseToWindowMode(internal::LockMouseToWindowMode mode) override;
         Result setPointerLocked(bool locked) override;
+        Result presentBitmap(const BitmapBuffer& bitmap) override;
         void setCursor(std::shared_ptr<internal::ICursorBackend> cursor) override;
         void setParent(internal::IWindowBackend* parent) override;
         Result enableDragAndDrop(bool enable) override;
@@ -83,6 +85,9 @@ namespace LWS
         LRESULT getCorner(POINTS points) const;
         [[nodiscard]] bool dispatchPlatformEvent(const Win32::PlatformEvent& event, LRESULT& result);
 
+        bool drawBitmap(HDC dc) const;
+        std::unique_ptr<Bitmap> fPresentedBitmap;
+        wchar_t fPendingHighSurrogate = 0;
         HWND fHwnd = nullptr;
         // Coordinate conversion runs for every input event, so refresh this cache only when the window DPI changes.
         UINT fDpi = 96;

@@ -11,6 +11,7 @@
 #include <memory>
 #include <thread>
 #include <variant>
+#include <string>
 
 namespace LWS
 {
@@ -83,10 +84,21 @@ namespace LWS
     {
         std::filesystem::path fileName;
     };
-    using AnyEvent =
-        std::variant<EventClientAreaSizeChanged, EventMove, EventCloseRequested, EventWindowDestroyed, EventFocusGained,
-                     EventFocusLost, EventShowStateChanged, EventKeyDown, EventKeyUp, EventMouseMove, EventMouseButton,
-                     EventMouseWheel, EventPaint, EventDragDropFile, EventWindowDestroying>;
+    struct EventTextInput
+    {
+        std::string text;
+    };  // Committed UTF-8, separate from physical keys.
+    struct EventMouseLeave
+    {
+    };
+    struct EventMouseCaptureLost
+    {
+    };
+
+    using AnyEvent = std::variant<EventClientAreaSizeChanged, EventMove, EventCloseRequested, EventWindowDestroyed,
+                                  EventFocusGained, EventFocusLost, EventShowStateChanged, EventKeyDown, EventKeyUp,
+                                  EventMouseMove, EventMouseButton, EventMouseWheel, EventPaint, EventDragDropFile,
+                                  EventWindowDestroying, EventTextInput, EventMouseLeave, EventMouseCaptureLost>;
 
     enum class EventResponse
     {

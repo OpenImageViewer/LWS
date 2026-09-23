@@ -10,9 +10,12 @@
     #include <LWS/source/internal/Backends.hpp>
 
     #include <cstdint>
+    #include <optional>
     #include <unordered_set>
 
     #include <wayland-client.h>
+    #include <xkbcommon/xkbcommon.h>
+    #include <xkbcommon/xkbcommon-compose.h>
 
 namespace LWS
 {
@@ -34,6 +37,8 @@ namespace LWS::internal
         [[nodiscard]] wl_seat* seat() const { return fSeat; }
         [[nodiscard]] wl_pointer* pointer() const { return fPointer; }
         [[nodiscard]] uint32_t pointerButtonSerial() const { return fPointerButtonSerial; }
+        [[nodiscard]] uint32_t inputSerial() const { return fInputSerial; }
+        [[nodiscard]] bool hasKeyboardFocus() const { return fKeyboardSurface != nullptr; }
         [[nodiscard]] Point pointerPosition() const { return fPointerPosition; }
         [[nodiscard]] bool isKeyPressed(KeyCode key) const;
         [[nodiscard]] int pollDescriptor() const { return fKeyRepeatDescriptor; }
@@ -43,6 +48,8 @@ namespace LWS::internal
         void reset();
 
       private:
+
+        friend struct WaylandTextInputTestAccess;
 
         static void seatCapabilities(void* data, wl_seat* seat, uint32_t capabilities);
         static void seatName(void* data, wl_seat* seat, const char* name);
@@ -74,7 +81,16 @@ namespace LWS::internal
 
         void beginPointerWheelFrame();
         void dispatchPointerWheelFrame();
-        void startKeyRepeat(KeyCode key);
+        void dispatchKeyRepeats(uint64_t expirations);
+        void dispatchText(uint32_t key, bool repeat = false);
+        void resetKeyboardInput();
+        void resetCompositionAndRepeat();
+        void clearKeymap();
+        [[nodiscard]] wl_surface* clearPointerFocus();
+        void notifyFocusLoss(wl_surface* pointerSurface, wl_surface* keyboardSurface);
+        [[nodiscard]] bool keyboardDispatchCurrent(WindowBackendWayland* window, uint64_t generation) const;
+        [[nodiscard]] bool isRepeatableScanCode(uint32_t scanCode) const;
+        void startKeyRepeat(uint32_t scanCode);
         void stopKeyRepeat();
 
         WaylandPlatformState& fPlatform;
@@ -84,18 +100,27 @@ namespace LWS::internal
         int fKeyRepeatDescriptor = -1;
         int32_t fKeyRepeatRate = 0;
         int32_t fKeyRepeatDelay = 0;
-        KeyCode fRepeatingKey = KeyCode::Unknown;
+        std::optional<uint32_t> fRepeatingScanCode;
+        uint64_t fKeyboardGeneration{};
+        xkb_context* fXkbContext{};
+        xkb_keymap* fXkbKeymap{};
+        xkb_state* fXkbState{};
+        xkb_compose_table* fComposeTable{};
+        xkb_compose_state* fComposeState{};
         WaylandCursorController fCursorController;
         WindowBackendWayland* fPointerWindow = nullptr;
         WaylandSurfaceRole fPointerSurfaceRole = WaylandSurfaceRole::Content;
         WindowBackendWayland* fKeyboardWindow = nullptr;
+        wl_surface* fKeyboardSurface = nullptr;
         uint32_t fPointerButtonSerial = 0;
+        uint32_t fInputSerial = 0;
         uint32_t fPointerEnterSerial = 0;
         Point fPointerPosition{};
         WheelDeltaFrame fPointerWheelFrame;
         WindowBackendWayland* fPointerWheelWindow = nullptr;
         Point fPointerWheelPosition{};
-        std::unordered_set<KeyCode> fPressedKeys;
+        WaylandSurfaceRole fPointerWheelRole = WaylandSurfaceRole::Content;
+        std::unordered_set<uint32_t> fPressedScanCodes;
     };
 }  // namespace LWS::internal
 

@@ -995,6 +995,52 @@ namespace LWS
         return Result::Success;
     }
 
+    bool WindowBackendWin32::drawBitmap(HDC dc) const
+    {
+        if (!fPresentedBitmap || !dc)
+            return false;
+        auto bitmap = fPresentedBitmap->GetBuffer();
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = static_cast<LONG>(bitmap.width);
+        info.bmiHeader.biHeight = -static_cast<LONG>(bitmap.height);
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        RECT rect{};
+        GetClientRect(fHwnd, &rect);
+        const int result = StretchDIBits(dc, 0, 0, rect.right, rect.bottom, 0, 0, bitmap.width, bitmap.height,
+                                         bitmap.pixels.data(), &info, DIB_RGB_COLORS, SRCCOPY);
+        return result != GDI_ERROR && result != 0;
+    }
+
+    Result WindowBackendWin32::presentBitmap(const BitmapBuffer& bitmap)
+    {
+        if (!fHwnd)
+            return Result::InvalidState;
+        if (!internal::validateBitmapBuffer(bitmap) || bitmap.width > LONG_MAX / 4 || bitmap.height > LONG_MAX)
+            return Result::Failure;
+        try
+        {
+            // Retain an owned immutable copy for later WM_PAINT. Reusable storage is
+            // deferred until allocation profiling justifies separate conversion/size logic.
+            fPresentedBitmap = std::make_unique<Bitmap>(bitmap);
+        }
+        catch (const std::invalid_argument&)
+        {
+            return Result::Failure;
+        }
+        catch (const std::bad_alloc&)
+        {
+            return Result::Failure;
+        }
+        HDC dc = GetDC(fHwnd);
+        bool drawn = drawBitmap(dc);
+        if (dc)
+            ReleaseDC(fHwnd, dc);
+        return drawn ? Result::Success : Result::Failure;
+    }
+
     Handle WindowBackendWin32::getHandle() const
     {
         return reinterpret_cast<Handle>(fHwnd);
@@ -1148,6 +1194,8 @@ namespace LWS
                 break;
 
             case WM_DESTROY:
+                fPresentedBitmap.reset();
+                fPendingHighSurrogate = 0;
                 if (fDragAndDrop != nullptr)
                 {
                     fDragAndDrop->detach();
@@ -1223,6 +1271,7 @@ namespace LWS
                 break;
 
             case WM_KILLFOCUS:
+                fPendingHighSurrogate = 0;
                 dispatchEvent(EventFocusLost{});
                 break;
 
@@ -1233,8 +1282,58 @@ namespace LWS
                 }
                 break;
 
+            case WM_CAPTURECHANGED:
+                if (reinterpret_cast<HWND>(lParam) != fHwnd)
+                    dispatchEvent(EventMouseCaptureLost{});
+                break;
+
+            case WM_MOUSELEAVE:
+                dispatchEvent(EventMouseLeave{});
+                break;
+
+            case WM_CHAR:
+            {
+                wchar_t units[2]{};
+                int count = 1;
+                wchar_t ch = static_cast<wchar_t>(wParam);
+                if (ch >= 0xd800 && ch <= 0xdbff)
+                {
+                    fPendingHighSurrogate = ch;
+                    break;
+                }
+                if (ch >= 0xdc00 && ch <= 0xdfff)
+                {
+                    if (!fPendingHighSurrogate)
+                        break;
+                    units[0] = fPendingHighSurrogate;
+                    units[1] = ch;
+                    count = 2;
+                }
+                else
+                    units[0] = ch;
+                fPendingHighSurrogate = 0;
+                if (ch < 32 || ch == 127)
+                    break;
+                char bytes[8]{};
+                int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, units, count, bytes, sizeof(bytes),
+                                               nullptr, nullptr);
+                if (size > 0)
+                {
+                    const unsigned repeats = std::max(1U, unsigned(LOWORD(lParam)));
+                    std::string text;
+                    text.reserve(size_t(size) * repeats);
+                    for (unsigned i = 0; i < repeats; ++i)
+                        text.append(bytes, size);
+                    dispatchEvent(EventTextInput{std::move(text)});
+                }
+                use_default = false;
+                break;
+            }
+
             case WM_MOUSEMOVE:
             {
+                TRACKMOUSEEVENT tracking{sizeof(TRACKMOUSEEVENT), TME_LEAVE, hWnd, 0};
+                TrackMouseEvent(&tracking);
                 const Point position = logicalFromPhysical(Point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}, fDpi);
                 Point delta{position.x - fLastMousePos.x, position.y - fLastMousePos.y};
                 fLastMousePos = position;
@@ -1293,6 +1392,8 @@ namespace LWS
                                       {{paint_struct.rcPaint.left, paint_struct.rcPaint.top},
                                        {paint_struct.rcPaint.right, paint_struct.rcPaint.bottom}}},
                     return_value);
+                if (fHwnd)
+                    std::ignore = drawBitmap(paint_struct.hdc);
                 EndPaint(hWnd, &paint_struct);
                 dispatchEvent(EventPaint{});
                 break;

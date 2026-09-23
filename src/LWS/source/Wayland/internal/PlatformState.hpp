@@ -69,6 +69,7 @@ namespace LWS::internal
         void outputChanged(wl_output* output, bool removed);
 
         [[nodiscard]] wl_display* display() const { return fDisplay; }
+        [[nodiscard]] PlatformContext& context() const { return fContext; }
         [[nodiscard]] wl_compositor* compositor() const { return fCompositor; }
         [[nodiscard]] wl_subcompositor* subcompositor() const { return fSubcompositor; }
         [[nodiscard]] wl_shm* sharedMemory() const { return fSharedMemory; }

@@ -75,6 +75,7 @@ namespace LWS
         Handle getHandle() const override;
         BackendId backend() const override { return BackendId::Wayland; }
 
+        void handleText(std::string text);
         void handlePointerEnter(Point position, internal::WaylandSurfaceRole surfaceRole);
         void handlePointerLeave();
         void handlePointerMotion(Point position, Point delta, internal::WaylandSurfaceRole surfaceRole);
@@ -82,7 +83,7 @@ namespace LWS
         void handleRelativePointerMotion(double deltaX, double deltaY);
         void handlePointerButton(MouseButton button, bool pressed, Point position,
                                  internal::WaylandSurfaceRole surfaceRole, uint32_t time);
-        void handlePointerWheel(int32_t delta, Point position);
+        void handlePointerWheel(int32_t delta, Point position, internal::WaylandSurfaceRole surfaceRole);
         void handleKeyboardFocus(bool focused);
         void handleKey(KeyCode key, bool pressed, bool repeat = false);
         void handleToplevelConfigure(Size size, bool maximized, bool fullscreen);
@@ -144,6 +145,7 @@ namespace LWS
         bool fFullScreen = false;
         bool fFocused = false;
         bool fMouseInside = false;
+        uint32_t fClientPointerButtons = 0;
         bool fPointerLockRequested = false;
         bool fPointerLockActive = false;
         bool fDragAndDropEnabled = false;
