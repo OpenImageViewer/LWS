@@ -24,7 +24,7 @@ elseif(UNIX)
 
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(CaptionText REQUIRED IMPORTED_TARGET pangocairo fontconfig)
-    pkg_check_modules(TextInput REQUIRED IMPORTED_TARGET xkbcommon)
+    pkg_check_modules(TextInput REQUIRED IMPORTED_TARGET xkbcommon dbus-1)
 
     find_program(WAYLAND_SCANNER_EXECUTABLE NAMES wayland-scanner REQUIRED)
     find_path(WAYLAND_PROTOCOLS_DIRECTORY

@@ -1035,9 +1035,14 @@ TEST_CASE("Clipboard operations require an owned window", "[clipboard][win32]")
     REQUIRE(renderState.destroyed == LWS::Result::Success);
     REQUIRE_FALSE(completed);
 
-    LWS::ListFileDialogFileNames files;
+    LWS::ListFileDialogFileNames files{L"unchanged"};
     REQUIRE(LWS::FileDialog::Show(LWS::FileDialogType::OpenFile, {}, {}, uncreated, {}, 1, {}, files) ==
             LWS::FileDialogResult::UnknownError);
+    REQUIRE(files == LWS::ListFileDialogFileNames{L"unchanged"});
+    LWS::file_dialog_string_type file = L"unchanged";
+    REQUIRE(LWS::FileDialog::Show(LWS::FileDialogType::OpenFile, {}, {}, uncreated, {}, 1, {}, file) ==
+            LWS::FileDialogResult::UnknownError);
+    REQUIRE(file == L"unchanged");
 }
 
 TEST_CASE("Clipboard service ownership cannot be copied", "[clipboard][win32]")

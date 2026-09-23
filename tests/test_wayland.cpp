@@ -7,6 +7,7 @@
     #include <LWS/Wayland/WindowExtensions.hpp>
     #include <LWS/Window.hpp>
     #include <LWS/TextClipboard.hpp>
+    #include <LWS/FileDialog.hpp>
     #include <LWS/source/Wayland/internal/PlatformState.hpp>
     #include <LWS/source/Wayland/internal/KeyCodeLinux.hpp>
     #include <LWS/source/Wayland/internal/WindowBackendWayland.hpp>
@@ -251,6 +252,24 @@ TEST_CASE("Wayland window exposes stable typed native objects", "[window][waylan
     REQUIRE(*display != nullptr);
     REQUIRE(window.SetVisible(true) == LWS::Result::Success);
     REQUIRE(LWS::Wayland::GetSurface(window) == surface);
+    auto invalidDialog = [&](const LWS::ListFileDialogFilters& filters, const std::string& title,
+                             const std::string& extension, const std::string& initial)
+    {
+        std::string output = "unchanged";
+        REQUIRE(LWS::FileDialog::Show(LWS::FileDialogType::SaveFile, filters, title, window, extension, 0, initial,
+                                      output) == LWS::FileDialogResult::UnknownError);
+        REQUIRE(output == "unchanged");
+        LWS::ListFileDialogFileNames outputs{"unchanged"};
+        REQUIRE(LWS::FileDialog::Show(LWS::FileDialogType::SaveFile, filters, title, window, extension, 0, initial,
+                                      outputs) == LWS::FileDialogResult::UnknownError);
+        REQUIRE(outputs == LWS::ListFileDialogFileNames{"unchanged"});
+    };
+    invalidDialog({}, std::string(1, '\xff'), {}, "report");
+    invalidDialog({{std::string(1, '\xff'), {"*.txt"}}}, "Save", {}, "report");
+    invalidDialog({{"Text", {std::string("*.") + char(0xff)}}}, "Save", {}, "report");
+    invalidDialog({}, "Save", std::string(1, '\xff'), "report");
+    invalidDialog({}, "Save", {}, std::string("/tmp/") + char(0xff) + ".png");
+    invalidDialog({}, "Save", {}, std::string("a\0b", 3));
     LWS::internal::WaylandTextInputTestAccess::Exercise(window);
 }
 

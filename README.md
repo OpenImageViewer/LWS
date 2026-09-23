@@ -334,6 +334,9 @@ immediately and are cancelled when the native owner or context becomes unavailab
 Wayland uses the context's data device alongside URI drag/drop and requires an input
 serial for writing.
 
+Portal dialogs retain the existing Window& owner and filter APIs;
+until xdg-foreign parenting exists they enforce owner modality within LWS.
+
 The Windows LWSLib target exports `UNICODE`, `_UNICODE`, and `NOMINMAX` as public
 usage requirements, so core-only consumers see the same string ABI and compatible
 Windows headers as the library.

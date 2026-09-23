@@ -530,6 +530,7 @@ namespace LWS
 
     void WindowBackendWayland::destroy()
     {
+        fModalInputDepth = 0;
         if (fParentBackend != nullptr)
         {
             std::erase(fParentBackend->fChildBackends, this);
@@ -1211,6 +1212,8 @@ namespace LWS
     void WindowBackendWayland::handlePointerButton(MouseButton button, bool pressed, Point position,
                                                    internal::WaylandSurfaceRole surfaceRole, uint32_t time)
     {
+        if (inputBlocked())
+            return;
         const internal::WaylandFrameHit hit = frameHit(position, surfaceRole);
         if (hit.action != internal::WaylandFrameAction::Client && !fClientPointerButtons)
         {
@@ -1283,7 +1286,7 @@ namespace LWS
     void WindowBackendWayland::handlePointerWheel(int32_t delta, Point position,
                                                   internal::WaylandSurfaceRole surfaceRole)
     {
-        if (surfaceRole != internal::WaylandSurfaceRole::Content ||
+        if (surfaceRole != internal::WaylandSurfaceRole::Content || inputBlocked() ||
             frameHit(position, surfaceRole).action != internal::WaylandFrameAction::Client)
             return;
         dispatchEvent(EventMouseWheel{delta, position - contentOffset()});
@@ -1312,6 +1315,16 @@ namespace LWS
     {
         if (!text.empty())
             std::ignore = dispatchEvent(EventTextInput{std::move(text)});
+    }
+    EventResponse WindowBackendWayland::dispatchEvent(const AnyEvent& event)
+    {
+        if (inputBlocked() &&
+            (std::holds_alternative<EventKeyDown>(event) || std::holds_alternative<EventKeyUp>(event) ||
+             std::holds_alternative<EventTextInput>(event) || std::holds_alternative<EventMouseButton>(event) ||
+             std::holds_alternative<EventMouseWheel>(event) || std::holds_alternative<EventMouseMove>(event) ||
+             std::holds_alternative<EventCloseRequested>(event)))
+            return EventResponse::Handled;
+        return internal::IWindowBackend::dispatchEvent(event);
     }
 
     void WindowBackendWayland::setAppId(const std::string& appId)

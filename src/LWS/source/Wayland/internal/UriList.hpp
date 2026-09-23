@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -10,76 +11,63 @@
 
 namespace LWS::internal
 {
-    inline std::vector<std::filesystem::path> parseUriList(std::string_view text)
+    inline std::optional<std::string> parseFileUri(std::string_view uri)
     {
-        constexpr std::string_view filePrefix = "file://";
-        constexpr std::string_view localHost = "localhost";
-        const auto equalsIgnoreCase = [](std::string_view left, std::string_view right)
+        const auto equal = [](std::string_view a, std::string_view b)
         {
-            return left.size() == right.size() && std::ranges::equal(left, right, [](unsigned char a, unsigned char b)
-                                                                     { return std::tolower(a) == std::tolower(b); });
+            return a.size() == b.size() && std::ranges::equal(a, b, [](unsigned char x, unsigned char y)
+                                                              { return std::tolower(x) == std::tolower(y); });
         };
-        const auto hexValue = [](char value) -> int
+        if (uri.size() < 7 || !equal(uri.substr(0, 7), "file://"))
+            return {};
+        uri.remove_prefix(7);
+        if (uri.size() >= 10 && equal(uri.substr(0, 9), "localhost") && uri[9] == '/')
+            uri.remove_prefix(9);
+        if (uri.empty() || uri.front() != '/')
+            return {};
+        auto hex = [](char c) -> int
         {
-            if (value >= '0' && value <= '9')
-                return value - '0';
-            if (value >= 'a' && value <= 'f')
-                return value - 'a' + 10;
-            if (value >= 'A' && value <= 'F')
-                return value - 'A' + 10;
+            if (c >= '0' && c <= '9')
+                return c - '0';
+            if (c >= 'a' && c <= 'f')
+                return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F')
+                return c - 'A' + 10;
             return -1;
         };
-
+        std::string path;
+        path.reserve(uri.size());
+        for (size_t i = 0; i < uri.size(); ++i)
+        {
+            char c = uri[i];
+            if (c == '%')
+            {
+                if (i + 2 >= uri.size())
+                    return {};
+                const int high = hex(uri[i + 1]), low = hex(uri[i + 2]);
+                if (high < 0 || low < 0)
+                    return {};
+                c = char(high * 16 + low);
+                i += 2;
+            }
+            if (!c)
+                return {};
+            path += c;
+        }
+        return path;
+    }
+    inline std::vector<std::filesystem::path> parseUriList(std::string_view text)
+    {
         std::vector<std::filesystem::path> paths;
         while (!text.empty())
         {
-            const size_t lineEnd = text.find('\n');
-            std::string_view line = text.substr(0, lineEnd);
-            text = lineEnd == std::string_view::npos ? std::string_view{} : text.substr(lineEnd + 1);
+            const size_t end = text.find('\n');
+            auto line = text.substr(0, end);
+            text = end == text.npos ? std::string_view{} : text.substr(end + 1);
             if (line.ends_with('\r'))
                 line.remove_suffix(1);
-            if (line.empty() || line.front() == '#' || line.size() < filePrefix.size() ||
-                !equalsIgnoreCase(line.substr(0, filePrefix.size()), filePrefix))
-                continue;
-
-            line.remove_prefix(filePrefix.size());
-            if (!line.starts_with('/') && line.size() > localHost.size() &&
-                equalsIgnoreCase(line.substr(0, localHost.size()), localHost))
-            {
-                line.remove_prefix(localHost.size());
-            }
-            if (line.empty() || line.front() != '/')
-                continue;
-
-            std::string path;
-            path.reserve(line.size());
-            bool valid = true;
-            for (size_t index = 0; valid && index < line.size(); ++index)
-            {
-                if (line[index] != '%')
-                {
-                    valid = line[index] != '\0';
-                    path.push_back(line[index]);
-                    continue;
-                }
-
-                valid = index + 2 < line.size();
-                if (valid)
-                {
-                    const int high = hexValue(line[index + 1]);
-                    const int low = hexValue(line[index + 2]);
-                    valid = high >= 0 && low >= 0;
-                    if (valid)
-                    {
-                        const char decoded = static_cast<char>(high * 16 + low);
-                        valid = decoded != '\0';
-                        path.push_back(decoded);
-                        index += 2;
-                    }
-                }
-            }
-            if (valid)
-                paths.emplace_back(std::move(path));
+            if (auto path = parseFileUri(line))
+                paths.emplace_back(std::move(*path));
         }
         return paths;
     }

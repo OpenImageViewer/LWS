@@ -42,19 +42,6 @@ namespace LWS
         return ClipboardResult::UnknownError;
     }
 
-    FileDialogResult FileDialog::Show(FileDialogType, const ListFileDialogFilters&, const file_dialog_string_type&,
-                                      Window&, const file_dialog_string_type&, uint32_t, file_dialog_string_type,
-                                      file_dialog_string_type&)
-    {
-        return FileDialogResult::UnknownError;
-    }
-    FileDialogResult FileDialog::Show(FileDialogType, const ListFileDialogFilters&, const file_dialog_string_type&,
-                                      Window&, const file_dialog_string_type&, uint32_t, file_dialog_string_type,
-                                      ListFileDialogFileNames&)
-    {
-        return FileDialogResult::UnknownError;
-    }
-
     NotificationIconGroup::NotificationIconGroup(PlatformContext& platform)
         : platform_(platform), impl_(std::make_unique<Impl>())
     {

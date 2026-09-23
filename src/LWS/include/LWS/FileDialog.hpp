@@ -35,11 +35,13 @@ namespace LWS
     {
       public:
 
+        // Select one path. Outputs are replaced only on success.
         static FileDialogResult Show(FileDialogType dialogType, const ListFileDialogFilters& filters,
                                      const file_dialog_string_type& title, Window& ownerWindow,
                                      const file_dialog_string_type& defaultExtension, uint32_t filterIndex,
                                      file_dialog_string_type defaultFileName, file_dialog_string_type& outFilename);
 
+        // OpenFile permits multiple selections; SaveFile still selects one path.
         static FileDialogResult Show(FileDialogType dialogType, const ListFileDialogFilters& filters,
                                      const file_dialog_string_type& title, Window& ownerWindow,
                                      const file_dialog_string_type& defaultExtension, uint32_t filterIndex,

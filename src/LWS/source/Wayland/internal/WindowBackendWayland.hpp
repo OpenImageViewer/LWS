@@ -75,6 +75,12 @@ namespace LWS
         Handle getHandle() const override;
         BackendId backend() const override { return BackendId::Wayland; }
 
+        void beginModalInput() { ++fModalInputDepth; }
+        void endModalInput()
+        {
+            if (fModalInputDepth)
+                --fModalInputDepth;
+        }
         void handleText(std::string text);
         void handlePointerEnter(Point position, internal::WaylandSurfaceRole surfaceRole);
         void handlePointerLeave();
@@ -99,6 +105,9 @@ namespace LWS
         friend class internal::WaylandDataDeviceController;
 
         class NativeState;
+        EventResponse dispatchEvent(const AnyEvent& event);
+        bool inputBlocked() const { return fModalInputDepth || (fParentBackend && fParentBackend->inputBlocked()); }
+        uint32_t fModalInputDepth = 0;
         internal::WaylandPlatformState& fPlatform;
         std::unique_ptr<NativeState> fNativeState;
         std::shared_ptr<internal::ICursorBackend> fCursor;
