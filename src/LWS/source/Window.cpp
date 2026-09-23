@@ -283,9 +283,13 @@ namespace LWS
             return Result::InvalidState;
         if (visible == impl_->backend->getVisible())
             return Result::Success;
-        if (platform_.GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
+        // Showing a surface that configured while hidden must preserve its published metrics.
+        if (platform_.GetBackendId() == BackendId::Wayland && impl_->parent == nullptr &&
+            (!visible || !impl_->backend->isConfigured()))
             impl_->configured = false;
         visible ? impl_->backend->show() : impl_->backend->hide();
+        if (!IsCreated())
+            return Result::InvalidState;
         impl_->config.visible = visible;
         return Result::Success;
     }

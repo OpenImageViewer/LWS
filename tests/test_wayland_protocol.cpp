@@ -57,6 +57,9 @@ namespace
             int bufferScale{1};
             bool configured{};
             bool holdBuffers{};
+            unsigned roleCreations{};
+            std::string title, appId;
+            LWS::Size minimum{}, maximum{};
             std::vector<wl_resource*> heldBuffers;
             std::vector<uint32_t> submittedBuffers;
             std::vector<std::string> stateRequests;
@@ -523,17 +526,33 @@ namespace
                             [](wl_client* client, wl_resource* resource, uint32_t id)
                         {
                             auto& surface = *static_cast<Surface*>(wl_resource_get_user_data(resource));
+                            ++surface.roleCreations;
+                            surface.configured = false;
+                            surface.title.clear();
+                            surface.appId.clear();
+                            surface.minimum = surface.maximum = {};
                             surface.toplevel = wl_resource_create(client, &xdg_toplevel_interface, 1, id);
                             static const struct xdg_toplevel_interface top{
-                                .destroy = Destroy,
+                                .destroy =
+                                    [](wl_client*, wl_resource* resource)
+                                {
+                                    auto& surface = *static_cast<Surface*>(wl_resource_get_user_data(resource));
+                                    surface.toplevel = nullptr;
+                                    surface.configured = false;
+                                    wl_resource_destroy(resource);
+                                },
                                 .set_parent = [](wl_client*, wl_resource*, wl_resource*) {},
-                                .set_title = [](wl_client*, wl_resource*, const char*) {},
-                                .set_app_id = [](wl_client*, wl_resource*, const char*) {},
+                                .set_title = [](wl_client*, wl_resource* resource, const char* title)
+                                { static_cast<Surface*>(wl_resource_get_user_data(resource))->title = title; },
+                                .set_app_id = [](wl_client*, wl_resource* resource, const char* appId)
+                                { static_cast<Surface*>(wl_resource_get_user_data(resource))->appId = appId; },
                                 .show_window_menu = nullptr,
                                 .move = nullptr,
                                 .resize = nullptr,
-                                .set_max_size = [](wl_client*, wl_resource*, int32_t, int32_t) {},
-                                .set_min_size = [](wl_client*, wl_resource*, int32_t, int32_t) {},
+                                .set_max_size = [](wl_client*, wl_resource* resource, int32_t x, int32_t y)
+                                { static_cast<Surface*>(wl_resource_get_user_data(resource))->maximum = {x, y}; },
+                                .set_min_size = [](wl_client*, wl_resource* resource, int32_t x, int32_t y)
+                                { static_cast<Surface*>(wl_resource_get_user_data(resource))->minimum = {x, y}; },
                                 .set_maximized =
                                     [](wl_client*, wl_resource* resource)
                                 {
@@ -1307,11 +1326,28 @@ TEST_CASE("Wayland metrics retain logical size while native dimensions are unava
     ProtocolServer server;
     LWS::PlatformContext context;
     REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    {
+        LWS::Window initiallyHidden(context);
+        REQUIRE(initiallyHidden.Create(Config()) == LWS::Result::Success);
+        server.Settle(context);
+        REQUIRE(initiallyHidden.IsConfigured());
+        const auto metrics = initiallyHidden.GetClientAreaMetrics();
+        REQUIRE(initiallyHidden.SetVisible(true) == LWS::Result::Success);
+        REQUIRE(initiallyHidden.IsConfigured());
+        REQUIRE(initiallyHidden.GetClientAreaMetrics() == metrics);
+        server.Settle(context);
+        REQUIRE(initiallyHidden.IsConfigured());
+    }
     LWS::Window window(context);
     REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
     auto config = Config();
     config.visible = true;
+    config.title = "Remap title";
+    REQUIRE(LWS::Wayland::SetAppId(window, "lws.remap.test") == LWS::Result::Success);
     REQUIRE(window.Create(config) == LWS::Result::Success);
+    const auto originalSurface = LWS::Wayland::GetSurface(window);
+    REQUIRE(originalSurface.has_value());
+    REQUIRE(window.SetClientSizeLimits({.minimum = {40, 30}, .maximum = {800, 600}}) == LWS::Result::Success);
     REQUIRE(window.GetClientAreaMetrics().logical == config.clientSize);
     REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
     REQUIRE(window.RequestPlacement({.position = LWS::Point{10, 20}, .clientSize = LWS::LogicalSize{300, 200}}) ==
@@ -1324,21 +1360,34 @@ TEST_CASE("Wayland metrics retain logical size while native dimensions are unava
     REQUIRE(window.SetVisible(false) == LWS::Result::Success);
     REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
     REQUIRE(window.GetClientAreaMetrics().logical == metrics.logical);
+    REQUIRE(window.SetTitle("Hidden title") == LWS::Result::Success);
     REQUIRE(window.SetVisible(true) == LWS::Result::Success);
     REQUIRE_FALSE(window.GetClientAreaMetrics().pixels.has_value());
     const auto surface = LWS::Wayland::GetSurface(window);
     REQUIRE(surface.has_value());
+    REQUIRE(surface == originalSurface);
     const auto id = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*surface));
+    // A real new-role initial commit drives configuration; the test does not inject a configure manually.
     server.Settle(context);
+    unsigned roles{};
+    std::string title, appId;
+    LWS::Size minimum{}, maximum{};
     server.Invoke(
         [&]
         {
             auto& native = *server.surfaces.at(id);
-            wl_array states{};
-            xdg_toplevel_send_configure(native.toplevel, 0, 0, &states);
-            xdg_surface_send_configure(native.shell, 2);
+            roles = native.roleCreations;
+            title = native.title;
+            appId = native.appId;
+            minimum = native.minimum;
+            maximum = native.maximum;
         });
-    server.Settle(context);
+    REQUIRE(roles == 2);
+    REQUIRE(title == "Hidden title");
+    REQUIRE(appId == "lws.remap.test");
+    REQUIRE(minimum == LWS::Size{40, 30});
+    REQUIRE(maximum == LWS::Size{800, 600});
+    REQUIRE(window.IsConfigured());
     REQUIRE(window.GetClientAreaMetrics() == metrics);
     REQUIRE(window.Destroy() == LWS::Result::Success);
     REQUIRE(window.GetClientAreaMetrics().logical == metrics.logical);
