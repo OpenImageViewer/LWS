@@ -1,8 +1,14 @@
 #pragma once
 #include <LWSUI/Control.hpp>
+#include <LWSUI/Menu.hpp>
 #include <LWS/Window.hpp>
 namespace LWSUI
 {
+    namespace internal
+    {
+        class MenuSession;
+        struct MenuSessionAccess;
+    }
     // Window must outlive host. The host owns root and popup trees; focus/capture
     // and popup owners are checked non-owning handles. Callbacks run on the UI thread.
     class UIHost
@@ -17,6 +23,7 @@ namespace LWSUI
         const Theme& Style() const { return theme_; }
         void SetTheme(Theme theme)
         {
+            CloseMainMenu();
             theme_ = std::move(theme);
             Invalidate(true);
         }
@@ -42,6 +49,19 @@ namespace LWSUI
         bool HasContextMenu() const { return contextMenu_ != nullptr; }
         bool HasPopup() const { return popup_ != nullptr; }
         bool Finish(EditPhase phase);
+        // Main menu. Docked bars sit in the window and shrink the root rect; a floating bar
+        // is code-positioned and overlays the root. Dropdowns are popup windows owned by the
+        // session. Every entry point closes any open menu first.
+        void SetMainMenu(std::unique_ptr<MenuBar> menu, MenuDock dock = MenuDock::Top);
+        MenuBar* MainMenu() const { return menuBar_.get(); }
+        bool HasMainMenu() const { return menuBar_ != nullptr; }
+        void SetMainMenuDock(MenuDock dock);
+        MenuDock MainMenuDock() const { return dock_; }
+        /// Floating-bar origin, clamped to the client area; ignored for docked bars.
+        void SetMainMenuPosition(float x, float y);
+        void ClearMainMenu();
+        bool HasOpenMenu() const;
+        void CloseMainMenu();
         // Structural changes requested by control callbacks must be posted, including
         // Remove/Clear/SetRoot and replacing definitions of an attached SettingsView.
         // Post on a surviving ancestor, not the child being removed. The callback runs
@@ -55,6 +75,8 @@ namespace LWSUI
       private:
 
         friend class Control;
+        friend class internal::MenuSession;
+        friend struct internal::MenuSessionAccess;
         void Capture(Control* control);
         void ReleaseCapture(Control* control);
         void Detached(Control& control);
@@ -65,6 +87,12 @@ namespace LWSUI
         bool RouteContextMenu(const Input&);
         bool ContextMenuOwnerValid() const;
         void Hover(Control* control);
+        /// Rootless attachment for popup dropdown panels: host services without tree membership.
+        void AttachPanel(Control& panel);
+        void DetachPanel(Control& panel);
+        /// Panel style: popup style, or the theme with the popup surface as background.
+        Theme MenuPanelStyle() const;
+        void LayoutMainMenu(float width, float height);
         LWS::Window& window_;
         Theme theme_;
         std::optional<Theme> popupStyle_;
@@ -79,6 +107,11 @@ namespace LWSUI
         bool suppressPointerRelease_ = false;
         bool popupModal_ = false;
         std::vector<std::pair<ControlHandle, std::function<void(Control&)>>> deferred_;
+        std::unique_ptr<internal::MenuSession> menuSession_;
+        std::unique_ptr<MenuBar> menuBar_;
+        MenuDock dock_ = MenuDock::Top;
+        float floatingX_ = 0, floatingY_ = 0;
+        Rect barBounds_, rootBounds_;
         bool layoutDirty_ = true, paintDirty_ = true, updating_ = false;
         LWS::EventConnection listener_;
         bool updatePending_ = false;

@@ -45,6 +45,8 @@ namespace LWS
         [[nodiscard]] Result Create(const WindowConfig& config = {});
         [[nodiscard]] Result Destroy();
         [[nodiscard]] bool IsCreated() const;
+        /// True when Create() was called with an engaged WindowConfig::popupPlacement.
+        [[nodiscard]] bool IsPopup() const;
 
         [[nodiscard]] PlatformContext& GetPlatformContext();
         [[nodiscard]] const PlatformContext& GetPlatformContext() const;
@@ -92,13 +94,16 @@ namespace LWS
         /// Does not issue a show-state request or override one made by a geometry listener.
         /// Requires a created window and at least one field. Supplied size must be positive.
         /// Explicit position on a Wayland top-level window returns NotSupported without resizing.
+        /// On a popup, position restates the popup anchor and size restates the popup size; a Wayland
+        /// popup returns NotSupported because the compositor owns popup geometry.
         /// Win32 submits combined geometry in one native operation. Wayland child position
         /// and content may take effect on separate commits; completion is not synchronous.
         [[nodiscard]] Result RequestPlacement(const WindowPlacementRequest& request);
         /// Returns logical client size and optional position, using stored values outside creation.
         /// Win32 top-level position is the restored placement in DPI-normalized screen coordinates;
-        /// child position is relative to the parent's client area. Wayland top-level position is unavailable.
-        /// Position and size are not an atomic native observation.
+        /// child position is relative to the parent's client area; popup position is the resolved
+        /// parent-relative popup origin after screen adjustment. Wayland top-level and popup
+        /// position is unavailable. Position and size are not an atomic native observation.
         [[nodiscard]] WindowPlacement GetPlacement() const;
         /// Sets application resize limits for a created window. Dimensions must be nonnegative;
         /// each nonzero maximum must be at least its minimum. Zero means no application limit on that axis.

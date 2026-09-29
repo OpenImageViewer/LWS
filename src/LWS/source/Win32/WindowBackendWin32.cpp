@@ -7,6 +7,7 @@
     #include <LWS/StringDefs.hpp>
 
     #include <mutex>
+    #include <algorithm>
     #include <cmath>
     #include <optional>
     #include <stdexcept>
@@ -373,9 +374,15 @@ namespace LWS
         fDisplayState = config.displayState;
         fVisible = config.visible;
         fLastMousePos = {};
+        fIsPopup = config.popup.has_value();
+        fPopupPlacement = config.popup;
         updateBackgroundBrush();
 
         DWORD ex_style = 0;
+        if (fIsPopup)
+        {
+            ex_style |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+        }
         if (fAlwaysOnTop)
         {
             ex_style |= WS_EX_TOPMOST;
@@ -391,10 +398,25 @@ namespace LWS
             parent_hwnd = reinterpret_cast<HWND>(fParentBackend->getHandle());
         }
 
-        const DWORD style = static_cast<DWORD>(WS_CLIPCHILDREN | WS_CLIPSIBLINGS | composeWindowStyles());
         const UINT dpi = parent_hwnd != nullptr ? windowDpi(parent_hwnd) : systemDpi();
-        const Point position = physicalFromLogical(config.position, dpi);
-        const Size outerSize = outerSizeForLogicalClient(config.size, style, ex_style, dpi);
+        // Popup placement resolves before the native window exists; WM_CREATE refreshes this cache afterwards.
+        fDpi = dpi;
+        DWORD style = 0;
+        Point position{};
+        Size outerSize{};
+        if (fIsPopup)
+        {
+            // An owned WS_POPUP top-level tracks its owner's z-order without ever activating.
+            style = static_cast<DWORD>(WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
+            outerSize = outerSizeForLogicalClient(config.size, style, ex_style, dpi);
+            position = resolvePopupPosition(outerSize);
+        }
+        else
+        {
+            style = static_cast<DWORD>(WS_CLIPCHILDREN | WS_CLIPSIBLINGS | composeWindowStyles());
+            position = physicalFromLogical(config.position, dpi);
+            outerSize = outerSizeForLogicalClient(config.size, style, ex_style, dpi);
+        }
         HWND hwnd = CreateWindowEx(ex_style, g_windowClassName, config.title.c_str(), style, position.x, position.y,
                                    outerSize.x, outerSize.y, parent_hwnd, nullptr, instance, this);
 
@@ -450,7 +472,7 @@ namespace LWS
 
         if (config.visible)
         {
-            ShowWindow(fHwnd, SW_SHOW);
+            ShowWindow(fHwnd, fIsPopup ? SW_SHOWNOACTIVATE : SW_SHOW);
         }
         else
         {
@@ -469,6 +491,8 @@ namespace LWS
         }
         if (fWindowIcon != nullptr)
             DestroyIcon(std::exchange(fWindowIcon, nullptr));
+        fIsPopup = false;
+        fPopupPlacement.reset();
     }
 
     void WindowBackendWin32::show()
@@ -476,7 +500,7 @@ namespace LWS
         fVisible = true;
         if (fHwnd != nullptr)
         {
-            ShowWindow(fHwnd, SW_SHOW);
+            ShowWindow(fHwnd, fIsPopup ? SW_SHOWNOACTIVATE : SW_SHOW);
         }
     }
 
@@ -672,6 +696,15 @@ namespace LWS
 
     void WindowBackendWin32::setPosition(Point pos)
     {
+        if (fIsPopup)
+        {
+            if (fPopupPlacement.has_value())
+            {
+                fPopupPlacement->anchor = pos;
+                applyPopupPlacement();
+            }
+            return;
+        }
         if (fHwnd != nullptr)
         {
             const Point position = physicalFromLogical(pos, fDpi);
@@ -718,6 +751,15 @@ namespace LWS
 
     void WindowBackendWin32::setSize(Size sz)
     {
+        if (fIsPopup)
+        {
+            if (fPopupPlacement.has_value())
+            {
+                fPopupPlacement->size = {sz.x, sz.y};
+                applyPopupPlacement();
+            }
+            return;
+        }
         if (fHwnd != nullptr)
         {
             const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE));
@@ -763,6 +805,16 @@ namespace LWS
 
     void WindowBackendWin32::setPlacement(const internal::NativeWindowPlacement& placement)
     {
+        if (fIsPopup)
+        {
+            if (fPopupPlacement.has_value())
+            {
+                fPopupPlacement->anchor = placement.position;
+                fPopupPlacement->size = {placement.size.x, placement.size.y};
+                applyPopupPlacement();
+            }
+            return;
+        }
         if (fHwnd == nullptr)
         {
             return;
@@ -772,6 +824,65 @@ namespace LWS
         const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE));
         const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
         const Size outerSize = outerSizeForLogicalClient(placement.size, style, extendedStyle, fDpi);
+        internal::WindowPosHelper::setPlacement(fHwnd, position.x, position.y, outerSize.x, outerSize.y);
+    }
+
+    Point WindowBackendWin32::resolvePopupPosition(Size outerSize) const
+    {
+        const HWND parent_hwnd = reinterpret_cast<HWND>(fParentBackend->getHandle());
+        POINT origin{0, 0};
+        ClientToScreen(parent_hwnd, &origin);
+        const Point anchorPoint{fPopupPlacement->anchor.x + fPopupPlacement->offset.x,
+                                fPopupPlacement->anchor.y + fPopupPlacement->offset.y};
+        const Point anchor = physicalFromLogical(anchorPoint, fDpi);
+        const int32_t screenAnchorX = origin.x + anchor.x;
+        const int32_t screenAnchorY = origin.y + anchor.y;
+        const bool extendsRight = fPopupPlacement->gravity == PopupGravity::DownRight ||
+                                  fPopupPlacement->gravity == PopupGravity::UpRight;
+        const bool extendsDown = fPopupPlacement->gravity == PopupGravity::DownRight ||
+                                 fPopupPlacement->gravity == PopupGravity::DownLeft;
+        Point position{extendsRight ? screenAnchorX : screenAnchorX - outerSize.x,
+                       extendsDown ? screenAnchorY : screenAnchorY - outerSize.y};
+
+        if (fPopupPlacement->adjustToScreen)
+        {
+            MONITORINFO monitor{sizeof(MONITORINFO)};
+            if (GetMonitorInfoW(MonitorFromPoint(POINT{screenAnchorX, screenAnchorY}, MONITOR_DEFAULTTONEAREST),
+                                &monitor))
+            {
+                const RECT& work = monitor.rcWork;
+                // Flip toward the opposite side first, then clamp to the work area for popups larger than it.
+                if (extendsRight && position.x + outerSize.x > work.right && screenAnchorX - outerSize.x >= work.left)
+                    position.x = screenAnchorX - outerSize.x;
+                else if (!extendsRight && position.x < work.left && screenAnchorX + outerSize.x <= work.right)
+                    position.x = screenAnchorX;
+                if (extendsDown && position.y + outerSize.y > work.bottom && screenAnchorY - outerSize.y >= work.top)
+                    position.y = screenAnchorY - outerSize.y;
+                else if (!extendsDown && position.y < work.top && screenAnchorY + outerSize.y <= work.bottom)
+                    position.y = screenAnchorY;
+                const int32_t workLeft = work.left;
+                const int32_t workTop = work.top;
+                const int32_t maxX = std::max(workLeft, static_cast<int32_t>(work.right) - outerSize.x);
+                const int32_t maxY = std::max(workTop, static_cast<int32_t>(work.bottom) - outerSize.y);
+                position.x = std::clamp(position.x, workLeft, maxX);
+                position.y = std::clamp(position.y, workTop, maxY);
+            }
+        }
+        return position;
+    }
+
+    void WindowBackendWin32::applyPopupPlacement()
+    {
+        if (fHwnd == nullptr || !fPopupPlacement.has_value())
+        {
+            return;
+        }
+
+        const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE));
+        const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
+        const Size outerSize =
+            outerSizeForLogicalClient(Size{fPopupPlacement->size.x, fPopupPlacement->size.y}, style, extendedStyle, fDpi);
+        const Point position = resolvePopupPosition(outerSize);
         internal::WindowPosHelper::setPlacement(fHwnd, position.x, position.y, outerSize.x, outerSize.y);
     }
 
@@ -1298,6 +1409,15 @@ namespace LWS
                 }
                 break;
 
+            case WM_MOUSEACTIVATE:
+                if (fIsPopup)
+                {
+                    // Clicking a popup must not steal focus from the window whose menu it belongs to.
+                    use_default = false;
+                    return_value = MA_NOACTIVATE;
+                }
+                break;
+
             case WM_CAPTURECHANGED:
                 if (reinterpret_cast<HWND>(lParam) != fHwnd)
                     dispatchEvent(EventMouseCaptureLost{});
@@ -1487,7 +1607,7 @@ namespace LWS
         auto has_style = [window_styles](WindowStyle style)
         { return (window_styles & std::to_underlying(style)) != 0; };
 
-        if (fParentBackend != nullptr)
+        if (fParentBackend != nullptr && !fIsPopup)
             styles |= WS_CHILD;
         if (has_style(WindowStyle::Caption))
             styles |= WS_CAPTION;

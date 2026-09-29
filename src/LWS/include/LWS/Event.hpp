@@ -38,6 +38,13 @@ namespace LWS
     struct EventWindowDestroyed
     {
     };
+    /// The platform dismissed a popup on its own (Wayland popup_done: click outside its grab, parent
+    /// unmapped, or another popup took the grab). Native resources are already released; listeners
+    /// run on a window that is terminal afterwards, and EventWindowDestroyed follows. Windows never
+    /// emits this event because popup dismissal there is application-owned.
+    struct EventPopupDismissed
+    {
+    };
     struct EventFocusGained
     {
     };
@@ -98,7 +105,8 @@ namespace LWS
     using AnyEvent = std::variant<EventClientAreaSizeChanged, EventMove, EventCloseRequested, EventWindowDestroyed,
                                   EventFocusGained, EventFocusLost, EventShowStateChanged, EventKeyDown, EventKeyUp,
                                   EventMouseMove, EventMouseButton, EventMouseWheel, EventPaint, EventDragDropFile,
-                                  EventWindowDestroying, EventTextInput, EventMouseLeave, EventMouseCaptureLost>;
+                                  EventWindowDestroying, EventTextInput, EventMouseLeave, EventMouseCaptureLost,
+                                  EventPopupDismissed>;
 
     enum class EventResponse
     {

@@ -1,5 +1,6 @@
 #include <LWSUI/UIHost.hpp>
 #include "ContextMenu.hpp"
+#include "MenuHost.hpp"
 #include <LWS/Platform.hpp>
 #include <algorithm>
 #ifdef LWS_HAS_WIN32_BACKEND
@@ -40,11 +41,14 @@ namespace LWSUI
         if (!listener)
             throw std::runtime_error("Cannot register UI window listener");
         listener_ = std::move(*listener);
+        menuSession_ = std::make_unique<internal::MenuSession>(*this);
     }
     UIHost::~UIHost()
     {
         *lifetime_ = nullptr;
         listener_ = {};
+        CloseMainMenu();
+        menuSession_.reset();
         CloseContextMenu();
         popupClosed_ = {};
         popupOwner_ = {};
@@ -57,6 +61,7 @@ namespace LWSUI
     }
     void UIHost::SetRoot(std::unique_ptr<Control> root)
     {
+        CloseMainMenu();
         ClosePopup(EditPhase::Cancel);
         if (root_)
         {
@@ -67,6 +72,77 @@ namespace LWSUI
         if (root_)
             root_->Attach(this, nullptr);
         Invalidate(true);
+    }
+    void UIHost::SetMainMenu(std::unique_ptr<MenuBar> menu, MenuDock dock)
+    {
+        CloseMainMenu();
+        CloseContextMenu();
+        if (menuBar_)
+            menuBar_->Attach(nullptr, nullptr);
+        menuBar_ = std::move(menu);
+        dock_ = dock;
+        if (menuBar_)
+        {
+            menuBar_->Attach(this, nullptr);
+            menuBar_->stretch = dock_ != MenuDock::Floating;
+            menuBar_->floating = dock_ == MenuDock::Floating;
+        }
+        Invalidate(true);
+    }
+    void UIHost::SetMainMenuDock(MenuDock dock)
+    {
+        if (dock_ == dock)
+            return;
+        CloseMainMenu();
+        dock_ = dock;
+        if (menuBar_)
+        {
+            menuBar_->stretch = dock_ != MenuDock::Floating;
+            menuBar_->floating = dock_ == MenuDock::Floating;
+        }
+        Invalidate(true);
+    }
+    void UIHost::SetMainMenuPosition(float x, float y)
+    {
+        floatingX_ = x;
+        floatingY_ = y;
+        if (dock_ == MenuDock::Floating)
+        {
+            CloseMainMenu();
+            Invalidate(true);
+        }
+    }
+    void UIHost::ClearMainMenu()
+    {
+        CloseMainMenu();
+        if (menuBar_)
+            menuBar_->Attach(nullptr, nullptr);
+        menuBar_.reset();
+        Invalidate(true);
+    }
+    bool UIHost::HasOpenMenu() const
+    {
+        return menuSession_ && (menuSession_->Active() || menuSession_->HasLevels());
+    }
+    void UIHost::CloseMainMenu()
+    {
+        if (menuSession_)
+            menuSession_->Close();
+    }
+    void UIHost::AttachPanel(Control& panel)
+    {
+        panel.Attach(this, nullptr);
+    }
+    void UIHost::DetachPanel(Control& panel)
+    {
+        panel.Attach(nullptr, nullptr);
+    }
+    Theme UIHost::MenuPanelStyle() const
+    {
+        auto style = PopupStyle();
+        if (!popupStyle_)
+            style.background = theme_.popupSurface;
+        return style;
     }
     void UIHost::Post(ControlHandle owner, std::function<void(Control&)> callback)
     {
@@ -146,10 +222,11 @@ namespace LWSUI
             if (layoutDirty_)
             {
                 layoutDirty_ = false;
+                LayoutMainMenu(float(size.x), float(size.y));
                 if (root_)
                 {
-                    root_->Measure({float(size.x), float(size.y)});
-                    root_->Arrange({0, 0, float(size.x), float(size.y)});
+                    root_->Measure({rootBounds_.width, rootBounds_.height});
+                    root_->Arrange(rootBounds_);
                 }
                 if (popup_)
                 {
@@ -169,6 +246,8 @@ namespace LWSUI
                 canvas_.Fill(0, 0, float(size.x), float(size.y), theme_.background);
                 if (root_)
                     root_->Render(canvas_);
+                if (menuBar_)
+                    menuBar_->Render(canvas_);
                 if (popup_)
                 {
                     if (popupModal_)
@@ -191,6 +270,8 @@ namespace LWSUI
                 else if (result != LWS::Result::Success)
                     ReportError("Cannot present UI bitmap");
             }
+            if (menuSession_)
+                menuSession_->Update();
         }
         catch (const std::exception& e)
         {
@@ -201,6 +282,41 @@ namespace LWSUI
         updating_ = false;
         if (paintDirty_ || layoutDirty_ || !deferred_.empty())
             ScheduleUpdate();
+    }
+    void UIHost::LayoutMainMenu(float width, float height)
+    {
+        rootBounds_ = {0, 0, width, height};
+        barBounds_ = {};
+        if (!menuBar_)
+            return;
+        const bool horizontal = menuBar_->orientation == Orientation::Horizontal;
+        const Size measured = menuBar_->Measure({width, height});
+        const float thickness = std::max(0.f, horizontal ? measured.height : measured.width);
+        const float span = std::max(0.f, horizontal ? measured.width : measured.height);
+        switch (dock_)
+        {
+            case MenuDock::Top:
+                barBounds_ = {0, 0, span, thickness};
+                rootBounds_ = {0, thickness, width, std::max(0.f, height - thickness)};
+                break;
+            case MenuDock::Bottom:
+                barBounds_ = {0, std::max(0.f, height - thickness), span, thickness};
+                rootBounds_ = {0, 0, width, std::max(0.f, height - thickness)};
+                break;
+            case MenuDock::Left:
+                barBounds_ = {0, 0, thickness, span};
+                rootBounds_ = {thickness, 0, std::max(0.f, width - thickness), height};
+                break;
+            case MenuDock::Right:
+                barBounds_ = {std::max(0.f, width - thickness), 0, thickness, span};
+                rootBounds_ = {0, 0, std::max(0.f, width - thickness), height};
+                break;
+            default:
+                barBounds_ = {std::clamp(floatingX_, 0.f, std::max(0.f, width - span)),
+                              std::clamp(floatingY_, 0.f, std::max(0.f, height - thickness)), span, thickness};
+                break;
+        }
+        menuBar_->Arrange(barBounds_);
     }
     bool UIHost::HasFocusWithin(const Control& control) const
     {
@@ -522,6 +638,9 @@ namespace LWSUI
         }
         if (input.kind == InputKind::Down)
             suppressPointerRelease_ = false;
+        // The menu session sees input first: it owns the bar, the dropdown chain and Escape/Alt chains.
+        if (menuSession_ && menuSession_->OnInput(input))
+            return true;
         if (contextMenu_)
             return RouteContextMenu(input);
         if ((input.kind == InputKind::Down || input.kind == InputKind::Up) && input.button != LWS::MouseButton::Left)
@@ -627,60 +746,35 @@ namespace LWSUI
     {
         if (std::holds_alternative<LWS::EventWindowDestroying>(event))
         {
+            CloseMainMenu();
             Finish(EditPhase::Cancel);
             deferred_.clear();
             capture_ = {};
             focus_ = {};
             return false;
         }
-        Input input{InputKind::Move};
-        if (auto* e = std::get_if<LWS::EventMouseMove>(&event))
+        if (const auto input = internal::InputFromEvent(event, window_.GetPlatformContext()))
+            return Route(*input);
+        if (std::holds_alternative<LWS::EventClientAreaSizeChanged>(event))
         {
-            input.x = float(e->position.x);
-            input.y = float(e->position.y);
-        }
-        else if (auto* e = std::get_if<LWS::EventMouseButton>(&event))
-        {
-            input.button = e->button;
-            input.kind = e->pressed ? InputKind::Down : InputKind::Up;
-            input.x = float(e->position.x);
-            input.y = float(e->position.y);
-        }
-        else if (auto* e = std::get_if<LWS::EventMouseWheel>(&event))
-        {
-            input.kind = InputKind::Wheel;
-            input.wheel = float(e->steps());
-            input.x = float(e->position.x);
-            input.y = float(e->position.y);
-        }
-        else if (auto* e = std::get_if<LWS::EventKeyDown>(&event))
-        {
-            input.kind = InputKind::KeyDown;
-            input.key = e->key;
-            input.repeat = e->repeat;
-        }
-        else if (auto* e = std::get_if<LWS::EventKeyUp>(&event))
-        {
-            input.kind = InputKind::KeyUp;
-            input.key = e->key;
-        }
-        else if (auto* e = std::get_if<LWS::EventTextInput>(&event))
-        {
-            input.kind = InputKind::Text;
-            input.text = e->text;
-        }
-        else if (std::holds_alternative<LWS::EventClientAreaSizeChanged>(event))
-        {
+            CloseMainMenu();
             ClosePopup(EditPhase::Cancel);
             Invalidate(true);
             return false;
         }
-        else if (std::holds_alternative<LWS::EventPaint>(event))
+        // Dropdowns are anchored to the owner's client geometry but never follow it, so a move would
+        // strand them on screen; a caption drag reports no client input, only the move itself.
+        if (std::holds_alternative<LWS::EventMove>(event))
+        {
+            CloseMainMenu();
+            return false;
+        }
+        if (std::holds_alternative<LWS::EventPaint>(event))
         {
             Invalidate();
             return false;
         }
-        else if (std::holds_alternative<LWS::EventMouseCaptureLost>(event))
+        if (std::holds_alternative<LWS::EventMouseCaptureLost>(event))
         {
             if (auto* captured = capture_.Get())
             {
@@ -689,15 +783,16 @@ namespace LWSUI
             }
             return false;
         }
-        else if (std::holds_alternative<LWS::EventFocusGained>(event))
+        if (std::holds_alternative<LWS::EventFocusGained>(event))
         {
             if (auto* focused = focus_.Get())
                 focused->Dispatch({InputKind::Focus});
             Invalidate();
             return false;
         }
-        else if (std::holds_alternative<LWS::EventFocusLost>(event))
+        if (std::holds_alternative<LWS::EventFocusLost>(event))
         {
+            CloseMainMenu();
             CloseContextMenu();
             if (auto* captured = capture_.Get())
             {
@@ -708,16 +803,11 @@ namespace LWSUI
                 current->Dispatch({InputKind::Blur});
             return false;
         }
-        else if (std::holds_alternative<LWS::EventMouseLeave>(event))
+        if (std::holds_alternative<LWS::EventMouseLeave>(event))
         {
             Hover(nullptr);
             return false;
         }
-        else
-            return false;
-        input.control = window_.GetPlatformContext().IsKeyPressed(LWS::KeyCode::Control).value_or(false);
-        input.shift = window_.GetPlatformContext().IsKeyPressed(LWS::KeyCode::Shift).value_or(false);
-        input.alt = window_.GetPlatformContext().IsKeyPressed(LWS::KeyCode::Alt).value_or(false);
-        return Route(input);
+        return false;
     }
 }  // namespace LWSUI

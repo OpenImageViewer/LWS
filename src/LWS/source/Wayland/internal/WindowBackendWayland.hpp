@@ -67,6 +67,7 @@ namespace LWS
         bool isMouseInClientRect() const override;
         Point getMousePosition() const override;
         void setLockMouseToWindowMode(internal::LockMouseToWindowMode mode) override;
+        Result beginWindowMove();
         Result setPointerLocked(bool locked) override;
         void setCursor(std::shared_ptr<internal::ICursorBackend> cursor) override;
         void setParent(internal::IWindowBackend* parent) override;
@@ -125,6 +126,9 @@ namespace LWS
         [[nodiscard]] internal::WaylandCaptionMode captionMode() const;
         [[nodiscard]] Result createSubsurface(NativeState& nativeState);
         [[nodiscard]] Point contentOffset() const;
+        [[nodiscard]] bool isPopup() const { return fPopupPlacement.has_value(); }
+        void grabPopup();
+        void handlePopupDismissed();
         [[nodiscard]] internal::WaylandDecorationMode decorationMode() const;
         [[nodiscard]] internal::WaylandFrameHit frameHit(Point position,
                                                          internal::WaylandSurfaceRole surfaceRole) const;
@@ -147,6 +151,8 @@ namespace LWS
         std::string fAppId;
         Point fPosition{};
         Size fSize = {800, 600};
+        // Popups anchor to an xdg_surface role of the parent and never take keyboard focus.
+        std::optional<PopupPlacement> fPopupPlacement;
         std::optional<Size> fRestoredClientSize;
         Size fMinSize = {0, 0};
         Size fMaxSize = {0, 0};

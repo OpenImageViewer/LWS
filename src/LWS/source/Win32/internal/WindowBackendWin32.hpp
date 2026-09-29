@@ -4,6 +4,8 @@
     #include <Windows.h>
     #include <LWS/Bitmap.hpp>
 
+    #include <optional>
+
     #include <LWS/source/internal/Backends.hpp>
     #include <LWS/Win32/EventWin32.hpp>
 
@@ -80,6 +82,8 @@ namespace LWS
         void updateBackgroundBrush();
         void dispatchClientAreaSizeChanged(Size framebufferSize);
         [[nodiscard]] Size getWindowSize() const;
+        [[nodiscard]] Point resolvePopupPosition(Size outerSize) const;
+        void applyPopupPlacement();
         void setWindowed();
         void setFullScreen(bool multiMonitor);
         LRESULT getCorner(POINTS points) const;
@@ -105,6 +109,9 @@ namespace LWS
         bool fVisible = false;
         bool fAlwaysOnTop = false;
         bool fTransparent = false;
+        // Popups are owned top-level windows that never activate; geometry is resolved from the anchor.
+        bool fIsPopup = false;
+        std::optional<PopupPlacement> fPopupPlacement;
         WindowStyle fWindowStyles = WindowStyle::NoStyle;
         WindowShowState fDisplayState = WindowShowState::Restored;
         internal::IWindowBackend* fParentBackend = nullptr;

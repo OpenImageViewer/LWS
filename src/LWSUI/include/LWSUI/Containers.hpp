@@ -2,11 +2,6 @@
 #include <LWSUI/Primitives.hpp>
 namespace LWSUI
 {
-    enum class Orientation
-    {
-        Vertical,
-        Horizontal
-    };
     class StackPanel : public Container
     {
       public:

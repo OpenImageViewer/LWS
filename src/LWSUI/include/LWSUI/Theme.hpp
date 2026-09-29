@@ -47,6 +47,8 @@ namespace LWSUI
         float treeRowInset = 96.f / 7, treeLineInset = 176.f / 7, treeRowPadding = 48.f / 7;
         float editorMinLeft = 1600.f / 7, editorFraction = .47f, resetWidth = 544.f / 7;
         float menuRowHeight = 224.f / 7, menuMaxRows = 8, menuPadding = 40.f / 7;
+        float menuBarHeight = 320.f / 7, menuBarPadding = 96.f / 7, menuArrowWidth = 128.f / 7;
+        int menuHoverDelayMs = 400;
         float popupWidth = 720, popupHeight = 600, popupPadding = 160.f / 7;
         float popupGap = 96.f / 7, popupPreviewHeight = 384.f / 7;
         float popupChannelHeight = 192.f / 7, popupButtonWidth = 640.f / 7;

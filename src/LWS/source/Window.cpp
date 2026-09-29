@@ -3,6 +3,9 @@
 #include "internal/ListenerState.hpp"
 #include "internal/PlatformBackend.hpp"
 #include "internal/WindowBackendAccess.hpp"
+#ifdef LWS_PLATFORM_WAYLAND
+    #include "Wayland/WindowBackendWayland.hpp"
+#endif
 
 #include <LWS/source/internal/Backends.hpp>
 
@@ -152,6 +155,17 @@ namespace LWS
             if (!config.parent->IsCreated())
                 return Result::InvalidState;
         }
+        if (config.popupPlacement.has_value())
+        {
+            const PopupPlacement& popup = *config.popupPlacement;
+            if (config.parent == nullptr || config.position.has_value() || config.styles != WindowStyle::NoStyle ||
+                config.showState != WindowShowState::Restored || popup.size.x <= 0 || popup.size.y <= 0 ||
+                config.alwaysOnTop || config.transparent || config.dragAndDropEnabled ||
+                config.clientSizeLimits != ClientSizeLimits{})
+            {
+                return Result::InvalidArgument;
+            }
+        }
         if ((config.alwaysOnTop && !platform_.Supports(PlatformFeature::AlwaysOnTop).value_or(false)) ||
             (platform_.GetBackendId() == BackendId::Wayland && config.showState == WindowShowState::Minimized))
             return Result::NotSupported;
@@ -160,7 +174,8 @@ namespace LWS
         impl_->backend->setParent(config.parent != nullptr ? config.parent->impl_->backend.get() : nullptr);
         const internal::NativeWindowConfig nativeConfig{
             .position = config.position.value_or(Point{100, 100}),
-            .size = static_cast<Size>(config.clientSize),
+            .size = static_cast<Size>(
+                config.popupPlacement.has_value() ? config.popupPlacement->size : config.clientSize),
             .title = config.title,
             .styles = config.styles.get(),
             .displayState = config.showState,
@@ -170,6 +185,7 @@ namespace LWS
             .transparent = config.transparent,
             .minSize = static_cast<Size>(config.clientSizeLimits.minimum),
             .maxSize = static_cast<Size>(config.clientSizeLimits.maximum),
+            .popup = config.popupPlacement,
         };
         impl_->backend->setBackgroundColor(config.backgroundColor);
         Result result = Result::Success;
@@ -250,6 +266,12 @@ namespace LWS
         return platform_.IsUsable() && impl_->state == Impl::State::Created;
     }
 
+    bool Window::IsPopup() const
+    {
+        platform_.AssertCurrentThread();
+        return impl_->config.popupPlacement.has_value();
+    }
+
     PlatformContext& Window::GetPlatformContext()
     {
         platform_.AssertCurrentThread();
@@ -306,8 +328,10 @@ namespace LWS
         ClientAreaMetrics metrics = impl_->clientArea;
         if (!impl_->configured || !internal::WindowBackendAccess::HasNativeHandle(*this))
         {
-            const Size logical = IsCreated() ? impl_->backend->getClientSize()
-                                             : static_cast<Size>(impl_->config.clientSize);
+            const LogicalSize configuredSize = impl_->config.popupPlacement.has_value()
+                                                   ? impl_->config.popupPlacement->size
+                                                   : impl_->config.clientSize;
+            const Size logical = IsCreated() ? impl_->backend->getClientSize() : static_cast<Size>(configuredSize);
             metrics = {{logical.x, logical.y}, std::nullopt};
         }
         return metrics;
@@ -321,7 +345,11 @@ namespace LWS
         if ((!request.position.has_value() && !request.clientSize.has_value()) ||
             (request.clientSize.has_value() && (request.clientSize->x <= 0 || request.clientSize->y <= 0)))
             return Result::InvalidArgument;
-        if (request.position.has_value() && platform_.GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
+        const bool popup = impl_->config.popupPlacement.has_value();
+        if (popup && platform_.GetBackendId() == BackendId::Wayland)
+            return Result::NotSupported;
+        if (!popup && request.position.has_value() && platform_.GetBackendId() == BackendId::Wayland &&
+            impl_->parent == nullptr)
             return Result::NotSupported;
 
         if (request.position.has_value() && request.clientSize.has_value())
@@ -336,10 +364,21 @@ namespace LWS
         {
             impl_->backend->setSize(static_cast<Size>(*request.clientSize));
         }
-        if (request.position.has_value())
-            impl_->config.position = request.position;
-        if (request.clientSize.has_value())
-            impl_->config.clientSize = *request.clientSize;
+        if (popup)
+        {
+            // A popup reports placement as an anchor and size; the resolved screen position is backend-owned.
+            if (request.position.has_value())
+                impl_->config.popupPlacement->anchor = *request.position;
+            if (request.clientSize.has_value())
+                impl_->config.popupPlacement->size = *request.clientSize;
+        }
+        else
+        {
+            if (request.position.has_value())
+                impl_->config.position = request.position;
+            if (request.clientSize.has_value())
+                impl_->config.clientSize = *request.clientSize;
+        }
         return Result::Success;
     }
 
@@ -347,7 +386,8 @@ namespace LWS
     {
         platform_.AssertCurrentThread();
         std::optional<Point> position;
-        if (platform_.GetBackendId() != BackendId::Wayland || impl_->parent != nullptr)
+        const bool popup = impl_->config.popupPlacement.has_value();
+        if (platform_.GetBackendId() != BackendId::Wayland || (impl_->parent != nullptr && !popup))
             position = IsCreated() ? std::optional(impl_->backend->getPosition()) : impl_->config.position;
         return {position, GetClientAreaMetrics().logical};
     }
@@ -357,6 +397,8 @@ namespace LWS
         platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
+        if (impl_->config.popupPlacement.has_value())
+            return Result::NotSupported;
         if (!ValidSizeLimits(limits))
             return Result::InvalidArgument;
         impl_->backend->setMinMaxSize(static_cast<Size>(limits.minimum), static_cast<Size>(limits.maximum));
@@ -382,6 +424,8 @@ namespace LWS
         platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
+        if (impl_->config.popupPlacement.has_value())
+            return Result::NotSupported;
         if (platform_.GetBackendId() == BackendId::Wayland && impl_->parent == nullptr)
             return Result::NotSupported;
 
@@ -426,6 +470,8 @@ namespace LWS
         platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
+        if (impl_->config.popupPlacement.has_value())
+            return Result::NotSupported;
         if (mode != WindowMode::Windowed && mode != WindowMode::Fullscreen && mode != WindowMode::FullscreenAllMonitors)
             return Result::InvalidArgument;
         if (mode == WindowMode::FullscreenAllMonitors && platform_.GetBackendId() == BackendId::Wayland)
@@ -452,6 +498,8 @@ namespace LWS
         platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
+        if (impl_->config.popupPlacement.has_value())
+            return Result::NotSupported;
         if (state != WindowShowState::Restored && state != WindowShowState::Maximized &&
             state != WindowShowState::Minimized)
             return Result::InvalidArgument;
@@ -502,6 +550,8 @@ namespace LWS
     {
         if (!IsCreated())
             return Result::InvalidState;
+        if (impl_->config.popupPlacement.has_value())
+            return Result::NotSupported;
         if (impl_->backend->getWindowStyles() == styles.get())
             return Result::Success;
         impl_->backend->setWindowStyles(styles.get());
@@ -518,6 +568,8 @@ namespace LWS
     {
         if (!IsCreated())
             return Result::InvalidState;
+        if (impl_->config.popupPlacement.has_value())
+            return Result::NotSupported;
         const auto supported = platform_.Supports(PlatformFeature::AlwaysOnTop);
         if (!supported.has_value())
             return supported.error();
@@ -537,6 +589,8 @@ namespace LWS
     {
         if (!IsCreated())
             return Result::InvalidState;
+        if (impl_->config.popupPlacement.has_value())
+            return Result::NotSupported;
         impl_->backend->setTransparent(transparent);
         impl_->config.transparent = transparent;
         return Result::Success;
@@ -574,6 +628,8 @@ namespace LWS
     {
         if (!IsCreated())
             return Result::InvalidState;
+        if (impl_->config.popupPlacement.has_value())
+            return Result::NotSupported;
         const Result result = impl_->backend->enableDragAndDrop(enable);
         if (result == Result::Success)
             impl_->config.dragAndDropEnabled = enable;
@@ -600,12 +656,18 @@ namespace LWS
             return Result::InvalidState;
         if (operation != WindowDragOperation::Move && operation != WindowDragOperation::ResizeNearest)
             return Result::InvalidArgument;
-        if (platform_.GetBackendId() != BackendId::Win32)
-            return Result::NotSupported;
-        impl_->backend->setLockMouseToWindowMode(operation == WindowDragOperation::Move
-                                                     ? internal::LockMouseToWindowMode::LockMove
-                                                     : internal::LockMouseToWindowMode::LockResize);
-        return Result::Success;
+        if (platform_.GetBackendId() == BackendId::Win32)
+        {
+            impl_->backend->setLockMouseToWindowMode(operation == WindowDragOperation::Move
+                                                         ? internal::LockMouseToWindowMode::LockMove
+                                                         : internal::LockMouseToWindowMode::LockResize);
+            return Result::Success;
+        }
+#ifdef LWS_PLATFORM_WAYLAND
+        if (platform_.GetBackendId() == BackendId::Wayland && operation == WindowDragOperation::Move)
+            return static_cast<WindowBackendWayland*>(impl_->backend.get())->beginWindowMove();
+#endif
+        return Result::NotSupported;
     }
 
     Result Window::SetMouseCursor(Cursor cursor)

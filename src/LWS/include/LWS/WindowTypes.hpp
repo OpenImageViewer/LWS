@@ -85,6 +85,33 @@ namespace LWS
         ResizeNearest
     };
 
+    /// Direction a popup extends from its anchor point.
+    /// Each value names the extension direction and thereby the popup corner placed at the anchor: DownRight
+    /// extends toward the bottom right and pins the top-left corner, while UpLeft pins the bottom-right corner.
+    enum class PopupGravity
+    {
+        DownRight,
+        DownLeft,
+        UpRight,
+        UpLeft
+    };
+
+    /// Parent-relative placement for popup windows, in logical units of the parent's client area.
+    /// offset moves the anchor before gravity is applied. adjustToScreen lets the backend flip or
+    /// slide the popup to stay inside the monitor work area; the resulting position is resolved by
+    /// the backend and is not required to match the requested anchor.
+    struct PopupPlacement
+    {
+        Point anchor;
+        PopupGravity gravity{PopupGravity::DownRight};
+        Point offset{};
+        /// Requested popup client size; both dimensions must be positive.
+        LogicalSize size;
+        bool adjustToScreen{true};
+
+        bool operator==(const PopupPlacement&) const = default;
+    };
+
     struct WindowPlacement
     {
         std::optional<Point> position;
@@ -150,12 +177,14 @@ namespace LWS
 
     struct WindowConfig
     {
+        /// Popup windows require a created parent; child windows use the parent's coordinate space for
+        /// placement, anchoring, and native lifetime ordering.
         Window* parent = nullptr;
         string_type title;
         std::optional<Point> position;
         /// Initial drawable client-area size in logical units, excluding native outer decorations.
         LogicalSize clientSize{800, 600};
-        WindowStyleFlags styles;
+        WindowStyleFlags styles{};
         WindowShowState showState{WindowShowState::Restored};
         LLUtils::Color backgroundColor{};
         bool visible{false};
@@ -164,5 +193,12 @@ namespace LWS
         bool transparent{false};
         bool dragAndDropEnabled{false};
         ClientSizeLimits clientSizeLimits;
+        /// When set, creates a borderless popup window that never activates and is placed relative
+        /// to the parent's client area. A popup requires parent and rejects explicit position, window
+        /// styles, non-restored show state, always-on-top, transparency, drag and drop, and size
+        /// limits; it uses its requested size, and the backend may adjust the position to fit the
+        /// monitor work area. On Wayland the compositor owns dismissal and EventPopupDismissed fires
+        /// when it dismisses the popup.
+        std::optional<PopupPlacement> popupPlacement;
     };
 }  // namespace LWS

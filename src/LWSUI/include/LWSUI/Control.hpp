@@ -17,6 +17,11 @@ namespace LWSUI
         float x = 0, y = 0, width = 0, height = 0;
         bool Contains(float px, float py) const { return px >= x && py >= y && px < x + width && py < y + height; }
     };
+    enum class Orientation
+    {
+        Vertical,
+        Horizontal
+    };
     enum class EditPhase
     {
         Preview,

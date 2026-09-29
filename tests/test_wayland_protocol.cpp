@@ -63,6 +63,15 @@ namespace
             std::vector<wl_resource*> heldBuffers;
             std::vector<uint32_t> submittedBuffers;
             std::vector<std::string> stateRequests;
+            wl_resource* popup{};
+            wl_resource* popupParent{};
+            LWS::Size popupSize{};
+            int32_t popupAnchorRectX{}, popupAnchorRectY{}, popupAnchorRectWidth{}, popupAnchorRectHeight{};
+            uint32_t popupAnchor{}, popupGravity{}, popupConstraintAdjustment{};
+            int32_t popupOffsetX{}, popupOffsetY{};
+            unsigned popupGrabs{};
+            uint32_t popupGrabSerial{}, popupGrabSeat{};
+            bool popupDestroyed{};
         };
         ProtocolServer(bool fractional = false, bool hostFrame = false, bool seatFeatures = false)
         {
@@ -183,6 +192,18 @@ namespace
         {
             wl_pointer_send_leave(seats.at(seat)->pointers.at(0), serial, surfaces.at(surface)->surface);
         }
+        void Button(size_t seat, uint32_t serial)
+        {
+            // A press without focus is enough to publish the serial a popup grab needs.
+            wl_pointer_send_button(seats.at(seat)->pointers.at(0), serial, 100, 0x110 /* BTN_LEFT */,
+                                   WL_POINTER_BUTTON_STATE_PRESSED);
+        }
+        void DismissPopup(uint32_t surface)
+        {
+            auto& popup = *surfaces.at(surface);
+            if (popup.popup != nullptr)
+                xdg_popup_send_popup_done(popup.popup);
+        }
         void EnterOutput(uint32_t surface) { wl_surface_send_enter(surfaces.at(surface)->surface, outputs_.at(0)); }
         void Scale(int scale)
         {
@@ -250,11 +271,20 @@ namespace
         }
         std::map<uint32_t, std::unique_ptr<Surface>> surfaces;
         bool configureOnCommit{true};
+        std::optional<LWS::Size> popupConfigureSize;
         unsigned cursorRequests{};
         uint32_t cursorSerial{};
         bool cursorHidden{};
 
       private:
+
+        struct Positioner
+        {
+            int32_t width{}, height{};
+            int32_t anchorX{}, anchorY{}, anchorWidth{}, anchorHeight{};
+            uint32_t anchor{}, gravity{}, constraintAdjustment{};
+            int32_t offsetX{}, offsetY{};
+        };
 
         static void Destroy(wl_client*, wl_resource* resource) { wl_resource_destroy(resource); }
         static void BindPointerConstraints(wl_client* client, void*, uint32_t version, uint32_t id)
@@ -474,6 +504,15 @@ namespace
                                 xdg_toplevel_send_configure(surface.toplevel, 0, 0, &states);
                                 xdg_surface_send_configure(surface.shell, 1);
                             }
+                            if (surface.popup && !surface.configured && surface.server->configureOnCommit)
+                            {
+                                surface.configured = true;
+                                const LWS::Size size =
+                                    surface.server->popupConfigureSize.value_or(surface.popupSize);
+                                xdg_popup_send_configure(surface.popup, surface.popupAnchorRectX,
+                                                         surface.popupAnchorRectY, size.x, size.y);
+                                xdg_surface_send_configure(surface.shell, 1);
+                            }
                             if (surface.buffer)
                             {
                                 surface.submittedBuffers.push_back(wl_resource_get_id(surface.buffer));
@@ -514,7 +553,56 @@ namespace
             auto* resource = wl_resource_create(client, &xdg_wm_base_interface, version, id);
             static const struct xdg_wm_base_interface impl{
                 .destroy = Destroy,
-                .create_positioner = nullptr,
+                .create_positioner =
+                    [](wl_client* client, wl_resource*, uint32_t id)
+                {
+                    auto* positioner = wl_resource_create(client, &xdg_positioner_interface, 1, id);
+                    auto* state = new Positioner{};
+                    static const struct xdg_positioner_interface placement{
+                        .destroy = Destroy,
+                        .set_size =
+                            [](wl_client*, wl_resource* resource, int32_t width, int32_t height)
+                        {
+                            auto& state = *static_cast<Positioner*>(wl_resource_get_user_data(resource));
+                            state.width = width;
+                            state.height = height;
+                        },
+                        .set_anchor_rect =
+                            [](wl_client*, wl_resource* resource, int32_t x, int32_t y, int32_t width, int32_t height)
+                        {
+                            auto& state = *static_cast<Positioner*>(wl_resource_get_user_data(resource));
+                            state.anchorX = x;
+                            state.anchorY = y;
+                            state.anchorWidth = width;
+                            state.anchorHeight = height;
+                        },
+                        .set_anchor =
+                            [](wl_client*, wl_resource* resource, uint32_t anchor)
+                        { static_cast<Positioner*>(wl_resource_get_user_data(resource))->anchor = anchor; },
+                        .set_gravity =
+                            [](wl_client*, wl_resource* resource, uint32_t gravity)
+                        { static_cast<Positioner*>(wl_resource_get_user_data(resource))->gravity = gravity; },
+                        .set_constraint_adjustment =
+                            [](wl_client*, wl_resource* resource, uint32_t adjustment)
+                        {
+                            static_cast<Positioner*>(wl_resource_get_user_data(resource))->constraintAdjustment =
+                                adjustment;
+                        },
+                        .set_offset =
+                            [](wl_client*, wl_resource* resource, int32_t x, int32_t y)
+                        {
+                            auto& state = *static_cast<Positioner*>(wl_resource_get_user_data(resource));
+                            state.offsetX = x;
+                            state.offsetY = y;
+                        },
+                        .set_reactive = nullptr,
+                        .set_parent_size = nullptr,
+                        .set_parent_configure = nullptr};
+                    wl_resource_set_implementation(
+                        positioner, &placement, state,
+                        [](wl_resource* resource)
+                        { delete static_cast<Positioner*>(wl_resource_get_user_data(resource)); });
+                },
                 .get_xdg_surface =
                     [](wl_client* client, wl_resource*, uint32_t id, wl_resource* native)
                 {
@@ -575,7 +663,46 @@ namespace
                                 .set_minimized = [](wl_client*, wl_resource*) {}};
                             wl_resource_set_implementation(surface.toplevel, &top, &surface, nullptr);
                         },
-                        .get_popup = nullptr,
+                        .get_popup =
+                            [](wl_client* client, wl_resource* resource, uint32_t id, wl_resource* parent,
+                               wl_resource* positioner)
+                        {
+                            auto& surface = *static_cast<Surface*>(wl_resource_get_user_data(resource));
+                            const auto& placement = *static_cast<Positioner*>(wl_resource_get_user_data(positioner));
+                            surface.popupParent = parent;
+                            surface.popupSize = {placement.width, placement.height};
+                            surface.popupAnchorRectX = placement.anchorX;
+                            surface.popupAnchorRectY = placement.anchorY;
+                            surface.popupAnchorRectWidth = placement.anchorWidth;
+                            surface.popupAnchorRectHeight = placement.anchorHeight;
+                            surface.popupAnchor = placement.anchor;
+                            surface.popupGravity = placement.gravity;
+                            surface.popupConstraintAdjustment = placement.constraintAdjustment;
+                            surface.popupOffsetX = placement.offsetX;
+                            surface.popupOffsetY = placement.offsetY;
+                            surface.configured = false;
+                            surface.popup = wl_resource_create(client, &xdg_popup_interface, 1, id);
+                            static const struct xdg_popup_interface popup{
+                                .destroy =
+                                    [](wl_client*, wl_resource* resource)
+                                {
+                                    auto& surface = *static_cast<Surface*>(wl_resource_get_user_data(resource));
+                                    surface.popup = nullptr;
+                                    surface.popupDestroyed = true;
+                                    surface.configured = false;
+                                    wl_resource_destroy(resource);
+                                },
+                                .grab =
+                                    [](wl_client*, wl_resource* resource, wl_resource* seat, uint32_t serial)
+                                {
+                                    auto& surface = *static_cast<Surface*>(wl_resource_get_user_data(resource));
+                                    ++surface.popupGrabs;
+                                    surface.popupGrabSerial = serial;
+                                    surface.popupGrabSeat = seat != nullptr ? wl_resource_get_id(seat) : 0;
+                                },
+                                .reposition = nullptr};
+                            wl_resource_set_implementation(surface.popup, &popup, &surface, nullptr);
+                        },
                         .set_window_geometry = [](wl_client*, wl_resource*, int32_t, int32_t, int32_t, int32_t) {},
                         .ack_configure = [](wl_client*, wl_resource*, uint32_t) {}};
                     wl_resource_set_implementation(surface.shell, &shell, &surface, nullptr);
@@ -1729,5 +1856,235 @@ TEST_CASE("Wayland background and caption paints reuse only released buffers", "
     REQUIRE(window.Destroy() == LWS::Result::Success);
     server.Settle(context);
     REQUIRE(context.IsUsable());
+}
+
+TEST_CASE("Wayland popup positioner maps gravity, anchor, and offset", "[wayland][protocol][popup]")
+{
+    ProtocolServer server;
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window parent(context);
+    auto parentConfig = Config();
+    parentConfig.visible = true;
+    REQUIRE(parent.Create(parentConfig) == LWS::Result::Success);
+    const auto parentSurface = LWS::Wayland::GetSurface(parent);
+    REQUIRE(parentSurface.has_value());
+    const auto parentId = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*parentSurface));
+    server.Settle(context);
+    LWS::Window popup(context);
+    auto config = Config();
+    config.parent = &parent;
+    config.visible = true;
+    config.popupPlacement = LWS::PopupPlacement{.anchor = {40, 30},
+                                                .gravity = LWS::PopupGravity::DownLeft,
+                                                .offset = {5, -7},
+                                                .size = {200, 150}};
+    REQUIRE(popup.Create(config) == LWS::Result::Success);
+    REQUIRE(popup.IsPopup());
+    const auto popupSurface = LWS::Wayland::GetSurface(popup);
+    REQUIRE(popupSurface.has_value());
+    const auto popupId = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*popupSurface));
+    server.Settle(context);
+    wl_resource* popupParent{};
+    wl_resource* parentShell{};
+    LWS::Size popupSize{};
+    int32_t anchorX{}, anchorY{}, anchorWidth{}, anchorHeight{};
+    uint32_t anchor{}, gravity{}, adjustment{};
+    int32_t offsetX{}, offsetY{};
+    server.Invoke(
+        [&]
+        {
+            const auto& surface = *server.surfaces.at(popupId);
+            popupParent = surface.popupParent;
+            parentShell = server.surfaces.at(parentId)->shell;
+            popupSize = surface.popupSize;
+            anchorX = surface.popupAnchorRectX;
+            anchorY = surface.popupAnchorRectY;
+            anchorWidth = surface.popupAnchorRectWidth;
+            anchorHeight = surface.popupAnchorRectHeight;
+            anchor = surface.popupAnchor;
+            gravity = surface.popupGravity;
+            adjustment = surface.popupConstraintAdjustment;
+            offsetX = surface.popupOffsetX;
+            offsetY = surface.popupOffsetY;
+        });
+    REQUIRE(popupParent == parentShell);
+    REQUIRE(popupSize == LWS::Size{200, 150});
+    REQUIRE(anchorX == 40);
+    REQUIRE(anchorY == 30);
+    REQUIRE(anchorWidth == 1);
+    REQUIRE(anchorHeight == 1);
+    REQUIRE(anchor == XDG_POSITIONER_ANCHOR_TOP_LEFT);
+    REQUIRE(gravity == XDG_POSITIONER_GRAVITY_BOTTOM_LEFT);
+    REQUIRE(offsetX == 5);
+    REQUIRE(offsetY == -7);
+    REQUIRE(adjustment == (XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X |
+                           XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y |
+                           XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_X |
+                           XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y));
+    REQUIRE(popup.IsConfigured());
+    REQUIRE(popup.GetClientAreaMetrics().logical == LWS::LogicalSize{200, 150});
+    REQUIRE(popup.GetClientAreaMetrics().pixels == LWS::PixelSize{200, 150});
+    REQUIRE(popup.RequestPlacement({.clientSize = LWS::LogicalSize{300, 200}}) == LWS::Result::NotSupported);
+}
+
+TEST_CASE("Wayland popup adopts compositor configure sizes and restates them on reopen",
+          "[wayland][protocol][popup]")
+{
+    ProtocolServer server;
+    server.Invoke([&] { server.popupConfigureSize = LWS::Size{260, 190}; });
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window parent(context);
+    auto parentConfig = Config();
+    parentConfig.visible = true;
+    REQUIRE(parent.Create(parentConfig) == LWS::Result::Success);
+    server.Settle(context);
+    LWS::Window popup(context);
+    auto config = Config();
+    config.parent = &parent;
+    config.visible = true;
+    config.popupPlacement = LWS::PopupPlacement{.anchor = {10, 12}, .size = {200, 150}};
+    REQUIRE(popup.Create(config) == LWS::Result::Success);
+    const auto popupSurface = LWS::Wayland::GetSurface(popup);
+    REQUIRE(popupSurface.has_value());
+    const auto popupId = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*popupSurface));
+    server.Settle(context);
+    LWS::Size requested{};
+    server.Invoke([&] { requested = server.surfaces.at(popupId)->popupSize; });
+    REQUIRE(requested == LWS::Size{200, 150});
+    REQUIRE(popup.IsConfigured());
+    REQUIRE(popup.GetClientAreaMetrics().logical == LWS::LogicalSize{260, 190});
+    REQUIRE(popup.GetClientAreaMetrics().pixels == LWS::PixelSize{260, 190});
+    // Closing releases the role; reopening rebuilds the positioner from the adopted size.
+    REQUIRE(popup.SetVisible(false) == LWS::Result::Success);
+    server.Settle(context);
+    bool released{};
+    server.Invoke([&] { released = server.surfaces.at(popupId)->popupDestroyed; });
+    REQUIRE(released);
+    REQUIRE(popup.SetVisible(true) == LWS::Result::Success);
+    server.Settle(context);
+    LWS::Size reopened{};
+    server.Invoke([&] { reopened = server.surfaces.at(popupId)->popupSize; });
+    REQUIRE(reopened == LWS::Size{260, 190});
+    REQUIRE(popup.IsConfigured());
+}
+
+TEST_CASE("Wayland popup grabs the seat only after a pointer button", "[wayland][protocol][popup]")
+{
+    bool buttoned = false;
+    SECTION("button serial present")
+    {
+        buttoned = true;
+    }
+    SECTION("no button serial") {}
+    ProtocolServer server;
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window parent(context);
+    auto parentConfig = Config();
+    parentConfig.visible = true;
+    REQUIRE(parent.Create(parentConfig) == LWS::Result::Success);
+    server.Settle(context);
+    LWS::Window popup(context);
+    auto config = Config();
+    config.parent = &parent;
+    config.popupPlacement = LWS::PopupPlacement{.anchor = {5, 6}, .size = {120, 90}};
+    REQUIRE(popup.Create(config) == LWS::Result::Success);
+    const auto popupSurface = LWS::Wayland::GetSurface(popup);
+    REQUIRE(popupSurface.has_value());
+    const auto popupId = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*popupSurface));
+    if (buttoned)
+    {
+        server.Invoke([&] { server.Button(0, 777); });
+        server.Settle(context);
+    }
+    REQUIRE(popup.SetVisible(true) == LWS::Result::Success);
+    server.Settle(context);
+    unsigned grabs{};
+    uint32_t serial{}, grabSeat{}, boundSeat{};
+    server.Invoke(
+        [&]
+        {
+            const auto& surface = *server.surfaces.at(popupId);
+            grabs = surface.popupGrabs;
+            serial = surface.popupGrabSerial;
+            grabSeat = surface.popupGrabSeat;
+            boundSeat = wl_resource_get_id(server.seats.at(0)->bindings.at(0));
+        });
+    REQUIRE(grabs == (buttoned ? 1u : 0u));
+    if (buttoned)
+    {
+        REQUIRE(serial == 777u);
+        REQUIRE(grabSeat == boundSeat);
+    }
+}
+
+TEST_CASE("Wayland popup dismissal destroys the window and releases native resources",
+          "[wayland][protocol][popup]")
+{
+    ProtocolServer server;
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window parent(context);
+    auto parentConfig = Config();
+    parentConfig.visible = true;
+    REQUIRE(parent.Create(parentConfig) == LWS::Result::Success);
+    server.Settle(context);
+    LWS::Window popup(context);
+    auto config = Config();
+    config.parent = &parent;
+    config.visible = true;
+    config.popupPlacement = LWS::PopupPlacement{.anchor = {5, 6}, .size = {120, 90}};
+    REQUIRE(popup.Create(config) == LWS::Result::Success);
+    const auto popupSurface = LWS::Wayland::GetSurface(popup);
+    REQUIRE(popupSurface.has_value());
+    const auto popupId = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*popupSurface));
+    server.Settle(context);
+    REQUIRE(popup.IsConfigured());
+    unsigned dismissed{}, destroyed{};
+    auto listener = popup.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (std::holds_alternative<LWS::EventPopupDismissed>(event))
+                ++dismissed;
+            if (std::holds_alternative<LWS::EventWindowDestroyed>(event))
+                ++destroyed;
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(listener.has_value());
+    server.Invoke([&] { server.DismissPopup(popupId); });
+    server.Settle(context);
+    REQUIRE(dismissed == 1u);
+    REQUIRE(destroyed == 1u);
+    REQUIRE_FALSE(popup.IsCreated());
+    REQUIRE(parent.IsCreated());
+    bool registered{};
+    server.Invoke([&] { registered = server.surfaces.contains(popupId); });
+    REQUIRE_FALSE(registered);
+}
+
+TEST_CASE("Wayland popup requires a toplevel parent", "[wayland][protocol][popup]")
+{
+    ProtocolServer server(false, true);
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    server.Settle(context);
+    LWS::Window parent(context);
+    auto parentConfig = Config();
+    parentConfig.visible = true;
+    REQUIRE(parent.Create(parentConfig) == LWS::Result::Success);
+    LWS::Window child(context);
+    auto childConfig = Config();
+    childConfig.parent = &parent;
+    childConfig.visible = true;
+    REQUIRE(child.Create(childConfig) == LWS::Result::Success);
+    server.Settle(context);
+    LWS::Window popup(context);
+    auto config = Config();
+    config.parent = &child;
+    config.popupPlacement = LWS::PopupPlacement{.anchor = {0, 0}, .size = {100, 80}};
+    REQUIRE(popup.Create(config) == LWS::Result::NotSupported);
+    REQUIRE_FALSE(popup.IsCreated());
 }
 #endif

@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 
 namespace LWS
 {
@@ -51,6 +52,7 @@ namespace LWS
             bool transparent{};
             Size minSize{};
             Size maxSize{};
+            std::optional<PopupPlacement> popup;
         };
 
         class ICursorBackend
