@@ -116,6 +116,15 @@ TEST_CASE("Showcase catalog binds every public control to the connected demo", "
     REQUIRE(split.Pane(0).Content() == find("Control"));
     for (size_t i = 0; i < 5; ++i)
         REQUIRE(split.Pane(i).Host() == find("Control")->Host());
+    auto* mainMenu = dynamic_cast<LWSUI::MenuBar*>(find("MenuBar"));
+    REQUIRE(mainMenu != nullptr);
+    REQUIRE(mainMenu->WindowControls().doubleClickMaximize);
+    REQUIRE_FALSE(split.Host()->RedrawOnResize());
+    showcase.Command("Live resize redraw");
+    for (const auto& sample : showcase.Samples())
+        REQUIRE(sample.control->Host()->RedrawOnResize());
+    showcase.Command("Live resize redraw");
+    REQUIRE_FALSE(split.Host()->RedrawOnResize());
     const auto nativeSize = split.Host()->Window().GetClientAreaMetrics().logical;
     const auto divider = split.Divider(0).Bounds();
     REQUIRE(split.Host()->Route({.kind = LWSUI::InputKind::Down, .x = divider.x + 3, .y = divider.y + 3}));

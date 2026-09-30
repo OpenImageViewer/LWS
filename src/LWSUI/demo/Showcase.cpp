@@ -426,7 +426,7 @@ namespace LWSUI::demo
         RadioButton *circleRadio = nullptr, *tileRadio = nullptr;
         FilePicker* file = nullptr;
         std::shared_ptr<bool> alive = std::make_shared<bool>(true);
-        bool failed = false;
+        bool failed = false, liveResize = false;
 
         Impl(Showcase& owner, LWS::PlatformContext& platform, UIHost& menuHost)
             : owner(owner), platform(platform), menuHost(menuHost)
@@ -453,7 +453,8 @@ namespace LWSUI::demo
             main.host->MainMenu()->SetWindowControls({.minimize = true,
                                                       .maximize = true,
                                                       .draggable = true,
-                                                      .requestClose = [this] { CloseSurface(main, true); }});
+                                                      .requestClose = [this] { CloseSurface(main, true); },
+                                                      .doubleClickMaximize = true});
             ListenClose(main, true);
             ListenClose(controls, false);
             ListenCloseMenu();
@@ -651,7 +652,8 @@ namespace LWSUI::demo
                 {"&Window",
                  {{"&Controls Gallery", "", action("Controls Gallery")},
                   {"&Menu Gallery", "", action("Menu Gallery")},
-                  {"Reset &layout", "", action("Reset layout")}}},
+                  {"Reset &layout", "", action("Reset layout")},
+                  {"&Live resize redraw", "", action("Live resize redraw"), true, liveResize}}},
                 {"&Theme",
                  {{"&Dark", "", [this] { owner.SetTheme(ThemePreset::Dark); }, true, themePreset == ThemePreset::Dark},
                   {"&Light", "", [this] { owner.SetTheme(ThemePreset::Light); }, true,
@@ -721,6 +723,15 @@ namespace LWSUI::demo
                 const auto activated = target.RequestActivation();
                 if (activated != LWS::Result::Success && activated != LWS::Result::NotSupported)
                     Log("Activation unavailable");
+            }
+            else if (name == "Live resize redraw")
+            {
+                liveResize = !liveResize;
+                for (auto* surface : {&main, &controls, &gallery, &preview, &fixed})
+                    surface->host->SetRedrawOnResize(liveResize);
+                menuHost.SetRedrawOnResize(liveResize);
+                main.host->MainMenu()->SetItems(ApplicationMenus());
+                controls.host->MainMenu()->SetItems(ApplicationMenus());
             }
             else if (name == "Reset layout")
             {

@@ -31,6 +31,9 @@ controlled by the compositor.
 
 The Workspace's top menu bar contains Minimize, Maximize/Restore, and Close.
 Drag the unused space between menu labels and window buttons to move the window.
+The Workspace explicitly enables double-click maximize/restore on caption space.
+Window > Live resize redraw toggles immediate redraw for the managed windows and
+child panes; it is off at startup.
 This calls `LWS::Window::BeginWindowDrag(Move)` directly during the pointer press;
 it does not move the window by repeatedly changing coordinates. Menu labels and
 window buttons are not drag handles. Native edge resizing remains available.
