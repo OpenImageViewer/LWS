@@ -230,6 +230,60 @@ namespace LWSUI
         g_object_unref(layout);
         return float(strong.x) / PANGO_SCALE;
     }
+    std::vector<TextLine> Canvas::TextLines(std::string_view text, float width, const FontSpec& font)
+    {
+        auto* layout = impl_->Layout(text, std::max(1.f, width), font, true);
+        auto* iterator = pango_layout_get_iter(layout);
+        std::vector<TextLine> lines;
+        do
+        {
+            const auto* line = pango_layout_iter_get_line_readonly(iterator);
+            PangoRectangle bounds{};
+            pango_layout_iter_get_line_extents(iterator, nullptr, &bounds);
+            size_t length = size_t(line->length);
+            while (length && (text[size_t(line->start_index) + length - 1] == '\n' ||
+                              text[size_t(line->start_index) + length - 1] == '\r'))
+                --length;
+            lines.push_back({{size_t(line->start_index), length},
+                             float(bounds.y) / PANGO_SCALE,
+                             float(bounds.height) / PANGO_SCALE});
+        } while (pango_layout_iter_next_line(iterator));
+        pango_layout_iter_free(iterator);
+        g_object_unref(layout);
+        return lines;
+    }
+    TextPosition Canvas::HitTestText(std::string_view text, float x, float y, float width, const FontSpec& font)
+    {
+        auto* layout = impl_->Layout(text, std::max(1.f, width), font, true);
+        const auto unit = [](float value)
+        { return int(std::clamp(double(value) * PANGO_SCALE, double(INT_MIN), double(INT_MAX))); };
+        int index = 0, trailing = 0;
+        pango_layout_xy_to_index(layout, unit(x), unit(y), &index, &trailing);
+        g_object_unref(layout);
+        size_t offset = std::min(size_t(std::max(0, index)), text.size());
+        const bool upstream = trailing > 0;
+        while (trailing-- > 0 && offset < text.size())
+            offset = NextCharacter(text, offset);
+        return {offset, upstream && offset > 0 && text[offset - 1] != '\n'};
+    }
+    TextCaret Canvas::CaretBounds(std::string_view text, TextPosition position, float width, const FontSpec& font)
+    {
+        auto* layout = impl_->Layout(text, std::max(1.f, width), font, true);
+        position.offset = std::min(position.offset, text.size());
+        const bool trailing = position.upstream && position.offset && text[position.offset - 1] != '\n';
+        const auto offset = trailing ? PreviousCharacter(text, position.offset) : position.offset;
+        int line = 0, x = 0;
+        pango_layout_index_to_line_x(layout, int(offset), trailing, &line, &x);
+        auto* iterator = pango_layout_get_iter(layout);
+        while (line-- > 0)
+            pango_layout_iter_next_line(iterator);
+        PangoRectangle bounds{};
+        pango_layout_iter_get_line_extents(iterator, nullptr, &bounds);
+        TextCaret caret{float(bounds.x + x) / PANGO_SCALE, float(bounds.y) / PANGO_SCALE, float(bounds.height) / PANGO_SCALE};
+        pango_layout_iter_free(iterator);
+        g_object_unref(layout);
+        return caret;
+    }
     float Canvas::TextHeight(std::string_view text, float width, const FontSpec& font, bool wrap)
     {
         auto* layout = impl_->Layout(text, width, font, wrap);

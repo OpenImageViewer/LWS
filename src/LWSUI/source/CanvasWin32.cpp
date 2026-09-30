@@ -1,4 +1,5 @@
 #include <LWSUI/Canvas.hpp>
+#include <LWSUI/TextEditing.hpp>
 #include <LWS/Bitmap.hpp>
 #include <algorithm>
 #include <stdexcept>
@@ -251,6 +252,53 @@ namespace LWSUI
         DWRITE_HIT_TEST_METRICS metrics{};
         Check(layout->HitTestTextPosition(UINT32(prefix.size()), false, &x, &y, &metrics));
         return x;
+    }
+    std::vector<TextLine> Canvas::TextLines(std::string_view text, float width, const FontSpec& font)
+    {
+        auto layout = impl_->Layout(text, width, 100000, font, true);
+        UINT32 count = 0;
+        layout->GetLineMetrics(nullptr, 0, &count);
+        std::vector<DWRITE_LINE_METRICS> metrics(count);
+        Check(layout->GetLineMetrics(metrics.data(), count, &count));
+        const auto wide = Wide(text);
+        const auto byteOffset = [&](size_t offset)
+        { return size_t(WideCharToMultiByte(CP_UTF8, 0, wide.data(), int(offset), nullptr, 0, nullptr, nullptr)); };
+        std::vector<TextLine> lines;
+        size_t offset = 0;
+        float y = 0;
+        for (const auto& line : metrics)
+        {
+            const auto first = byteOffset(offset);
+            lines.push_back({{first, byteOffset(offset + line.length - line.newlineLength) - first}, y, line.height});
+            offset += line.length;
+            y += line.height;
+        }
+        return lines;
+    }
+    TextPosition Canvas::HitTestText(std::string_view text, float x, float y, float width, const FontSpec& font)
+    {
+        auto layout = impl_->Layout(text, width, 100000, font, true);
+        BOOL trailing = FALSE, inside = FALSE;
+        DWRITE_HIT_TEST_METRICS metrics{};
+        Check(layout->HitTestPoint(x, y, &trailing, &inside, &metrics));
+        const auto wide = Wide(text);
+        const auto offset = std::min(size_t(metrics.textPosition) + (trailing ? metrics.length : 0), wide.size());
+        const auto byte = size_t(
+            WideCharToMultiByte(CP_UTF8, 0, wide.data(), int(offset), nullptr, 0, nullptr, nullptr));
+        return {byte, bool(trailing) && byte > 0 && text[byte - 1] != '\n'};
+    }
+    TextCaret Canvas::CaretBounds(std::string_view text, TextPosition position, float width, const FontSpec& font)
+    {
+        auto layout = impl_->Layout(text, width, 100000, font, true);
+        position.offset = std::min(position.offset, text.size());
+        const bool trailing = position.upstream && position.offset && text[position.offset - 1] != '\n';
+        const auto offset = trailing ? PreviousCharacter(text, position.offset) : position.offset;
+        const auto prefix = Wide(text.substr(0, offset));
+        TextCaret result;
+        DWRITE_HIT_TEST_METRICS metrics{};
+        Check(layout->HitTestTextPosition(UINT32(prefix.size()), trailing, &result.x, &result.y, &metrics));
+        result.height = metrics.height;
+        return result;
     }
     float Canvas::TextHeight(std::string_view text, float width, const FontSpec& font, bool wrap)
     {

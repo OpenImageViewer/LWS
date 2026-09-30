@@ -21,6 +21,20 @@ namespace LWSUI
         size_t offset = 0, length = 0;  // UTF-8 byte offsets in the original string.
         bool operator==(const TextRange&) const = default;
     };
+    struct TextPosition
+    {
+        size_t offset = 0;      // UTF-8 byte boundary.
+        bool upstream = false;  // At a soft wrap, use the preceding line's trailing edge.
+    };
+    struct TextCaret
+    {
+        float x = 0, y = 0, height = 0;
+    };
+    struct TextLine
+    {
+        TextRange range;  // Excludes a hard newline; includes trailing spaces at a soft wrap.
+        float y = 0, height = 0;
+    };
     struct TextSpan : TextRange
     {
         LLUtils::Color foreground, background;

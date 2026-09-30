@@ -32,6 +32,9 @@ namespace LWSUI
         Size MeasureText(std::string_view text, float width, bool wrap, const FontSpec& font);
         size_t HitTestText(std::string_view text, float x, const FontSpec& font);
         float MeasureCaret(std::string_view text, size_t byteOffset, const FontSpec& font);
+        std::vector<TextLine> MeasureTextLines(std::string_view text, float width, const FontSpec& font);
+        TextPosition HitTestText(std::string_view text, float x, float y, float width, const FontSpec& font);
+        TextCaret MeasureTextCaret(std::string_view text, TextPosition position, float width, const FontSpec& font);
         const Theme& PopupStyle() const { return popupStyle_ ? *popupStyle_ : theme_; }
         void SetPopupStyle(Theme style) { popupStyle_ = std::move(style); }
         bool Route(Input input);

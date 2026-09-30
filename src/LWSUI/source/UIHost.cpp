@@ -181,6 +181,18 @@ namespace LWSUI
     {
         return canvas_.Caret(text, byteOffset, font);
     }
+    std::vector<TextLine> UIHost::MeasureTextLines(std::string_view text, float width, const FontSpec& font)
+    {
+        return canvas_.TextLines(text, width, font);
+    }
+    TextPosition UIHost::HitTestText(std::string_view text, float x, float y, float width, const FontSpec& font)
+    {
+        return canvas_.HitTestText(text, x, y, width, font);
+    }
+    TextCaret UIHost::MeasureTextCaret(std::string_view text, TextPosition position, float width, const FontSpec& font)
+    {
+        return canvas_.CaretBounds(text, position, width, font);
+    }
     void UIHost::Update()
     {
         if (updating_ || !window_.IsCreated() || !window_.IsVisible())
