@@ -388,6 +388,17 @@ the existing structural-edit lifetime rules and must not capture shorter-lived o
 Long menus scroll using existing menu theme metrics. Submenus, icons, native menus,
 and automatic shortcut registration are intentionally deferred.
 
+### Main-menu input and popup ownership
+
+Each native dropdown has its own UIHost for layout, rendering, scrolling, and
+mouse capture. The menu session coordinates keyboard navigation and submenu
+lifetimes. Switching top menus on Windows retains the root popup window; closed
+levels remain alive until their current input dispatch has returned.
+
+Captured control gestures and active modal/context popups take priority over the
+main menu. On Wayland, keyboard focus may move between the owner and its dropdowns
+without dismissing the menu; leaving that group or compositor dismissal closes it.
+
 ### Menu-bar window controls
 
 Horizontal Top/Bottom menu bars on top-level windows can opt into caption buttons

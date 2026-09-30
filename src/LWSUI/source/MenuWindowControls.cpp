@@ -52,84 +52,47 @@ namespace LWSUI
                (action != WindowAction::Minimize ||
                 Host()->Window().GetPlatformContext().GetBackendId() != LWS::BackendId::Wayland);
     }
-    float MenuBar::WindowControlsSpan() const
+    float MenuBar::WindowButtonsSpan() const
     {
         float width = 0;
         for (auto action : actions)
             if (HasWindowButton(action))
                 width += std::max(Style().menuBarHeight, Font().size * 2);
-        if (WindowControlsAvailable() && windowControls_.draggable && !ContentActive())
-            width += 48;
         return width;
+    }
+    float MenuBar::DragSpan() const
+    {
+        return WindowControlsAvailable() && windowControls_.draggable && !ContentActive() ? 48.f : 0.f;
+    }
+    float MenuBar::WindowControlsSpan() const
+    {
+        return WindowButtonsSpan() + DragSpan();
     }
     Rect MenuBar::WindowButtonRect(WindowAction action) const
     {
-        if (!HasWindowButton(action))
-            return {};
-        size_t count = 0, following = 0;
-        for (auto candidate : actions)
-            if (HasWindowButton(candidate))
-            {
-                ++count;
-                if (candidate > action)
-                    ++following;
-            }
-        const auto b = Bounds();
-        const float width = std::min(std::max(Style().menuBarHeight, Font().size * 2), b.width / float(count));
-        return {b.x + b.width - width * float(following + 1), b.y, width, b.height};
+        return CalculateLayout().buttons[size_t(action)];
     }
     std::optional<MenuBar::WindowAction> MenuBar::HitWindowButton(float x, float y) const
     {
+        const auto layout = CalculateLayout();
         for (auto action : actions)
-            if (WindowButtonRect(action).Contains(x, y))
+            if (layout.buttons[size_t(action)].Contains(x, y))
                 return action;
         return std::nullopt;
     }
-    Rect MenuBar::MenuItemsArea() const
-    {
-        auto b = Bounds();
-        float right = b.x + b.width;
-        for (auto action : actions)
-            if (HasWindowButton(action))
-            {
-                right = WindowButtonRect(action).x;
-                break;
-            }
-        // TODO: Decide whether combined-content bars should reserve a guaranteed empty drag strip.
-        // Preserve the previous allocation for bars without content; do not add a new minimum here.
-        const float drag = WindowControlsAvailable() && windowControls_.draggable && !ContentActive()
-                               ? std::min(48.f, right - b.x)
-                               : 0;
-        b.x += std::min(b.width, IconSpan());
-        if (ContentActive())
-            right = std::max(b.x, right - contentMinimum_);
-        b.width = std::max(0.f, right - b.x - drag);
-        return b;
-    }
     Rect MenuBar::WindowDragArea() const
     {
-        if (!Enabled() || !Visible() || !WindowControlsAvailable() || !windowControls_.draggable)
-            return {};
-        const auto area = MenuItemsArea();
-        float end = Bounds().x + IconSpan();
-        for (size_t i = 0; i < items_.size(); ++i)
-            end += ItemExtent(i);
-        end = std::min(end, area.x + area.width);
-        float right = Bounds().x + Bounds().width;
-        for (auto action : actions)
-            if (HasWindowButton(action))
-            {
-                right = WindowButtonRect(action).x;
-                break;
-            }
-        return {end, Bounds().y, std::max(0.f, right - end), Bounds().height};
+        return Enabled() && Visible() && WindowControlsAvailable() && windowControls_.draggable ? CalculateLayout().drag
+                                                                                                : Rect{};
     }
     bool MenuBar::HitWindowDrag(float x, float y) const
     {
         if (!Enabled() || !Visible() || !WindowControlsAvailable() || !windowControls_.draggable)
             return false;
-        return (IconRect().Contains(x, y) || WindowDragArea().Contains(x, y)) &&
-               HitItem(x, y) == NoItem && !HitWindowButton(x, y) && !ContentOccupied(x, y);
+        const auto layout = CalculateLayout();
+        const auto contains = [x, y](Rect rect) { return rect.Contains(x, y); };
+        return (contains(layout.icon) || contains(layout.drag)) && std::ranges::none_of(layout.items, contains) &&
+               std::ranges::none_of(layout.buttons, contains) && !ContentOccupied(x, y);
     }
     void MenuBar::ClearWindowPress()
     {
@@ -146,13 +109,13 @@ namespace LWSUI
         if (windowPressed_ && !SameRect(WindowButtonRect(*windowPressed_), windowPressBounds_))
             ClearWindowPress();
     }
-    void MenuBar::RenderWindowControls(Canvas& canvas)
+    void MenuBar::RenderWindowControls(Canvas& canvas, const Layout& layout)
     {
         for (auto action : actions)
         {
             if (!HasWindowButton(action))
                 continue;
-            const auto r = WindowButtonRect(action);
+            const auto r = layout.buttons[size_t(action)];
             if (r.width <= 0 || r.height <= 0)
                 continue;
             Canvas::ClipScope clip(canvas, r.x, r.y, r.width, r.height);

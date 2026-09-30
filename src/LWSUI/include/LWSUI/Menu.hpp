@@ -1,5 +1,6 @@
 #pragma once
 #include <LWSUI/Control.hpp>
+#include <array>
 #include <functional>
 #include <optional>
 #include <string>
@@ -114,6 +115,13 @@ namespace LWSUI
 
       private:
 
+        struct Layout
+        {
+            Rect icon, itemsArea, content, drag;
+            std::array<Rect, 3> buttons{};
+            std::vector<Rect> items;
+        };
+        Layout CalculateLayout() const;
         friend class UIHost;
         using Container::Add;
         using Container::Clear;
@@ -124,11 +132,10 @@ namespace LWSUI
         bool ContentOccupied(float x, float y) const;
         bool InContent(Control* control) const;
         Rect ContentRect() const;
-        Rect IconRect() const;
         float IconSpan() const;
         float ItemsSpan() const;
         void ArrangeContent();
-        void RenderContent(Canvas& canvas);
+        void RenderContent(Canvas& canvas, const Layout& layout);
         void NotifyMinimumWidth();
         LWS::BitmapSharedPtr icon_;
         Control* content_ = nullptr;
@@ -141,16 +148,16 @@ namespace LWSUI
         bool WindowButtonEnabled(WindowAction action) const;
         Rect WindowButtonRect(WindowAction action) const;
         std::optional<WindowAction> HitWindowButton(float x, float y) const;
-        Rect MenuItemsArea() const;
         Rect WindowDragArea() const;
         bool HitWindowDrag(float x, float y) const;
+        float WindowButtonsSpan() const;
+        float DragSpan() const;
         float WindowControlsSpan() const;
-        void RenderWindowControls(Canvas& canvas);
+        void RenderWindowControls(Canvas& canvas, const Layout& layout);
         void ClearWindowPress();
         MenuBarWindowControls windowControls_;
         std::optional<WindowAction> windowHover_, windowPressed_, windowFocus_;
         Rect windowPressBounds_{};
-        std::vector<Rect> ItemRects() const;
         float ItemExtent(size_t index) const;
         float TextWidth(std::string_view text) const;
         float TextHeight(std::string_view text) const;

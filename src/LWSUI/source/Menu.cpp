@@ -1,5 +1,6 @@
 #include <LWSUI/UIHost.hpp>
 #include "MenuHost.hpp"
+#include "MenuRows.hpp"
 #include <LWS/Platform.hpp>
 #ifdef LWS_HAS_WIN32_BACKEND
     #include <LWS/Win32/WindowExtensions.hpp>
@@ -91,10 +92,7 @@ namespace LWSUI
     }
     float MenuBar::NaturalSpan() const
     {
-        float span = 0;
-        for (size_t index = 0; index < items_.size(); ++index)
-            span += ItemExtent(index);
-        return IconSpan() + span + WindowControlsSpan() +
+        return IconSpan() + ItemsSpan() + WindowControlsSpan() +
                (ContentActive() ? std::max(contentMinimum_, content_->DesiredSize().width) : 0);
     }
     float MenuBar::Thickness() const
@@ -123,37 +121,70 @@ namespace LWSUI
         span = std::clamp(span, 0.f, limit);
         return horizontal ? Size{span, Thickness()} : Size{Thickness(), span};
     }
-    std::vector<Rect> MenuBar::ItemRects() const
+    MenuBar::Layout MenuBar::CalculateLayout() const
     {
+        Layout layout;
+        const auto b = Bounds();
         const bool horizontal = orientation == Orientation::Horizontal;
-        const auto bounds = Bounds();
-        std::vector<Rect> rects;
-        rects.reserve(items_.size());
-        float position = (horizontal ? bounds.x : bounds.y) + IconSpan();
-        for (size_t index = 0; index < items_.size(); ++index)
-        {
-            const float extent = ItemExtent(index);
-            rects.push_back(horizontal ? Rect{position, bounds.y, extent, bounds.height}
-                                       : Rect{bounds.x, position, bounds.width, extent});
-            if (horizontal && (WindowControlsSpan() > 0 || ContentActive() || icon_))
+        const float icon = IconSpan();
+        layout.icon = horizontal ? Rect{b.x, b.y, std::min(b.width, icon), b.height}
+                                 : Rect{b.x, b.y, b.width, std::min(b.height, icon)};
+        float right = b.x + b.width;
+        const float naturalButton = std::max(Style().menuBarHeight, Font().size * 2);
+        size_t count = 0;
+        for (size_t i = 0; i < layout.buttons.size(); ++i)
+            count += HasWindowButton(WindowAction(i));
+        const float buttonWidth = count ? std::min(naturalButton, b.width / float(count)) : 0;
+        for (size_t i = layout.buttons.size(); i-- > 0;)
+            if (HasWindowButton(WindowAction(i)))
             {
-                const auto area = MenuItemsArea();
-                rects.back().width = std::max(0.f, std::min(extent, area.x + area.width - position));
+                right -= buttonWidth;
+                layout.buttons[i] = {right, b.y, buttonWidth, b.height};
             }
+        // Combined-content bars keep their current minimum policy; a guaranteed drag strip is deferred.
+        layout.itemsArea = b;
+        if (horizontal)
+        {
+            layout.itemsArea.x += std::min(b.width, icon);
+            const float itemRight = ContentActive() ? std::max(layout.itemsArea.x, right - contentMinimum_) : right;
+            layout.itemsArea.width = std::max(0.f, itemRight - layout.itemsArea.x - std::min(DragSpan(), right - b.x));
+        }
+        else
+        {
+            layout.itemsArea.y += std::min(b.height, icon);
+            layout.itemsArea.height = std::max(0.f, b.height - icon);
+        }
+        float position = (horizontal ? b.x : b.y) + icon;
+        layout.items.reserve(items_.size());
+        const bool clipItems = horizontal && (WindowControlsSpan() > 0 || ContentActive() || icon_);
+        for (size_t i = 0; i < items_.size(); ++i)
+        {
+            const float extent = ItemExtent(i);
+            auto item = horizontal ? Rect{position, b.y, extent, b.height} : Rect{b.x, position, b.width, extent};
+            if (clipItems)
+                item.width = std::max(0.f, std::min(extent, layout.itemsArea.x + layout.itemsArea.width - position));
+            layout.items.push_back(item);
             position += extent;
         }
-        return rects;
+        if (ContentActive())
+        {
+            const float left = std::min(right, position);
+            layout.content = {left, b.y, std::max(0.f, right - left), b.height};
+        }
+        const float end = std::min(position, layout.itemsArea.x + layout.itemsArea.width);
+        layout.drag = {end, b.y, std::max(0.f, right - end), b.height};
+        return layout;
     }
     Rect MenuBar::ItemRect(size_t index) const
     {
-        const auto rects = ItemRects();
+        const auto rects = CalculateLayout().items;
         return index < rects.size() ? rects[index] : Rect{};
     }
     size_t MenuBar::HitItem(float x, float y) const
     {
         if (!Bounds().Contains(x, y))
             return NoItem;
-        const auto rects = ItemRects();
+        const auto rects = CalculateLayout().items;
         for (size_t index = 0; index < rects.size(); ++index)
             if (rects[index].Contains(x, y))
                 return index;
@@ -163,6 +194,7 @@ namespace LWSUI
     {
         const auto bounds = Bounds();
         const auto& style = Style();
+        const auto layout = CalculateLayout();
         canvas.Fill(bounds.x, bounds.y, bounds.width, bounds.height, style.surface);
         if (floating)
         {
@@ -174,9 +206,9 @@ namespace LWSUI
                         style.borderWidth, style.line);
         }
         {
-            const auto area = MenuItemsArea();
+            const auto area = layout.itemsArea;
             Canvas::ClipScope clip(canvas, area.x, area.y, area.width, area.height);
-            const auto rects = ItemRects();
+            const auto& rects = layout.items;
             for (size_t index = 0; index < items_.size() && index < rects.size(); ++index)
             {
                 const auto& item = items_[index];
@@ -202,8 +234,8 @@ namespace LWSUI
                 }
             }
         }
-        RenderContent(canvas);
-        RenderWindowControls(canvas);
+        RenderContent(canvas, layout);
+        RenderWindowControls(canvas, layout);
     }
     bool MenuBar::OnInput(const Input& input)
     {
@@ -280,9 +312,7 @@ namespace LWSUI
         }
         float DropdownPanel::Row::HintWidth(float width) const
         {
-            return item_.shortcut.empty() ? 0
-                                          : std::min(std::max(0.f, width * .4f),
-                                                     Host()->MeasureText(item_.shortcut, 10000, false, Font()).width);
+            return MenuHintWidth(*this, item_.shortcut, width);
         }
         void DropdownPanel::Row::OnRender(Canvas& canvas)
         {
@@ -291,8 +321,7 @@ namespace LWSUI
             const float padding = style.menuPadding;
             if (item_.separator)
             {
-                canvas.Fill(bounds.x + padding, bounds.y + bounds.height / 2, std::max(0.f, bounds.width - 2 * padding),
-                            style.borderWidth, style.line);
+                RenderMenuSeparator(*this, canvas);
                 return;
             }
             if (active)
@@ -301,11 +330,7 @@ namespace LWSUI
             const auto color = usable ? style.foreground : style.muted;
             const float check = CheckWidth(), arrow = ArrowWidth();
             if (item_.checked.value_or(false))
-            {
-                const float x = bounds.x + padding, y = bounds.y + bounds.height / 2, unit = Font().size;
-                canvas.Line(x, y, x + unit * .3f, y + unit * .25f, style.borderWidth, color);
-                canvas.Line(x + unit * .3f, y + unit * .25f, x + unit * .75f, y - unit * .3f, style.borderWidth, color);
-            }
+                RenderMenuCheck(*this, canvas, color);
             const float hint = HintWidth(bounds.width);
             const float labelWidth = std::max(1.f, bounds.width - 2 * padding - check - arrow -
                                                        (hint > 0 ? hint + padding : 0));
@@ -374,16 +399,7 @@ namespace LWSUI
         }
         std::optional<size_t> DropdownPanel::Next(size_t from, int step) const
         {
-            if (items_.empty())
-                return std::nullopt;
-            size_t index = from;
-            for (size_t n = 0; n < items_.size(); ++n)
-            {
-                index = (index + items_.size() + (step > 0 ? 1 : items_.size() - 1)) % items_.size();
-                if (Selectable(index))
-                    return index;
-            }
-            return std::nullopt;
+            return NextMenuRow(items_.size(), from, step, [this](size_t row) { return Selectable(row); });
         }
         std::optional<size_t> DropdownPanel::Mnemonic(char key, size_t from) const
         {
@@ -400,29 +416,10 @@ namespace LWSUI
         }
         void DropdownPanel::Select(std::optional<size_t> index, bool reveal)
         {
-            if (active_ != index)
-            {
-                if (active_)
-                    rows_[*active_]->active = false;
-                active_ = index;
-                if (active_)
-                    rows_[*active_]->active = true;
-                Invalidate();
+            if (SelectMenuRow(*this, rows_, active_, index))
                 OnSelect.Raise(active_);
-            }
-            if (reveal && active_ && Bounds().height > 0)
-            {
-                // Offsets can change several times between layouts (wheel/drag followed by a key).
-                // Use content coordinates rather than rectangles from the previous layout.
-                float top = 0;
-                for (size_t row = 0; row < *active_; ++row)
-                    top += rows_[row]->DesiredSize().height;
-                const float bottom = top + rows_[*active_]->DesiredSize().height;
-                if (top < Offset())
-                    SetOffset(top);
-                else if (bottom > Offset() + Bounds().height)
-                    SetOffset(bottom - Bounds().height);
-            }
+            if (reveal)
+                RevealMenuRow(*this, rows_, active_);
         }
         void DropdownPanel::OnRender(Canvas& canvas)
         {

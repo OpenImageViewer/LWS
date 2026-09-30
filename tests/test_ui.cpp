@@ -709,7 +709,7 @@ TEST_CASE("Menu dropdown rows activate, cascade, and reuse windows", "[ui][menu]
     REQUIRE(counts.recent == 0);
     env.host().Update();
     REQUIRE(counts.recent == 1);
-    // A mnemonic switch while a cascade is open closes the levels and reuses the pooled window.
+    // Switching while a cascade is open replaces the root panel and retains its Win32 window.
     clickBar();
     REQUIRE(pressRow(0, 3));
     REQUIRE(session.LevelCount() == 2);
@@ -726,8 +726,6 @@ TEST_CASE("Menu dropdown rows activate, cascade, and reuse windows", "[ui][menu]
     REQUIRE(session.LevelCount() == 0);
     REQUIRE(session.LevelWindow(0) == nullptr);
     env.host().Update();
-    #ifdef LWS_HAS_WIN32_BACKEND
-    #endif
 }
 
 TEST_CASE("Menu hover opens cascades on a delay", "[ui][menu]")
@@ -911,7 +909,7 @@ TEST_CASE("Menu popups close when the owner window moves", "[ui][menu]")
     REQUIRE_FALSE(IsWindowVisible(dropdown));
     REQUIRE_FALSE(IsWindowVisible(submenu));
     REQUIRE(counts.Total() == 0);
-    // The cascade is the level that cannot be pooled, so it is unmapped at once and destroyed here.
+    // Closed levels unmap immediately and are destroyed after their input dispatch has returned.
     env.host().Update();
     REQUIRE_FALSE(IsWindow(submenu));
 }
@@ -1007,10 +1005,17 @@ TEST_CASE("Floating menu bounds preserve either orientation", "[ui][menu][layout
     auto bar = std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts));
     SECTION("horizontal") {}
     SECTION("vertical") { bar->orientation = LWSUI::Orientation::Vertical; }
+    SECTION("vertical with icon")
+    {
+        bar->orientation = LWSUI::Orientation::Vertical;
+        std::array<std::byte, 4 * 4 * 4> pixels{};
+        bar->SetIcon(std::make_shared<LWS::Bitmap>(
+            LWS::BitmapBuffer{.pixels = pixels, .width = 4, .height = 4, .rowPitch = 16}));
+    }
     env.host().SetMainMenu(std::move(bar), LWSUI::MenuDock::Floating);
     env.host().SetMainMenuPosition(1000, 1000);
     env.host().Update();
-    const auto* menu = env.host().MainMenu();
+    auto* menu = env.host().MainMenu();
     const auto bounds = menu->Bounds();
     REQUIRE(bounds.width == menu->DesiredSize().width);
     REQUIRE(bounds.height == menu->DesiredSize().height);
@@ -1018,6 +1023,21 @@ TEST_CASE("Floating menu bounds preserve either orientation", "[ui][menu][layout
     REQUIRE(bounds.y + bounds.height <= 480);
     const auto last = menu->ItemRect(1);
     REQUIRE(menu->HitItem(last.x + 1, last.y + 1) == 1);
+    if (menu->Icon())
+    {
+        // A vertical icon reserves height; it must not clip the leading part of menu rows.
+        menu->hot = 0;
+        LWSUI::Canvas canvas;
+        canvas.Begin(640, 480);
+        menu->Render(canvas);
+        const auto bitmap = canvas.End();
+        const auto item = menu->ItemRect(0);
+        const auto* pixel = bitmap.pixels.data() + int(item.y + item.height / 2) * bitmap.rowPitch +
+                            int(item.x + 4) * 4;
+        REQUIRE(std::to_integer<uint8_t>(pixel[0]) == menu->Style().selection.B());
+        REQUIRE(std::to_integer<uint8_t>(pixel[1]) == menu->Style().selection.G());
+        REQUIRE(std::to_integer<uint8_t>(pixel[2]) == menu->Style().selection.R());
+    }
 }
 
 TEST_CASE("Dropdown windows host scrolling and keyboard layout locally", "[ui][menu][scroll]")

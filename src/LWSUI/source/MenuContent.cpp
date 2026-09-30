@@ -18,12 +18,6 @@ namespace LWSUI
     {
         return icon_ ? std::min(24.f, std::max(0.f, Style().menuBarHeight - 8)) + 16 : 0;
     }
-    Rect MenuBar::IconRect() const
-    {
-        const auto b = Bounds();
-        return orientation == Orientation::Horizontal ? Rect{b.x, b.y, std::min(b.width, IconSpan()), b.height}
-                                                      : Rect{b.x, b.y, b.width, std::min(b.height, IconSpan())};
-    }
     float MenuBar::ItemsSpan() const
     {
         float span = 0;
@@ -59,11 +53,7 @@ namespace LWSUI
     {
         if (orientation != Orientation::Horizontal)
             return Thickness();
-        float buttons = 0;
-        for (auto action : {WindowAction::Minimize, WindowAction::Maximize, WindowAction::Close})
-            if (HasWindowButton(action))
-                buttons += std::max(Style().menuBarHeight, Font().size * 2);
-        return IconSpan() + ItemsSpan() + (ContentActive() ? contentMinimum_ : 0) + buttons;
+        return IconSpan() + ItemsSpan() + (ContentActive() ? contentMinimum_ : 0) + WindowButtonsSpan();
     }
     void MenuBar::NotifyMinimumWidth()
     {
@@ -75,18 +65,7 @@ namespace LWSUI
     }
     Rect MenuBar::ContentRect() const
     {
-        if (!ContentActive())
-            return {};
-        const auto b = Bounds();
-        float right = b.x + b.width;
-        for (auto action : {WindowAction::Minimize, WindowAction::Maximize, WindowAction::Close})
-            if (HasWindowButton(action))
-            {
-                right = WindowButtonRect(action).x;
-                break;
-            }
-        const float left = std::min(right, b.x + IconSpan() + ItemsSpan());
-        return {left, b.y, std::max(0.f, right - left), b.height};
+        return CalculateLayout().content;
     }
     Control* MenuBar::HitContent(float x, float y) const
     {
@@ -137,11 +116,11 @@ namespace LWSUI
         }
         NotifyMinimumWidth();
     }
-    void MenuBar::RenderContent(Canvas& canvas)
+    void MenuBar::RenderContent(Canvas& canvas, const Layout& layout)
     {
         if (icon_)
         {
-            const auto r = IconRect();
+            const auto r = layout.icon;
             const auto bitmap = icon_->GetBuffer();
             const float side = std::max(0.f, std::min({24.f, r.width - 8, r.height - 8}));
             if (side > 0 && bitmap.width && bitmap.height)
@@ -153,7 +132,7 @@ namespace LWSUI
         }
         if (ContentActive())
         {
-            const auto r = ContentRect();
+            const auto r = layout.content;
             Canvas::ClipScope clip(canvas, r.x, r.y, r.width, r.height);
             content_->Render(canvas);
         }
