@@ -328,7 +328,7 @@ namespace LWSUI::demo
                         return true;
                     }
                 }
-                if (input.kind == InputKind::KeyDown)
+                if (input.kind == InputKind::KeyDown && Host() && Host()->IsFocused(*this))
                 {
                     if (input.key == LWS::KeyCode::Home)
                         Reset();
@@ -479,14 +479,7 @@ namespace LWSUI::demo
             menuListeners.clear();
             menuConnections.values.clear();
             menuHost.SetRoot(nullptr);
-            // The main native parent must outlive every child's host and window.
-            for (auto* surface : {&fixed, &preview, &gallery, &controls, &main})
-            {
-                surface->listeners.clear();
-                surface->connections.values.clear();
-                surface->host.reset();
-                surface->window.reset();
-            }
+            // Surface members and declarations already encode child-before-parent teardown.
         }
         void Deferred(std::function<void()> action)
         {
@@ -680,10 +673,15 @@ namespace LWSUI::demo
         }
         void Refresh()
         {
-            if (quickEnabled)
-                quickEnabled->SetValue(state.enabled);
-            if (quickOpacity && quickOpacity->Value() != state.opacity)
-                quickOpacity->SetValue(state.opacity);
+            // Sync shared, non-text values in one direction. Text drafts remain owned by their editors.
+            for (auto* control : {enabled, quickEnabled})
+                if (control && control->Value() != state.enabled)
+                    control->SetValue(state.enabled);
+            for (auto* control : {opacity, filled, quickOpacity})
+                if (control && control->Value() != state.opacity)
+                    control->SetValue(state.opacity);
+            if (scene && scene->Value() != state.scene)
+                scene->SetValue(state.scene);
             if (details)
                 details->SetText(
                     state.scene + " | " + state.quality + " | " + std::to_string(state.count) + " shapes\n" +
@@ -732,8 +730,6 @@ namespace LWSUI::demo
             else if (name == "Circles" || name == "Tiles")
             {
                 state.scene = name;
-                if (scene)
-                    scene->SetValue(name);
             }
             else if (name == "About" || name == "help/about")
             {
@@ -747,7 +743,6 @@ namespace LWSUI::demo
                 if (name.find("file/") == 0)
                 {
                     state.scene = "Tiles";
-                    scene->SetValue(state.scene);
                 }
             }
             Refresh();
@@ -761,12 +756,8 @@ namespace LWSUI::demo
             state = {};
             name->SetText(state.title);
             name->SetValidation("");
-            enabled->SetValue(state.enabled);
-            opacity->SetValue(state.opacity);
-            filled->SetValue(state.opacity);
             count->SetValue(state.count);
             scale->SetValue(state.scale);
-            scene->SetValue(state.scene);
             quality->SetValue(state.quality);
             color->SetValue(state.color);
             file->SetValue("");
@@ -859,7 +850,6 @@ namespace LWSUI::demo
                 {
                     return std::vector<ContextMenuItem>{{"Reset enabled", "", [this](Control&)
                                                          {
-                                                             enabled->SetValue(true);
                                                              state.enabled = true;
                                                              Refresh();
                                                              Log("Context menu: enabled");
@@ -873,20 +863,18 @@ namespace LWSUI::demo
             circleRadio = &circles;
             tileRadio = &tiles;
             controls.connections.Add(circles.OnChange,
-                                     [this, &tiles](bool on)
+                                     [this](bool on)
                                      {
                                          if (on)
                                          {
-                                             tiles.SetValue(false);
                                              Command("Circles");
                                          }
                                      });
             controls.connections.Add(tiles.OnChange,
-                                     [this, &circles](bool on)
+                                     [this](bool on)
                                      {
                                          if (on)
                                          {
-                                             circles.SetValue(false);
                                              Command("Tiles");
                                          }
                                      });
@@ -942,14 +930,12 @@ namespace LWSUI::demo
                                      [this](double value, EditPhase)
                                      {
                                          state.opacity = value;
-                                         filled->SetValue(value);
                                          Refresh();
                                      });
             controls.connections.Add(filled->OnEdit,
                                      [this](double value, EditPhase)
                                      {
                                          state.opacity = value;
-                                         opacity->SetValue(value);
                                          Refresh();
                                      });
             Text(*list, "Standalone ScrollBar: move its thumb to inspect different lines in a fixed-height viewport.");
@@ -977,10 +963,9 @@ namespace LWSUI::demo
             sample.SetValue(state.color);
             catalogSwatch = &sample;
             controls.connections.Add(sample.OnClick,
-                                     [this, &sample]
+                                     [this]
                                      {
                                          state.color = LLUtils::Color{uint32_t{0xf6a44cff}};
-                                         sample.SetValue(state.color);
                                          color->SetValue(state.color);
                                          Refresh();
                                          Log("Swatch: amber");
@@ -988,10 +973,9 @@ namespace LWSUI::demo
             color = &SampleControl(*list, "ColorPicker", std::make_unique<ColorPicker>());
             color->SetValue(state.color);
             controls.connections.Add(color->OnEdit,
-                                     [this, &sample](LLUtils::Color value, EditPhase)
+                                     [this](LLUtils::Color value, EditPhase)
                                      {
                                          state.color = value;
-                                         sample.SetValue(value);
                                          Refresh();
                                      });
             Text(*list, "FilePicker: edit an existing file path, click Browse, or press F4. The selected file is never "
@@ -1092,7 +1076,6 @@ namespace LWSUI::demo
                                     [this](bool value)
                                     {
                                         state.enabled = value;
-                                        enabled->SetValue(value);
                                         Refresh();
                                         Log(state.enabled ? "Quick Controls: enabled" : "Quick Controls: disabled");
                                     });
@@ -1103,8 +1086,6 @@ namespace LWSUI::demo
                                     [this](double value, EditPhase phase)
                                     {
                                         state.opacity = value;
-                                        opacity->SetValue(value);
-                                        filled->SetValue(value);
                                         Refresh();
                                         if (phase != EditPhase::Preview)
                                             Log(phase == EditPhase::Cancel ? "Opacity restored" : "Opacity changed");

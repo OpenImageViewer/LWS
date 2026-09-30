@@ -184,6 +184,15 @@ TEST_CASE("Showcase catalog binds every public control to the connected demo", "
     REQUIRE(showcase.Verify());
     auto& host = *find("Container")->Host();
     auto& child = find("StackPanel")->Host()->Window();
+    auto* workspace = dynamic_cast<LWSUI::Container*>(host.Root());
+    REQUIRE(workspace != nullptr);
+    auto* toolbar = dynamic_cast<LWSUI::Container*>(workspace->Children().front().get());
+    REQUIRE(toolbar != nullptr);
+    REQUIRE(host.Focus(toolbar->Children().front().get()));
+    const auto beforeToolbarKey = child.GetPlacement().clientSize;
+    REQUIRE_FALSE(host.Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Left}));
+    host.Update();
+    REQUIRE(child.GetPlacement().clientSize == beforeToolbarKey);
     const auto placement = child.GetPlacement();
     REQUIRE(placement.position.has_value());
     const float x = float(placement.position->x + placement.clientSize.x + 5), y = float(placement.position->y + 20);
