@@ -25,6 +25,8 @@ namespace LWSUI
     {
         bool minimize = false, maximize = false, draggable = false;
         std::function<void()> requestClose;
+        // Explicit opt-in, independent of native caption styles, dragging, and visible buttons.
+        bool doubleClickMaximize = false;
     };
     enum class MenuDock
     {
@@ -150,6 +152,8 @@ namespace LWSUI
         std::optional<WindowAction> HitWindowButton(float x, float y) const;
         Rect WindowDragArea() const;
         bool HitWindowDrag(float x, float y) const;
+        bool HitCaption(float x, float y) const;
+        bool DoubleClickMaximizeAvailable() const;
         float WindowButtonsSpan() const;
         float DragSpan() const;
         float WindowControlsSpan() const;

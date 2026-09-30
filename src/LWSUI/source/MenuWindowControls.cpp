@@ -85,9 +85,17 @@ namespace LWSUI
         return Enabled() && Visible() && WindowControlsAvailable() && windowControls_.draggable ? CalculateLayout().drag
                                                                                                 : Rect{};
     }
+    bool MenuBar::DoubleClickMaximizeAvailable() const
+    {
+        return Enabled() && Visible() && WindowControlsAvailable() && windowControls_.doubleClickMaximize;
+    }
     bool MenuBar::HitWindowDrag(float x, float y) const
     {
-        if (!Enabled() || !Visible() || !WindowControlsAvailable() || !windowControls_.draggable)
+        return windowControls_.draggable && HitCaption(x, y);
+    }
+    bool MenuBar::HitCaption(float x, float y) const
+    {
+        if (!Enabled() || !Visible() || !WindowControlsAvailable())
             return false;
         const auto layout = CalculateLayout();
         const auto contains = [x, y](Rect rect) { return rect.Contains(x, y); };
@@ -162,19 +170,20 @@ namespace LWSUI
     }
     namespace internal
     {
-        void MenuSession::ActivateWindowButton(MenuWindowAction action)
+        void MenuSession::ActivateWindowAction(MenuWindowAction action, bool captionDoubleClick)
         {
             auto* bar = host_.MainMenu();
-            if (!bar || !bar->WindowButtonEnabled(action))
+            if (!bar || !(captionDoubleClick ? bar->DoubleClickMaximizeAvailable() : bar->WindowButtonEnabled(action)))
                 return;
             const auto handle = bar->Handle();
             auto close = bar->windowControls_.requestClose;
             Close();
             const auto result = host_.Window().GetPlatformContext().PostTask(
-                [handle, action, close = std::move(close)]
+                [handle, action, captionDoubleClick, close = std::move(close)]
                 {
                     auto* bar = static_cast<MenuBar*>(handle.Get());
-                    if (!bar || !bar->Host() || !bar->WindowButtonEnabled(action))
+                    if (!bar || !bar->Host() ||
+                        !(captionDoubleClick ? bar->DoubleClickMaximizeAvailable() : bar->WindowButtonEnabled(action)))
                         return;
                     if (action == MenuWindowAction::Close)
                     {
@@ -230,7 +239,14 @@ namespace LWSUI
                 const auto pressed = bar->windowPressed_;
                 bar->ClearWindowPress();
                 if (hit == pressed)
-                    ActivateWindowButton(*pressed);
+                    ActivateWindowAction(*pressed);
+                return true;
+            }
+            if (input.kind == InputKind::Down && input.clickCount == 2 && bar->DoubleClickMaximizeAvailable() &&
+                bar->HitCaption(input.x, input.y))
+            {
+                ActivateWindowAction(MenuWindowAction::Maximize, true);
+                host_.suppressPointerRelease_ = true;
                 return true;
             }
             if (input.kind == InputKind::Down && hit)

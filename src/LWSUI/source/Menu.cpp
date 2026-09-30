@@ -260,6 +260,7 @@ namespace LWSUI
             else if (auto* e = std::get_if<LWS::EventMouseButton>(&event))
             {
                 input.button = e->button;
+                input.clickCount = e->clickCount;
                 input.kind = e->pressed ? InputKind::Down : InputKind::Up;
                 input.x = float(e->position.x);
                 input.y = float(e->position.y);
@@ -964,7 +965,7 @@ namespace LWSUI
                 {
                     if (bar && bar->windowFocus_)
                     {
-                        ActivateWindowButton(*bar->windowFocus_);
+                        ActivateWindowAction(*bar->windowFocus_);
                         return true;
                     }
                     if (hot_ >= 0)

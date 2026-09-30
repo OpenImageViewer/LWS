@@ -49,6 +49,7 @@ namespace LWSUI
         std::string text;
         bool control = false, shift = false, repeat = false, alt = false;
         LWS::MouseButton button = LWS::MouseButton::Left;
+        unsigned clickCount = 1;
     };
     class UIHost;
     class Container;

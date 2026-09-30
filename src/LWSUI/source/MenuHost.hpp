@@ -114,7 +114,7 @@ namespace LWSUI::internal
         bool KeyDown(const Input& input);
         bool PointerInput(const Input& input);
         bool WindowInput(const Input& input);
-        void ActivateWindowButton(MenuWindowAction action);
+        void ActivateWindowAction(MenuWindowAction action, bool captionDoubleClick = false);
         bool Mnemonic(char key);
         void Activate();
         void MoveHot(int step);

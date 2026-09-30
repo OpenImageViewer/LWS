@@ -2203,6 +2203,82 @@ TEST_CASE("Menu popup hosts repaint keyboard selection and retain their focus ch
     REQUIRE_FALSE(host.HasOpenMenu());
 }
 
+TEST_CASE("Wayland menu double-click metadata uses native timing and distance",
+          "[ui][menu][double-click][wayland][protocol]")
+{
+    ProtocolServer server;
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window window(context);
+    auto config = Config();
+    config.visible = true;
+    REQUIRE(window.Create(config) == LWS::Result::Success);
+    server.Settle(context);
+    const auto id = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*LWS::Wayland::GetSurface(window)));
+    std::vector<unsigned> clicks;
+    auto observer = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (const auto* button = std::get_if<LWS::EventMouseButton>(&event); button && button->pressed)
+                clicks.push_back(button->clickCount);
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(observer.has_value());
+    LWSUI::UIHost host(window);
+    host.SetMainMenu(std::make_unique<LWSUI::MenuBar>());
+    host.MainMenu()->SetWindowControls({.doubleClickMaximize = true});
+    host.Update();
+    server.Invoke([&] { server.Enter(0, id, 600); });
+    server.Settle(context);
+    uint32_t serial = 601;
+    const auto click = [&](uint32_t time, int x)
+    {
+        server.Invoke(
+            [&]
+            {
+                auto* pointer = server.seats[0]->pointers.at(0);
+                wl_pointer_send_motion(pointer, time, wl_fixed_from_int(x), wl_fixed_from_int(12));
+                wl_pointer_send_button(pointer, serial++, time, 0x110, WL_POINTER_BUTTON_STATE_PRESSED);
+                wl_pointer_send_button(pointer, serial++, time + 1, 0x110, WL_POINTER_BUTTON_STATE_RELEASED);
+            });
+        server.Settle(context);
+        REQUIRE(context.ProcessMessages() == LWS::LoopResult::Continue);
+        server.Settle(context);
+    };
+    click(100, 10);
+    click(200, 10);
+    REQUIRE(clicks == std::vector<unsigned>{1, 2});
+    size_t requests = 0;
+    server.Invoke([&] { requests = server.surfaces.at(id)->stateRequests.size(); });
+    // Initial creation requests Restored; the double-click adds exactly one maximize request.
+    REQUIRE(requests == 2);
+    server.Invoke(
+        [&]
+        {
+            auto& native = *server.surfaces.at(id);
+            uint32_t value = XDG_TOPLEVEL_STATE_MAXIMIZED;
+            wl_array states{sizeof(value), sizeof(value), &value};
+            xdg_toplevel_send_configure(native.toplevel, 101, 51, &states);
+            xdg_surface_send_configure(native.shell, serial++);
+        });
+    server.Settle(context);
+    click(1000, 10);
+    click(1700, 10);
+    click(1800, 30);
+    click(1900, 30);
+    REQUIRE(clicks == std::vector<unsigned>{1, 2, 1, 1, 1, 2});
+    unsigned restores = 0;
+    server.Invoke([&] { restores = server.surfaces.at(id)->restoreRequests; });
+    REQUIRE(restores == 2);  // Creation and the second recognized double-click.
+    server.Invoke([&] { requests = server.surfaces.at(id)->stateRequests.size(); });
+    host.MainMenu()->SetWindowControls({});
+    click(2000, 10);
+    click(2100, 10);
+    size_t unchanged = 0;
+    server.Invoke([&] { unchanged = server.surfaces.at(id)->stateRequests.size(); });
+    REQUIRE(unchanged == requests);
+}
+
 TEST_CASE("Menu bar dragging sends the Wayland move request with the pointer serial", "[ui][menu][window-controls][wayland][protocol]")
 {
     ProtocolServer server;

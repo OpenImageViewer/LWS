@@ -74,6 +74,7 @@ namespace LWS
         MouseButton button;
         bool pressed;
         Point position;
+        unsigned clickCount = 1;  // Double presses are reported as a second Down, never an extra event.
     };
     struct EventMouseWheel
     {

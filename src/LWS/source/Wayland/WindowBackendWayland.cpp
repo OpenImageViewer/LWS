@@ -796,6 +796,8 @@ namespace LWS
 
     void WindowBackendWayland::hide()
     {
+        fClientClicks.Reset();
+        fCaptionClicks.Reset();
         if (fNativeState != nullptr && fVisible)
         {
             fVisible = false;
@@ -1555,7 +1557,7 @@ namespace LWS
             if (button == MouseButton::Left && pressed)
             {
                 if (hit.action != internal::WaylandFrameAction::Move)
-                    fCaptionClickPending = false;
+                    fCaptionClicks.Reset();
                 switch (hit.action)
                 {
                     case internal::WaylandFrameAction::Close:
@@ -1587,7 +1589,7 @@ namespace LWS
         }
 
         if (button == MouseButton::Left && pressed)
-            fCaptionClickPending = false;
+            fCaptionClicks.Reset();
         const uint32_t bit = uint32_t{1} << static_cast<unsigned>(button);
         if (pressed)
             fClientPointerButtons |= bit;
@@ -1599,7 +1601,8 @@ namespace LWS
         auto* nativeSurface = static_cast<wl_surface*>(surface());
         position -= contentOffset();
         fMousePosition = position;
-        dispatchEvent(EventMouseButton{button, pressed, position});
+        const unsigned clicks = pressed ? fClientClicks.Press(button, time, position) : 1U;
+        dispatchEvent(EventMouseButton{button, pressed, position, clicks});
         if (leave)
             if (auto* window = platform->findWindow(nativeSurface);
                 window && !window->fMouseInside && !window->fClientPointerButtons)
@@ -1608,14 +1611,7 @@ namespace LWS
 
     bool WindowBackendWayland::isCaptionDoubleClick(uint32_t time, Point position)
     {
-        constexpr uint32_t DoubleClickTimeMilliseconds = 500;
-        constexpr int32_t DoubleClickRadiusSquared = 25;
-        const bool doubleClick = fCaptionClickPending && time - fLastCaptionClickTime <= DoubleClickTimeMilliseconds &&
-                                 position.DistanceSquared(fLastCaptionClickPosition) <= DoubleClickRadiusSquared;
-        fCaptionClickPending = !doubleClick;
-        fLastCaptionClickTime = time;
-        fLastCaptionClickPosition = position;
-        return doubleClick;
+        return fCaptionClicks.Press(MouseButton::Left, time, position) == 2;
     }
 
     void WindowBackendWayland::handlePointerWheel(int32_t delta, Point position,
@@ -1633,7 +1629,11 @@ namespace LWS
         {
             fFocused = focused;
             if (!focused)
+            {
                 fClientPointerButtons = 0;
+                fClientClicks.Reset();
+                fCaptionClicks.Reset();
+            }
             dispatchEvent(focused ? AnyEvent{EventFocusGained{}} : AnyEvent{EventFocusLost{}});
         }
     }

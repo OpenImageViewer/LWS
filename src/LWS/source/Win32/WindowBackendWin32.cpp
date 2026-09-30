@@ -354,6 +354,7 @@ namespace LWS
                        {
                            WNDCLASSEX window_class{};
                            window_class.cbSize = sizeof(window_class);
+                           window_class.style = CS_DBLCLKS;
                            window_class.lpfnWndProc = WndProc;
                            window_class.hInstance = instance;
                            window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
@@ -1466,33 +1467,55 @@ namespace LWS
                 break;
             }
 
+            case WM_NCLBUTTONDBLCLK:
+                if (wParam == HTCAPTION)
+                {
+                    POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                    RECT client{};
+                    if (ScreenToClient(hWnd, &point) && GetClientRect(hWnd, &client) && PtInRect(&client, point))
+                    {
+                        // Native dragging may return the next press through the caption path. A custom
+                        // client caption owns this gesture; the real non-client caption keeps its default.
+                        use_default = false;
+                        const auto position = logicalFromPhysical(Point{point.x, point.y}, fDpi);
+                        dispatchEvent(EventMouseButton{MouseButton::Left, true, position, 2});
+                    }
+                }
+                break;
+
+            case WM_LBUTTONDBLCLK:
             case WM_LBUTTONDOWN:
             case WM_LBUTTONUP:
+            case WM_RBUTTONDBLCLK:
             case WM_RBUTTONDOWN:
             case WM_RBUTTONUP:
+            case WM_MBUTTONDBLCLK:
             case WM_MBUTTONDOWN:
             case WM_MBUTTONUP:
+            case WM_XBUTTONDBLCLK:
             case WM_XBUTTONDOWN:
             case WM_XBUTTONUP:
             {
-                bool pressed = message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN ||
-                               message == WM_XBUTTONDOWN;
+                const bool doubleClick = message == WM_LBUTTONDBLCLK || message == WM_RBUTTONDBLCLK ||
+                                         message == WM_MBUTTONDBLCLK || message == WM_XBUTTONDBLCLK;
+                bool pressed = doubleClick || message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN ||
+                               message == WM_MBUTTONDOWN || message == WM_XBUTTONDOWN;
                 MouseButton button = MouseButton::Left;
-                if (message == WM_RBUTTONDOWN || message == WM_RBUTTONUP)
+                if (message == WM_RBUTTONDOWN || message == WM_RBUTTONUP || message == WM_RBUTTONDBLCLK)
                 {
                     button = MouseButton::Right;
                 }
-                else if (message == WM_MBUTTONDOWN || message == WM_MBUTTONUP)
+                else if (message == WM_MBUTTONDOWN || message == WM_MBUTTONUP || message == WM_MBUTTONDBLCLK)
                 {
                     button = MouseButton::Middle;
                 }
-                else if (message == WM_XBUTTONDOWN || message == WM_XBUTTONUP)
+                else if (message == WM_XBUTTONDOWN || message == WM_XBUTTONUP || message == WM_XBUTTONDBLCLK)
                 {
                     button = GET_XBUTTON_WPARAM(wParam) == XBUTTON1 ? MouseButton::X1 : MouseButton::X2;
                 }
 
                 const Point position = logicalFromPhysical(Point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}, fDpi);
-                dispatchEvent(EventMouseButton{button, pressed, position});
+                dispatchEvent(EventMouseButton{button, pressed, position, doubleClick ? 2U : 1U});
                 break;
             }
 

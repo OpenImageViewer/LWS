@@ -360,6 +360,104 @@ TEST_CASE("Captionless menu bars use native Windows state and move APIs", "[ui][
     REQUIRE((GetWindowLongW(hwnd, GWL_STYLE) & WS_CAPTION) == 0);
 }
 #endif
+#ifdef LWS_HAS_WIN32_BACKEND
+TEST_CASE("Menu caption double-click is an explicit independent maximize toggle", "[ui][menu][double-click]")
+{
+    MenuEnvironment env;
+    using Action = LWSUI::internal::MenuWindowAction;
+    auto menu = std::make_unique<LWSUI::MenuBar>();
+    menu->SetWindowControls({.doubleClickMaximize = true});
+    env.host().SetMainMenu(std::move(menu));
+    env.host().Update();
+    auto* bar = env.host().MainMenu();
+    REQUIRE_FALSE(bar->WindowControls().maximize);
+    REQUIRE_FALSE(bar->WindowControls().draggable);
+    SECTION("client double-click")
+    {
+        const auto scale = *env.window().GetClientAreaMetrics().Scale();
+        SendMessageW(Hwnd(env.window()), WM_LBUTTONDBLCLK, MK_LBUTTON,
+                     MAKELPARAM(int(100 * scale.x), int(10 * scale.y)));
+        REQUIRE(env.window().GetShowState() == LWS::WindowShowState::Restored);
+        REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+        REQUIRE(env.window().GetShowState() == LWS::WindowShowState::Maximized);
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = 100, .y = 10, .clickCount = 2}));
+        REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+        REQUIRE(env.window().GetShowState() == LWS::WindowShowState::Restored);
+    }
+    SECTION("custom caption native path after a move request")
+    {
+        auto controls = bar->WindowControls();
+        controls.draggable = true;
+        bar->SetWindowControls(controls);
+        POINT cursor{};
+        if (!GetCursorPos(&cursor))
+            SKIP("The interactive desktop is unavailable for native dragging");
+        bool requested = false;
+        const SUBCLASSPROC observeMove = [](HWND hwnd, UINT message, WPARAM w, LPARAM l, UINT_PTR,
+                                            DWORD_PTR data) -> LRESULT
+        {
+            if (message == WM_NCLBUTTONDOWN && w == HTCAPTION)
+                *reinterpret_cast<bool*>(data) = true;
+            if (message == WM_ENTERSIZEMOVE)
+                PostMessageW(hwnd, WM_LBUTTONUP, 0, 0);
+            return DefSubclassProc(hwnd, message, w, l);
+        };
+        REQUIRE(SetWindowSubclass(Hwnd(env.window()), observeMove, 19, reinterpret_cast<DWORD_PTR>(&requested)));
+        const auto watchdog = SetTimer(Hwnd(env.window()), 19, 1000, [](HWND hwnd, UINT, UINT_PTR, DWORD)
+                                       { SendMessageW(hwnd, WM_CANCELMODE, 0, 0); });
+        REQUIRE(watchdog != 0);
+        const auto scale = *env.window().GetClientAreaMetrics().Scale();
+        POINT point{int(100 * scale.x), int(10 * scale.y)};
+        SendMessageW(Hwnd(env.window()), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(point.x, point.y));
+        KillTimer(Hwnd(env.window()), watchdog);
+        REQUIRE(requested);
+        REQUIRE(ClientToScreen(Hwnd(env.window()), &point));
+        SendMessageW(Hwnd(env.window()), WM_NCLBUTTONDBLCLK, HTCAPTION, MAKELPARAM(point.x, point.y));
+        REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+        REQUIRE(env.window().GetShowState() == LWS::WindowShowState::Maximized);
+        REQUIRE(RemoveWindowSubclass(Hwnd(env.window()), observeMove, 19));
+    }
+    SECTION("caption presence does not enable or disable the option")
+    {
+        REQUIRE(env.window().SetWindowStyles(LWS::WindowStyle::Caption | LWS::WindowStyle::ResizableBorder) ==
+                LWS::Result::Success);
+        env.host().Update();
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = 100, .y = 10, .clickCount = 2}));
+        REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+        REQUIRE(env.window().GetShowState() == LWS::WindowShowState::Maximized);
+    }
+    SECTION("disable cancels a queued double-click")
+    {
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = 100, .y = 10, .clickCount = 2}));
+        bar->SetWindowControls({});
+        REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+        REQUIRE(env.window().GetShowState() == LWS::WindowShowState::Restored);
+    }
+    SECTION("interactive and disabled content never acts as a caption")
+    {
+        bar->SetContent(std::make_unique<LWSUI::Button>("Action"));
+        env.host().Update();
+        for (bool enabled : {true, false})
+        {
+            bar->Content()->SetEnabled(enabled);
+            env.host().Route({.kind = LWSUI::InputKind::Down, .x = 100, .y = 10, .clickCount = 2});
+            env.host().Route({.kind = LWSUI::InputKind::Up, .x = 100, .y = 10});
+            REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+            REQUIRE(env.window().GetShowState() == LWS::WindowShowState::Restored);
+        }
+    }
+    SECTION("default remains disabled")
+    {
+        bar->SetWindowControls({});
+        REQUIRE_FALSE(bar->WindowControls().doubleClickMaximize);
+        env.host().Route({.kind = LWSUI::InputKind::Down, .x = 100, .y = 10, .clickCount = 2});
+        REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+        REQUIRE(env.window().GetShowState() == LWS::WindowShowState::Restored);
+    }
+}
+
+#endif
+
 TEST_CASE("Close caption hover and press colors are configurable", "[ui][menu][window-controls]")
 {
     MenuEnvironment env;

@@ -1,4 +1,5 @@
 #pragma once
+#include <LWS/source/internal/DoubleClickTracker.hpp>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -173,8 +174,6 @@ namespace LWS
         WindowStyle fWindowStyles = WindowStyle::NoStyle;
         WindowShowState fDisplayState = WindowShowState::Restored;
         internal::FullScreenState fFullScreenState = internal::FullScreenState::None;
-        bool fCaptionClickPending = false;
-        uint32_t fLastCaptionClickTime = 0;
-        Point fLastCaptionClickPosition{};
+        internal::DoubleClickTracker fCaptionClicks, fClientClicks;
     };
 }  // namespace LWS
