@@ -289,7 +289,12 @@ TEST_CASE("Multiline selection auto-scroll stops on release and detach", "[ui][t
     REQUIRE(replacement.host->Route({.kind = InputKind::Down, .x = 18, .y = 18}));
     REQUIRE(replacement.host->Route({.kind = InputKind::Move, .x = 18, .y = 140}));
     const auto before = replacement.Bar().Value();
-    replacement.Pump(40);
+    // Scheduling can exceed one 40 ms interval during a busy full-suite run. Wait for a real tick.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    do
+    {
+        replacement.Pump(10);
+    } while (replacement.Bar().Value() == before && std::chrono::steady_clock::now() < deadline);
     REQUIRE(replacement.Bar().Value() > before);
     REQUIRE(replacement.host->Route({.kind = InputKind::Up, .x = 18, .y = 140}));
 }

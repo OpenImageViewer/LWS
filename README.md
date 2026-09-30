@@ -452,6 +452,32 @@ can customize `Theme::closeHoverBackground`, `closePressedBackground`, and
 continue to use the ordinary theme colors. These are C++ theme properties; this
 change does not extend LWSSettings JSON definitions or its theme catalog.
 
+`MenuBarWindowControls::doubleClickMaximize` defaults to false. Explicitly enable it
+for title-bar-style maximize/restore on a left double-click in blank caption space,
+the icon, or passive hosted text. It does not depend on native caption styles,
+`draggable`, or a visible Maximize button. Interactive/disabled controls, menu items,
+and caption buttons keep their normal behavior. Only horizontal Top/Bottom bars on
+top-level windows support caption gestures. State requests remain deferred and
+cancel when the bar detaches or the option is disabled before execution.
+
+`EventMouseButton::clickCount` and `Input::clickCount` report a double press as 2 on
+the second Down event. Windows uses native double-click recognition; Wayland uses
+the same 500 ms / five-logical-pixel policy as its client-side caption.
+
+### Live resize redraw
+
+`UIHost::SetRedrawOnResize(true)` opts into synchronous layout and presentation on
+each client-size notification. The default is false; the application decides
+whether its rendering workload can afford live resizing. No hardware detection or
+frame-rate cap is applied. This also works inside Windows' native resize loop,
+where queued updates may otherwise wait until resizing finishes.
+
+The live path does not execute posted application work or reap retired controls.
+Nested size/layout changes retry a current frame without recursive rendering;
+repeated invalidation is bounded and remaining work stays queued. Hidden, minimized,
+unconfigured, or destroyed windows are not presented. Normal deferred updates keep
+processing callbacks and cleanup outside the resize event.
+
 ### Menu-bar icons and custom content
 
 `MenuBar::SetIcon(BitmapSharedPtr)` adds an optional leading icon (left in a

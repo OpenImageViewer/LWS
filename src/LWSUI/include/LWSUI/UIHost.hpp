@@ -29,6 +29,9 @@ namespace LWSUI
         }
         void Invalidate(bool layout = false);
         void Update();
+        // Opt-in synchronous rendering on size notifications; never runs deferred application work.
+        void SetRedrawOnResize(bool enabled) { redrawOnResize_ = enabled; }
+        bool RedrawOnResize() const { return redrawOnResize_; }
         Size MeasureText(std::string_view text, float width, bool wrap, const FontSpec& font);
         size_t HitTestText(std::string_view text, float x, const FontSpec& font);
         float MeasureCaret(std::string_view text, size_t byteOffset, const FontSpec& font);
@@ -84,6 +87,8 @@ namespace LWSUI
         void ReleaseCapture(Control* control);
         void Detached(Control& control);
         void ScheduleUpdate();
+        void UpdateCore(bool processDeferred);
+        bool RenderFrame();
         bool Event(const LWS::AnyEvent&);
         bool InPopup(Control* control) const;
         bool RequestContextMenu(Input input, bool keyboard);
@@ -113,6 +118,7 @@ namespace LWSUI
         float floatingX_ = 0, floatingY_ = 0;
         Rect barBounds_, rootBounds_;
         bool layoutDirty_ = true, paintDirty_ = true, updating_ = false;
+        bool redrawOnResize_ = false, resizePending_ = false;
         LWS::EventConnection listener_;
         bool updatePending_ = false;
         std::shared_ptr<UIHost*> lifetime_ = std::make_shared<UIHost*>(this);

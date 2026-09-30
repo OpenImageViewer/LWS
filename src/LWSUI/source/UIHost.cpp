@@ -195,87 +195,42 @@ namespace LWSUI
     }
     void UIHost::Update()
     {
+        UpdateCore(true);
+    }
+    void UIHost::UpdateCore(bool processDeferred)
+    {
         if (updating_ || !window_.IsCreated() || !window_.IsVisible())
             return;
         updating_ = true;
         try
         {
-            retired_.clear();
-            auto work = std::move(deferred_);
-            deferred_.clear();
-            for (auto& [owner, callback] : work)
-                if (auto* control = owner.Get())
-                    callback(*control);
-            if (contextMenu_ && !ContextMenuOwnerValid())
-                CloseContextMenu();
-            if (popup_ && !popupOwner_)
-                ClosePopup(EditPhase::Cancel);
-            const auto metrics = window_.GetClientAreaMetrics();
-            const auto scale = metrics.Scale();
-            if (!scale || !metrics.pixels || metrics.pixels->x <= 0 || metrics.pixels->y <= 0)
+            if (processDeferred)
             {
-                updating_ = false;
-                return;
+                retired_.clear();
+                auto work = std::move(deferred_);
+                deferred_.clear();
+                for (auto& [owner, callback] : work)
+                    if (auto* control = owner.Get())
+                        callback(*control);
+                if (contextMenu_ && !ContextMenuOwnerValid())
+                    CloseContextMenu();
+                if (popup_ && !popupOwner_)
+                    ClosePopup(EditPhase::Cancel);
             }
-            const auto size = metrics.logical;
-            const bool drawFrame = paintDirty_ || layoutDirty_;
-            if (drawFrame)
-                canvas_.Begin(metrics.pixels->x, metrics.pixels->y, *scale);
-            // Full-tree layout keeps parent/child dependencies explicit. Finer measure/
-            // arrange invalidation needs cache propagation rules; defer until profiling
-            // shows layout cost matters for real profiles.
-            if (layoutDirty_)
+            // A layout callback can resize again. Finish with current dimensions without recursion;
+            // bound pathological resize-on-every-layout callbacks and leave remaining work queued.
+            for (unsigned pass = 0; pass < 4; ++pass)
             {
-                layoutDirty_ = false;
-                LayoutMainMenu(float(size.x), float(size.y));
-                if (root_)
+                resizePending_ = false;
+                if (!RenderFrame())
                 {
-                    root_->Measure({rootBounds_.width, rootBounds_.height});
-                    root_->Arrange(rootBounds_);
-                }
-                if (popup_)
-                {
-                    popup_->Measure({popupBounds_.width, popupBounds_.height});
-                    popup_->Arrange(popupBounds_);
-                }
-                if (contextMenu_)
-                {
-                    contextMenu_->Measure({contextMenuBounds_.width, contextMenuBounds_.height});
-                    contextMenu_->Arrange(contextMenuBounds_);
-                }
-            }
-            if (drawFrame)
-            {
-                paintDirty_ = false;
-
-                canvas_.Fill(0, 0, float(size.x), float(size.y), theme_.background);
-                if (root_)
-                    root_->Render(canvas_);
-                if (menuBar_)
-                    menuBar_->Render(canvas_);
-                if (popup_)
-                {
-                    if (popupModal_)
-                        canvas_.Fill(0, 0, float(size.x), float(size.y), popup_->Style().modalOverlay);
-                    canvas_.Fill(popupBounds_.x, popupBounds_.y, popupBounds_.width, popupBounds_.height,
-                                 popup_->Style().background);
-                    popup_->Render(canvas_);
-                }
-                if (contextMenu_)
-                    contextMenu_->Render(canvas_);
-                const auto result = window_.PresentBitmap(canvas_.End());
-                // Readiness is published through native paint/metrics events. Posting
-                // retries here would keep an unconfigured surface's event loop busy.
-                if (result == LWS::Result::InvalidState)
-                {
-                    paintDirty_ = true;
                     updating_ = false;
                     return;
                 }
-                else if (result != LWS::Result::Success)
-                    ReportError("Cannot present UI bitmap");
+                if (!redrawOnResize_ || !resizePending_)
+                    break;
             }
-            if (menuSession_)
+            if (processDeferred && menuSession_)
                 menuSession_->Update();
         }
         catch (const std::exception& e)
@@ -287,6 +242,79 @@ namespace LWSUI
         updating_ = false;
         if (paintDirty_ || layoutDirty_ || !deferred_.empty())
             ScheduleUpdate();
+    }
+    bool UIHost::RenderFrame()
+    {
+        if (!window_.IsCreated() || !window_.IsVisible())
+            return false;
+        const auto metrics = window_.GetClientAreaMetrics();
+        const auto scale = metrics.Scale();
+        if (!scale || !metrics.pixels || metrics.pixels->x <= 0 || metrics.pixels->y <= 0)
+            return false;
+        const auto size = metrics.logical;
+        if (!paintDirty_ && !layoutDirty_)
+            return true;
+        if (layoutDirty_)
+        {
+            layoutDirty_ = false;
+            LayoutMainMenu(float(size.x), float(size.y));
+            if (root_)
+            {
+                root_->Measure({rootBounds_.width, rootBounds_.height});
+                root_->Arrange(rootBounds_);
+            }
+            if (popup_)
+            {
+                popup_->Measure({popupBounds_.width, popupBounds_.height});
+                popup_->Arrange(popupBounds_);
+            }
+            if (contextMenu_)
+            {
+                contextMenu_->Measure({contextMenuBounds_.width, contextMenuBounds_.height});
+                contextMenu_->Arrange(contextMenuBounds_);
+            }
+        }
+        const auto current = [&]
+        {
+            if (!window_.IsCreated() || !window_.IsVisible())
+                return false;
+            if (window_.GetClientAreaMetrics() == metrics && (!redrawOnResize_ || !layoutDirty_))
+                return true;
+            layoutDirty_ = paintDirty_ = resizePending_ = true;
+            return false;
+        };
+        if (!current())
+            return resizePending_;
+        paintDirty_ = false;
+        canvas_.Begin(metrics.pixels->x, metrics.pixels->y, *scale);
+        canvas_.Fill(0, 0, float(size.x), float(size.y), theme_.background);
+        if (root_)
+            root_->Render(canvas_);
+        if (menuBar_)
+            menuBar_->Render(canvas_);
+        if (popup_)
+        {
+            if (popupModal_)
+                canvas_.Fill(0, 0, float(size.x), float(size.y), popup_->Style().modalOverlay);
+            canvas_.Fill(popupBounds_.x, popupBounds_.y, popupBounds_.width, popupBounds_.height,
+                         popup_->Style().background);
+            popup_->Render(canvas_);
+        }
+        if (contextMenu_)
+            contextMenu_->Render(canvas_);
+        const auto bitmap = canvas_.End();
+        if (!current())
+            return resizePending_;
+        const auto result = window_.PresentBitmap(bitmap);
+        if (result == LWS::Result::InvalidState)
+        {
+            // Native readiness/paint events retry unconfigured surfaces; never spin in a resize loop.
+            paintDirty_ = true;
+            return false;
+        }
+        if (result != LWS::Result::Success)
+            ReportError("Cannot present UI bitmap");
+        return true;
     }
     void UIHost::LayoutMainMenu(float width, float height)
     {
@@ -775,6 +803,11 @@ namespace LWSUI
             CloseMainMenu();
             ClosePopup(EditPhase::Cancel);
             Invalidate(true);
+            if (redrawOnResize_)
+            {
+                resizePending_ = true;
+                UpdateCore(false);
+            }
             return false;
         }
         // Dropdowns are anchored to the owner's client geometry but never follow it, so a move would

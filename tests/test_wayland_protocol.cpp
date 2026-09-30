@@ -2279,6 +2279,72 @@ TEST_CASE("Wayland menu double-click metadata uses native timing and distance",
     REQUIRE(unchanged == requests);
 }
 
+TEST_CASE("Wayland configure redraw uses current size and scale without draining posts",
+          "[ui][resize][wayland][protocol]")
+{
+    struct Probe : LWSUI::Control
+    {
+        unsigned paints = 0;
+        LWSUI::Rect painted;
+        LWS::ContentScale scale;
+        void OnRender(LWSUI::Canvas& canvas) override
+        {
+            ++paints;
+            painted = Bounds();
+            scale = canvas.Scale();
+            canvas.Fill(0, 0, painted.width, painted.height, Style().surface);
+        }
+    };
+    ProtocolServer server;
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window window(context);
+    auto config = Config();
+    config.visible = true;
+    REQUIRE(window.Create(config) == LWS::Result::Success);
+    server.Settle(context);
+    LWSUI::UIHost host(window);
+    auto root = std::make_unique<Probe>();
+    auto* probe = root.get();
+    host.SetRoot(std::move(root));
+    host.Update();
+    const auto id = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*LWS::Wayland::GetSurface(window)));
+    const auto resize = [&](int width, int height, uint32_t serial)
+    {
+        server.Invoke(
+            [&]
+            {
+                auto& native = *server.surfaces.at(id);
+                wl_array states{};
+                xdg_toplevel_send_configure(native.toplevel, width, height, &states);
+                xdg_surface_send_configure(native.shell, serial);
+            });
+        server.Settle(context);
+    };
+    const auto before = probe->paints;
+    resize(200, 100, 700);
+    REQUIRE(probe->paints == before);
+    host.SetRedrawOnResize(true);
+    bool posted = false;
+    host.Post(probe->Handle(), [&](auto&) { posted = true; });
+    resize(240, 120, 701);
+    REQUIRE(probe->paints > before);
+    REQUIRE(probe->painted.width == 240);
+    REQUIRE_FALSE(posted);
+    server.Invoke(
+        [&]
+        {
+            server.EnterOutput(id);
+            server.Scale(2);
+        });
+    server.Settle(context);
+    REQUIRE(probe->scale.x == 2);
+    REQUIRE(probe->painted.width == 240);
+    REQUIRE_FALSE(posted);
+    host.Update();
+    REQUIRE(posted);
+}
+
 TEST_CASE("Menu bar dragging sends the Wayland move request with the pointer serial", "[ui][menu][window-controls][wayland][protocol]")
 {
     ProtocolServer server;

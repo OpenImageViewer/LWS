@@ -360,7 +360,7 @@ TEST_CASE("Captionless menu bars use native Windows state and move APIs", "[ui][
     REQUIRE((GetWindowLongW(hwnd, GWL_STYLE) & WS_CAPTION) == 0);
 }
 #endif
-#ifdef LWS_HAS_WIN32_BACKEND
+    #ifdef LWS_HAS_WIN32_BACKEND
 TEST_CASE("Menu caption double-click is an explicit independent maximize toggle", "[ui][menu][double-click]")
 {
     MenuEnvironment env;
@@ -456,7 +456,150 @@ TEST_CASE("Menu caption double-click is an explicit independent maximize toggle"
     }
 }
 
-#endif
+TEST_CASE("Live resize renders synchronously without deferred work or retirement", "[ui][resize]")
+{
+    struct Probe : LWSUI::Control
+    {
+        unsigned paints = 0;
+        LWSUI::Rect painted;
+        std::function<void()> arranged, rendered;
+        void OnArrange() override
+        {
+            if (arranged)
+                arranged();
+        }
+        void OnRender(LWSUI::Canvas& canvas) override
+        {
+            if (rendered)
+                rendered();
+            ++paints;
+            painted = Bounds();
+            canvas.Fill(painted.x, painted.y, painted.width, painted.height, Style().surface);
+        }
+    };
+    struct Retired : LWSUI::Control
+    {
+        bool& destroyed;
+        explicit Retired(bool& value) : destroyed(value) {}
+        ~Retired() { destroyed = true; }
+    };
+    MenuEnvironment env;
+    unsigned errors = 0;
+    auto error = env.host().OnError.Connect([&](const auto&) { ++errors; });
+    auto root = std::make_unique<Probe>();
+    auto* probe = root.get();
+    env.host().SetRoot(std::move(root));
+    env.host().Update();
+    REQUIRE_FALSE(env.host().RedrawOnResize());
+    const auto initial = probe->paints;
+    REQUIRE(env.window().RequestPlacement({.clientSize = LWS::LogicalSize{660, 490}}) == LWS::Result::Success);
+    REQUIRE(probe->paints == initial);
+    env.host().Update();
+    REQUIRE(probe->painted.width == 660);
+    env.host().SetRedrawOnResize(true);
+    bool destroyed = false, posted = false, platformTask = false;
+    REQUIRE(env.host().OpenPopup(*probe, std::make_unique<Retired>(destroyed), {10, 10, 100, 60}));
+    env.host().Post(probe->Handle(), [&](auto&) { posted = true; });
+    REQUIRE(env.context.PostTask([&] { platformTask = true; }) == LWS::Result::Success);
+    const auto before = probe->paints;
+    SendMessageW(Hwnd(env.window()), WM_ENTERSIZEMOVE, 0, 0);
+    REQUIRE(env.window().RequestPlacement({.clientSize = LWS::LogicalSize{700, 510}}) == LWS::Result::Success);
+    REQUIRE(probe->paints > before);
+    REQUIRE(probe->painted.width == 700);
+    REQUIRE_FALSE(destroyed);
+    REQUIRE_FALSE(posted);
+    REQUIRE_FALSE(platformTask);
+    REQUIRE_FALSE(env.host().HasPopup());
+    SendMessageW(Hwnd(env.window()), WM_EXITSIZEMOVE, 0, 0);
+    bool nested = false;
+    probe->arranged = [&]
+    {
+        if (!nested)
+        {
+            nested = true;
+            REQUIRE(env.window().RequestPlacement({.clientSize = LWS::LogicalSize{740, 540}}) == LWS::Result::Success);
+        }
+    };
+    REQUIRE(env.window().RequestPlacement({.clientSize = LWS::LogicalSize{720, 530}}) == LWS::Result::Success);
+    REQUIRE(nested);
+    REQUIRE(probe->painted.width == 740);
+    REQUIRE_FALSE(destroyed);
+    REQUIRE_FALSE(posted);
+    probe->arranged = {};
+    env.host().Update();
+    REQUIRE(destroyed);
+    REQUIRE(posted);
+    REQUIRE_FALSE(platformTask);
+    REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+    REQUIRE(platformTask);
+    SECTION("layout-only invalidation never paints obsolete menu geometry")
+    {
+        env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>());
+        env.host().Update();
+        auto* bar = env.host().MainMenu();
+        bool changed = false;
+        probe->arranged = [&]
+        {
+            if (!changed)
+            {
+                changed = true;
+                bar->SetSpan(250);
+            }
+        };
+        probe->rendered = [&] { REQUIRE(bar->Bounds().width == 250); };
+        const auto beforeLayout = probe->paints;
+        REQUIRE(env.window().RequestPlacement({.clientSize = LWS::LogicalSize{755, 555}}) == LWS::Result::Success);
+        REQUIRE(changed);
+        REQUIRE(probe->paints == beforeLayout + 1);
+    }
+    SECTION("child hosts redraw during parent layout")
+    {
+        LWS::Window child(env.context);
+        REQUIRE(child.Create({.parent = &env.window(), .clientSize = {120, 80}, .visible = true}) ==
+                LWS::Result::Success);
+        LWSUI::UIHost childHost(child);
+        childHost.SetRedrawOnResize(true);
+        auto childRoot = std::make_unique<Probe>();
+        auto* childProbe = childRoot.get();
+        childHost.SetRoot(std::move(childRoot));
+        childHost.Update();
+        const auto beforeChild = childProbe->paints;
+        probe->arranged = [&]
+        {
+            REQUIRE(child.RequestPlacement({.clientSize = LWS::LogicalSize{int(probe->Bounds().width / 2), 100}}) ==
+                    LWS::Result::Success);
+        };
+        REQUIRE(env.window().RequestPlacement({.clientSize = LWS::LogicalSize{780, 580}}) == LWS::Result::Success);
+        REQUIRE(childProbe->paints > beforeChild);
+        REQUIRE(childProbe->painted.width == 390);
+        probe->arranged = {};
+    }
+    SECTION("minimized zero-sized clients are not presented")
+    {
+        const auto beforeMinimize = probe->paints;
+        REQUIRE(env.window().RequestShowState(LWS::WindowShowState::Minimized) == LWS::Result::Success);
+        REQUIRE(probe->paints == beforeMinimize);
+        REQUIRE(env.window().RequestShowState(LWS::WindowShowState::Restored) == LWS::Result::Success);
+        REQUIRE(probe->paints > beforeMinimize);
+    }
+    SECTION("disabled runtime option restores deferred redraw")
+    {
+        env.host().SetRedrawOnResize(false);
+        const auto count = probe->paints;
+        REQUIRE(env.window().RequestPlacement({.clientSize = LWS::LogicalSize{750, 550}}) == LWS::Result::Success);
+        REQUIRE(probe->paints == count);
+    }
+    SECTION("destroyed during layout never presents a stale frame")
+    {
+        const auto count = probe->paints;
+        probe->arranged = [&] { REQUIRE(env.window().Destroy() == LWS::Result::Success); };
+        REQUIRE(env.window().RequestPlacement({.clientSize = LWS::LogicalSize{760, 560}}) == LWS::Result::Success);
+        REQUIRE_FALSE(env.window().IsCreated());
+        REQUIRE(probe->paints == count);
+    }
+    REQUIRE(errors == 0);
+}
+    #endif
 
 TEST_CASE("Close caption hover and press colors are configurable", "[ui][menu][window-controls]")
 {
