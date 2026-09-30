@@ -1255,9 +1255,10 @@ namespace LWS
     {
         return fMousePosition;
     }
-    void WindowBackendWayland::setLockMouseToWindowMode(internal::LockMouseToWindowMode) {}
-    Result WindowBackendWayland::beginWindowMove()
+    Result WindowBackendWayland::beginWindowDrag(WindowDragOperation operation)
     {
+        if (operation != WindowDragOperation::Move)
+            return Result::NotSupported;
         if (fNativeState == nullptr || fNativeState->toplevel == nullptr)
             return Result::InvalidState;
         auto& platform = fPlatform;

@@ -66,8 +66,7 @@ namespace LWS
         internal::FullScreenState getFullScreenState() const override;
         bool isMouseInClientRect() const override;
         Point getMousePosition() const override;
-        void setLockMouseToWindowMode(internal::LockMouseToWindowMode mode) override;
-        Result beginWindowMove();
+        Result beginWindowDrag(WindowDragOperation operation) override;
         Result setPointerLocked(bool locked) override;
         void setCursor(std::shared_ptr<internal::ICursorBackend> cursor) override;
         void setParent(internal::IWindowBackend* parent) override;

@@ -374,12 +374,11 @@ namespace LWS
         fDisplayState = config.displayState;
         fVisible = config.visible;
         fLastMousePos = {};
-        fIsPopup = config.popup.has_value();
         fPopupPlacement = config.popup;
         updateBackgroundBrush();
 
         DWORD ex_style = 0;
-        if (fIsPopup)
+        if (fPopupPlacement.has_value())
         {
             ex_style |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
         }
@@ -404,7 +403,7 @@ namespace LWS
         DWORD style = 0;
         Point position{};
         Size outerSize{};
-        if (fIsPopup)
+        if (fPopupPlacement.has_value())
         {
             // An owned WS_POPUP top-level tracks its owner's z-order without ever activating.
             style = static_cast<DWORD>(WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
@@ -472,7 +471,7 @@ namespace LWS
 
         if (config.visible)
         {
-            ShowWindow(fHwnd, fIsPopup ? SW_SHOWNOACTIVATE : SW_SHOW);
+            ShowWindow(fHwnd, fPopupPlacement.has_value() ? SW_SHOWNOACTIVATE : SW_SHOW);
         }
         else
         {
@@ -491,7 +490,6 @@ namespace LWS
         }
         if (fWindowIcon != nullptr)
             DestroyIcon(std::exchange(fWindowIcon, nullptr));
-        fIsPopup = false;
         fPopupPlacement.reset();
     }
 
@@ -500,7 +498,7 @@ namespace LWS
         fVisible = true;
         if (fHwnd != nullptr)
         {
-            ShowWindow(fHwnd, fIsPopup ? SW_SHOWNOACTIVATE : SW_SHOW);
+            ShowWindow(fHwnd, fPopupPlacement.has_value() ? SW_SHOWNOACTIVATE : SW_SHOW);
         }
     }
 
@@ -696,13 +694,10 @@ namespace LWS
 
     void WindowBackendWin32::setPosition(Point pos)
     {
-        if (fIsPopup)
+        if (fPopupPlacement.has_value())
         {
-            if (fPopupPlacement.has_value())
-            {
-                fPopupPlacement->anchor = pos;
-                applyPopupPlacement();
-            }
+            fPopupPlacement->anchor = pos;
+            applyPopupPlacement();
             return;
         }
         if (fHwnd != nullptr)
@@ -751,13 +746,10 @@ namespace LWS
 
     void WindowBackendWin32::setSize(Size sz)
     {
-        if (fIsPopup)
+        if (fPopupPlacement.has_value())
         {
-            if (fPopupPlacement.has_value())
-            {
-                fPopupPlacement->size = {sz.x, sz.y};
-                applyPopupPlacement();
-            }
+            fPopupPlacement->size = {sz.x, sz.y};
+            applyPopupPlacement();
             return;
         }
         if (fHwnd != nullptr)
@@ -805,14 +797,11 @@ namespace LWS
 
     void WindowBackendWin32::setPlacement(const internal::NativeWindowPlacement& placement)
     {
-        if (fIsPopup)
+        if (fPopupPlacement.has_value())
         {
-            if (fPopupPlacement.has_value())
-            {
-                fPopupPlacement->anchor = placement.position;
-                fPopupPlacement->size = {placement.size.x, placement.size.y};
-                applyPopupPlacement();
-            }
+            fPopupPlacement->anchor = placement.position;
+            fPopupPlacement->size = {placement.size.x, placement.size.y};
+            applyPopupPlacement();
             return;
         }
         if (fHwnd == nullptr)
@@ -1043,21 +1032,21 @@ namespace LWS
         return logicalFromPhysical(Point{point.x, point.y}, fDpi);
     }
 
-    void WindowBackendWin32::setLockMouseToWindowMode(internal::LockMouseToWindowMode mode)
+    Result WindowBackendWin32::beginWindowDrag(WindowDragOperation operation)
     {
-        if (fHwnd != nullptr && mode != internal::LockMouseToWindowMode::NoLock)
+        if (fHwnd != nullptr)
         {
             POINT cursor{};
             if (GetCursorPos(&cursor) != FALSE)
             {
                 const LPARAM position = MAKELPARAM(cursor.x, cursor.y);
-                const LRESULT hitTest = mode == internal::LockMouseToWindowMode::LockMove
-                                            ? HTCAPTION
-                                            : getCorner(MAKEPOINTS(position));
+                const LRESULT hitTest = operation == WindowDragOperation::Move ? HTCAPTION
+                                                                               : getCorner(MAKEPOINTS(position));
                 ReleaseCapture();
                 SendMessageW(fHwnd, WM_NCLBUTTONDOWN, hitTest, position);
             }
         }
+        return Result::Success;
     }
 
     Result WindowBackendWin32::setPointerLocked(bool)
@@ -1410,7 +1399,7 @@ namespace LWS
                 break;
 
             case WM_MOUSEACTIVATE:
-                if (fIsPopup)
+                if (fPopupPlacement.has_value())
                 {
                     // Clicking a popup must not steal focus from the window whose menu it belongs to.
                     use_default = false;
@@ -1607,7 +1596,7 @@ namespace LWS
         auto has_style = [window_styles](WindowStyle style)
         { return (window_styles & std::to_underlying(style)) != 0; };
 
-        if (fParentBackend != nullptr && !fIsPopup)
+        if (fParentBackend != nullptr && !fPopupPlacement.has_value())
             styles |= WS_CHILD;
         if (has_style(WindowStyle::Caption))
             styles |= WS_CAPTION;

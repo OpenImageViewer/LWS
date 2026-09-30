@@ -59,7 +59,7 @@ namespace LWS
         internal::FullScreenState getFullScreenState() const override;
         bool isMouseInClientRect() const override;
         Point getMousePosition() const override;
-        void setLockMouseToWindowMode(internal::LockMouseToWindowMode mode) override;
+        Result beginWindowDrag(WindowDragOperation operation) override;
         Result setPointerLocked(bool locked) override;
         Result presentBitmap(const BitmapBuffer& bitmap) override;
         void setCursor(std::shared_ptr<internal::ICursorBackend> cursor) override;
@@ -110,7 +110,6 @@ namespace LWS
         bool fAlwaysOnTop = false;
         bool fTransparent = false;
         // Popups are owned top-level windows that never activate; geometry is resolved from the anchor.
-        bool fIsPopup = false;
         std::optional<PopupPlacement> fPopupPlacement;
         WindowStyle fWindowStyles = WindowStyle::NoStyle;
         WindowShowState fDisplayState = WindowShowState::Restored;

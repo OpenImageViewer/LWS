@@ -3,9 +3,6 @@
 #include "internal/ListenerState.hpp"
 #include "internal/PlatformBackend.hpp"
 #include "internal/WindowBackendAccess.hpp"
-#ifdef LWS_PLATFORM_WAYLAND
-    #include "Wayland/internal/WindowBackendWayland.hpp"
-#endif
 
 #include <LWS/source/internal/Backends.hpp>
 
@@ -656,18 +653,7 @@ namespace LWS
             return Result::InvalidState;
         if (operation != WindowDragOperation::Move && operation != WindowDragOperation::ResizeNearest)
             return Result::InvalidArgument;
-        if (platform_.GetBackendId() == BackendId::Win32)
-        {
-            impl_->backend->setLockMouseToWindowMode(operation == WindowDragOperation::Move
-                                                         ? internal::LockMouseToWindowMode::LockMove
-                                                         : internal::LockMouseToWindowMode::LockResize);
-            return Result::Success;
-        }
-#ifdef LWS_PLATFORM_WAYLAND
-        if (platform_.GetBackendId() == BackendId::Wayland && operation == WindowDragOperation::Move)
-            return static_cast<WindowBackendWayland*>(impl_->backend.get())->beginWindowMove();
-#endif
-        return Result::NotSupported;
+        return impl_->backend->beginWindowDrag(operation);
     }
 
     Result Window::SetMouseCursor(Cursor cursor)
