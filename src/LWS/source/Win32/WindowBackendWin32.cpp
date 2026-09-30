@@ -1620,6 +1620,11 @@ namespace LWS
         if (has_style(WindowStyle::ResizableBorder))
             styles |= WS_SIZEBOX;
 
+        // CreateWindowEx adds a caption to overlapped windows. Captionless top-levels
+        // need WS_POPUP even when they are ordinary activating windows, not menu popups.
+        if ((styles & (WS_CHILD | WS_CAPTION)) == 0)
+            styles |= WS_POPUP;
+
         return styles;
     }
 

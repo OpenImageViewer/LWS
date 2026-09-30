@@ -6,6 +6,25 @@
 #include <vector>
 namespace LWSUI
 {
+    namespace internal
+    {
+        class MenuSession;
+        struct MenuSessionAccess;
+        enum class MenuWindowAction
+        {
+            Minimize,
+            Maximize,
+            Close
+        };
+    }  // namespace internal
+    /// Optional caption replacement for horizontal Top/Bottom bars on top-level windows.
+    /// Close is shown only when requestClose is supplied. Button actions run outside input dispatch;
+    /// the callback may quit, hide the window, or decline the request. Wayland minimize is disabled.
+    struct MenuBarWindowControls
+    {
+        bool minimize = false, maximize = false, draggable = false;
+        std::function<void()> requestClose;
+    };
     enum class MenuDock
     {
         Floating,
@@ -34,7 +53,7 @@ namespace LWSUI
     /// Menu bar control. A single `&` in a label marks the mnemonic that is underlined; `&&` is a
     /// literal ampersand. The bar is passive: UIHost::SetMainMenu drives state, popup dropdowns,
     /// hover and the full Windows-style keyboard path; hover the control directly for rendering.
-    class MenuBar : public Control
+    class MenuBar : public Container
     {
       public:
 
@@ -64,7 +83,17 @@ namespace LWSUI
             maxSpan_ = std::max(0.f, span);
             Invalidate(true);
         }
+        void SetIcon(LWS::BitmapSharedPtr icon);
+        const LWS::BitmapSharedPtr& Icon() const { return icon_; }
+        // Content is active in horizontal Top/Bottom bars. Structural replacements must be deferred from callbacks.
+        void SetContent(std::unique_ptr<Control> content, float minimumWidth = 0);
+        Control* Content() const { return content_; }
+        void SetContentMinimumWidth(float width);
+        float MinimumWidth() const;
+        Event<void(float)> OnMinimumWidthChanged;
         void SetItems(std::vector<MenuBarItem> items);
+        void SetWindowControls(MenuBarWindowControls controls);
+        const MenuBarWindowControls& WindowControls() const { return windowControls_; }
         const std::vector<MenuBarItem>& Items() const { return items_; }
         /// Cross-axis thickness for the current orientation.
         float Thickness() const;
@@ -81,9 +110,46 @@ namespace LWSUI
         Size OnMeasure(Size available) override;
         void OnRender(Canvas&) override;
         bool OnInput(const Input&) override;
+        void OnArrange() override;
 
       private:
 
+        friend class UIHost;
+        using Container::Add;
+        using Container::Clear;
+        using Container::Emplace;
+        using Container::Remove;
+        bool ContentActive() const;
+        Control* HitContent(float x, float y) const;
+        bool ContentOccupied(float x, float y) const;
+        bool InContent(Control* control) const;
+        Rect ContentRect() const;
+        Rect IconRect() const;
+        float IconSpan() const;
+        float ItemsSpan() const;
+        void ArrangeContent();
+        void RenderContent(Canvas& canvas);
+        void NotifyMinimumWidth();
+        LWS::BitmapSharedPtr icon_;
+        Control* content_ = nullptr;
+        float contentMinimum_ = 0, notifiedMinimum_ = -1;
+        friend class internal::MenuSession;
+        friend struct internal::MenuSessionAccess;
+        using WindowAction = internal::MenuWindowAction;
+        bool WindowControlsAvailable() const;
+        bool HasWindowButton(WindowAction action) const;
+        bool WindowButtonEnabled(WindowAction action) const;
+        Rect WindowButtonRect(WindowAction action) const;
+        std::optional<WindowAction> HitWindowButton(float x, float y) const;
+        Rect MenuItemsArea() const;
+        Rect WindowDragArea() const;
+        bool HitWindowDrag(float x, float y) const;
+        float WindowControlsSpan() const;
+        void RenderWindowControls(Canvas& canvas);
+        void ClearWindowPress();
+        MenuBarWindowControls windowControls_;
+        std::optional<WindowAction> windowHover_, windowPressed_, windowFocus_;
+        Rect windowPressBounds_{};
         std::vector<Rect> ItemRects() const;
         float ItemExtent(size_t index) const;
         float TextWidth(std::string_view text) const;

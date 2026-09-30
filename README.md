@@ -322,7 +322,7 @@ DPI scenarios run in separate child processes because process DPI initialization
 The optional `LWSUI::LWSUI` target provides controls, layout, text rendering, popups,
 focus/capture and bitmap presentation without a JSON dependency. `LWS_BUILD_UI` defaults
 on for Windows/Wayland and off for the unavailable X11 scaffold. `LWSUI_BUILD_DEMO`
-controls the controls-only showcase. Dependency builds compile LWSUI only when linked
+controls the [multi-window control showcase](src/LWSUI/demo/README.md), with fixed and resizable native child panes and a complete control catalog. Dependency builds compile LWSUI only when linked
 (or explicitly requested); standalone builds include it. LWSSettings is a separate consumer.
 
 UIHost coalesces deferred work, layout and painting through PlatformContext::PostTask.
@@ -387,6 +387,64 @@ closing the menu; detached or unavailable owners are skipped. Callbacks must res
 the existing structural-edit lifetime rules and must not capture shorter-lived objects.
 Long menus scroll using existing menu theme metrics. Submenus, icons, native menus,
 and automatic shortcut registration are intentionally deferred.
+
+### Menu-bar window controls
+
+Horizontal Top/Bottom menu bars on top-level windows can opt into caption buttons
+and native dragging. Other layouts retain their ordinary menu behavior.
+
+```cpp
+bar->SetWindowControls({
+    .minimize = true,
+    .maximize = true,
+    .draggable = true,
+    .requestClose = [&] { platform.RequestQuit(); }
+});
+```
+
+The close callback enables the Close button and runs outside input dispatch. The
+application decides whether to quit, hide the window, or decline closing. Minimize
+and maximize/restore call `RequestShowState`; dragging unused bar space calls
+`BeginWindowDrag(Move)` synchronously with the pointer press. Wayland Minimize is
+visible but disabled. Defaults leave all window controls and dragging off.
+
+For a resizable captionless window, use `WindowStyle::ResizableBorder` without
+native caption or caption-button flags: the Win32 backend adds a caption for
+`CloseButton`, `MinimizeButton`, and `MaximizeButton`. The controls-only showcase's
+main Workspace demonstrates this configuration while its companion windows keep
+native captions.
+
+### Menu-bar icons and custom content
+
+`MenuBar::SetIcon(BitmapSharedPtr)` adds an optional leading icon (left in a
+horizontal bar, top in a vertical one). `Icon()` returns the retained bitmap;
+passing null removes it and its space. The icon keeps its aspect ratio in a
+24-logical-pixel box, clamped to the bar thickness. It starts a native window move
+when window dragging is enabled for the bar. It is not a menu item and does not
+change the native window icon.
+
+`SetContent(std::unique_ptr<Control>, minimumWidth)` owns one optional control tree
+between menu items and window buttons in horizontal Top/Bottom bars. `Content()`
+returns that tree, and `SetContentMinimumWidth()` updates its minimum. The child
+reports its preferred size through measurement. `MinimumWidth()` combines required
+icon, menu, content, and window-button widths; `OnMinimumWidthChanged` lets the
+application defer updates to native size limits. Structural content replacements
+must be deferred from control callbacks, just like other tree mutations.
+
+Content participates in focus, capture, Tab traversal, context menus, popups, and
+edit completion. Its hit-test result identifies occupied regions; disabled controls
+still occupy their rectangles. Containers that intend gaps to be draggable should
+return null from HitTest for those gaps or passive text intended as a drag region.
+Labels remain occupied unless their content container passes hits through; the
+settings header does this for its title and saved-state indicator. Content
+is clipped to its slot and never intercepts window buttons. Other bar layouts keep
+the content attached but inactive, preserving control state for returning to a
+horizontal dock. Existing bars without content retain their previous behavior.
+
+The settings editor demonstrates this with its icon, title, theme selector, and
+saved-state indicator. The bar remains generic and has no dependency on settings
+documents, JSON, or theme persistence. A TODO in its layout code records the deferred
+decision about reserving a guaranteed drag strip for combined-content bars.
 
 ### Theme presets
 

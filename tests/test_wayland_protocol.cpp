@@ -2,6 +2,10 @@
     #include <catch2/catch_test_macros.hpp>
     #include <LWS/Platform.hpp>
     #include <LWS/Window.hpp>
+#ifdef LWS_TEST_UI
+    #include <LWSUI/UIHost.hpp>
+    #include "source/MenuHost.hpp"
+#endif
     #include <LWS/source/internal/WindowBackendAccess.hpp>
     #include <LWS/source/Wayland/internal/WindowBackendWayland.hpp>
     #include <LWS/source/Wayland/internal/WindowFrame.hpp>
@@ -63,6 +67,8 @@ namespace
             std::vector<wl_resource*> heldBuffers;
             std::vector<uint32_t> submittedBuffers;
             std::vector<std::string> stateRequests;
+            uint32_t moveSerial{}, moveSeat{};
+            unsigned moves{}, restoreRequests{};
             wl_resource* popup{};
             wl_resource* popupParent{};
             LWS::Size popupSize{};
@@ -635,7 +641,13 @@ namespace
                                 .set_app_id = [](wl_client*, wl_resource* resource, const char* appId)
                                 { static_cast<Surface*>(wl_resource_get_user_data(resource))->appId = appId; },
                                 .show_window_menu = nullptr,
-                                .move = nullptr,
+                                .move = [](wl_client*, wl_resource* resource, wl_resource* seat, uint32_t serial)
+                                {
+                                    auto& surface = *static_cast<Surface*>(wl_resource_get_user_data(resource));
+                                    surface.moveSerial = serial;
+                                    surface.moveSeat = wl_resource_get_id(seat);
+                                    ++surface.moves;
+                                },
                                 .resize = nullptr,
                                 .set_max_size = [](wl_client*, wl_resource* resource, int32_t x, int32_t y)
                                 { static_cast<Surface*>(wl_resource_get_user_data(resource))->maximum = {x, y}; },
@@ -647,7 +659,8 @@ namespace
                                     static_cast<Surface*>(wl_resource_get_user_data(resource))
                                         ->stateRequests.push_back("maximized");
                                 },
-                                .unset_maximized = [](wl_client*, wl_resource*) {},
+                                .unset_maximized = [](wl_client*, wl_resource* resource)
+                                { ++static_cast<Surface*>(wl_resource_get_user_data(resource))->restoreRequests; },
                                 .set_fullscreen =
                                     [](wl_client*, wl_resource* resource, wl_resource*)
                                 {
@@ -2087,4 +2100,79 @@ TEST_CASE("Wayland popup requires a toplevel parent", "[wayland][protocol][popup
     REQUIRE(popup.Create(config) == LWS::Result::NotSupported);
     REQUIRE_FALSE(popup.IsCreated());
 }
+#ifdef LWS_TEST_UI
+TEST_CASE("Menu bar dragging sends the Wayland move request with the pointer serial", "[ui][menu][window-controls][wayland][protocol]")
+{
+    ProtocolServer server;
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window window(context);
+    auto config = Config(); config.visible = true;
+    REQUIRE(window.Create(config) == LWS::Result::Success);
+    server.Settle(context);
+    LWSUI::UIHost host(window);
+    host.SetMainMenu(std::make_unique<LWSUI::MenuBar>());
+    host.MainMenu()->SetWindowControls({.draggable = true});
+    host.Update();
+    const auto native = LWS::Wayland::GetSurface(window);
+    REQUIRE(native.has_value());
+    const auto id = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*native));
+    unsigned errors = 0;
+    auto error = host.OnError.Connect([&](const std::string&) { ++errors; });
+    server.Invoke([&] { server.Enter(0, id, 400); server.Button(0, 401); });
+    server.Settle(context);
+    unsigned moves{};
+    uint32_t serial{}, seat{}, expectedSeat{};
+    server.Invoke([&]
+    {
+        const auto& surface = *server.surfaces.at(id);
+        moves = surface.moves; serial = surface.moveSerial; seat = surface.moveSeat;
+        expectedSeat = wl_resource_get_id(server.seats.at(0)->bindings.at(0));
+    });
+    REQUIRE(moves == 1);
+    REQUIRE(serial == 401);
+    REQUIRE(seat == expectedSeat);
+    REQUIRE(errors == 0);
+    using Access = LWSUI::internal::MenuSessionAccess;
+    using Action = LWSUI::internal::MenuWindowAction;
+    host.MainMenu()->SetWindowControls({.maximize = true});
+    host.Update();
+    const auto clickMaximize = [&]
+    {
+        const auto b = Access::WindowButtonBounds(*host.MainMenu(), Action::Maximize);
+        REQUIRE(host.Route({.kind = LWSUI::InputKind::Down, .x = b.x + 2, .y = b.y + 2}));
+        REQUIRE(host.Route({.kind = LWSUI::InputKind::Up, .x = b.x + 2, .y = b.y + 2}));
+        REQUIRE(context.ProcessMessages() == LWS::LoopResult::Continue);
+        server.Settle(context);
+    };
+    const auto configure = [&](bool maximized, uint32_t serial)
+    {
+        server.Invoke([&]
+        {
+            auto& native = *server.surfaces.at(id);
+            uint32_t value = XDG_TOPLEVEL_STATE_MAXIMIZED;
+            wl_array states{maximized ? sizeof(value) : 0, sizeof(value), &value};
+            xdg_toplevel_send_configure(native.toplevel, 101, 51, &states);
+            xdg_surface_send_configure(native.shell, serial);
+        });
+        server.Settle(context);
+        host.Update();
+    };
+    clickMaximize();
+    // A compositor may decline the request. Its next configure must win over the request.
+    configure(false, 410);
+    REQUIRE(window.GetShowState() == LWS::WindowShowState::Restored);
+    clickMaximize();
+    configure(true, 411);
+    REQUIRE(window.GetShowState() == LWS::WindowShowState::Maximized);
+    unsigned before{}, after{};
+    server.Invoke([&] { before = server.surfaces.at(id)->restoreRequests; });
+    clickMaximize();
+    server.Invoke([&] { after = server.surfaces.at(id)->restoreRequests; });
+    REQUIRE(after == before + 1);
+    configure(false, 412);
+    REQUIRE(window.GetShowState() == LWS::WindowShowState::Restored);
+    REQUIRE(errors == 0);
+}
+#endif
 #endif

@@ -81,6 +81,8 @@ namespace LWSUI::internal
         ~MenuSession();
         /// Main-window input hook; true = consumed.
         bool OnInput(const Input& input);
+        /// Clear passive bar hover when the pointer leaves the owner window.
+        void LeaveBar();
         /// Popup-window listener hook; true = handled.
         bool OnLevelEvent(LWS::Window* window, const LWS::AnyEvent& event);
         /// Presents dirty panels; called from UIHost::Update after the main present.
@@ -118,6 +120,8 @@ namespace LWSUI::internal
         static std::optional<PanelBuild> BuildPanel(UIHost& host, const std::vector<MenuItem>& items);
         bool KeyDown(const Input& input);
         bool PointerInput(const Input& input);
+        bool WindowInput(const Input& input);
+        void ActivateWindowButton(MenuWindowAction action);
         bool Mnemonic(char key);
         void Activate();
         void MoveHot(int step);
@@ -163,5 +167,12 @@ namespace LWSUI::internal
     struct MenuSessionAccess
     {
         static MenuSession& Get(UIHost& host);
+        static Rect WindowButtonBounds(MenuBar& bar, MenuWindowAction action) { return bar.WindowButtonRect(action); }
+        static Rect DragBounds(MenuBar& bar) { return bar.WindowDragArea(); }
+        static bool HitDrag(MenuBar& bar, float x, float y) { return bar.HitWindowDrag(x, y); }
+        static bool WindowButtonEnabled(MenuBar& bar, MenuWindowAction action)
+        {
+            return bar.WindowButtonEnabled(action);
+        }
     };
 }  // namespace LWSUI::internal

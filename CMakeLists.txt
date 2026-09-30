@@ -270,7 +270,7 @@ if(LWS_BUILD_UI)
     add_library(LWSUI STATIC
         src/LWSUI/source/Control.cpp src/LWSUI/source/UIHost.cpp
         src/LWSUI/source/Primitives.cpp src/LWSUI/source/Containers.cpp
-        src/LWSUI/source/Composites.cpp src/LWSUI/source/Menu.cpp)
+        src/LWSUI/source/Composites.cpp src/LWSUI/source/Menu.cpp src/LWSUI/source/MenuWindowControls.cpp src/LWSUI/source/MenuContent.cpp)
     # Keep core-only consumers from building unused controls. Linking LWSUI still
     # builds it normally; standalone builds continue to include the library.
     if(NOT PROJECT_IS_TOP_LEVEL)
@@ -295,7 +295,13 @@ if(LWS_BUILD_UI)
         target_include_directories(LWSTests PRIVATE src/LWSUI)
     endif()
     if(LWSUI_BUILD_DEMO)
-        add_executable(LWSUIDemo src/LWSUI/demo.cpp)
-        target_link_libraries(LWSUIDemo PRIVATE LWSUI::LWSUI)
+        add_executable(LWSUIDemo src/LWSUI/demo.cpp src/LWSUI/demo/MenuGallery.cpp)
+        add_library(LWSUIDemoSupport STATIC src/LWSUI/demo/Showcase.cpp src/LWSUI/demo/SplitPreview.cpp)
+        target_link_libraries(LWSUIDemoSupport PUBLIC LWSUI::LWSUI)
+        target_link_libraries(LWSUIDemo PRIVATE LWSUIDemoSupport)
+        if(TARGET LWSTests)
+            target_link_libraries(LWSTests PRIVATE LWSUIDemoSupport)
+            target_compile_definitions(LWSTests PRIVATE LWS_TEST_SHOWCASE)
+        endif()
     endif()
 endif()

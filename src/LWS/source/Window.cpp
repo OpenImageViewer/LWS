@@ -4,7 +4,7 @@
 #include "internal/PlatformBackend.hpp"
 #include "internal/WindowBackendAccess.hpp"
 #ifdef LWS_PLATFORM_WAYLAND
-    #include "Wayland/WindowBackendWayland.hpp"
+    #include "Wayland/internal/WindowBackendWayland.hpp"
 #endif
 
 #include <LWS/source/internal/Backends.hpp>

@@ -283,7 +283,8 @@ TEST_CASE("Wayland top-level positions and multi-monitor fullscreen are unsuppor
     REQUIRE_FALSE(window.GetPlacement().position.has_value());
     REQUIRE(window.SetWindowMode(LWS::WindowMode::FullscreenAllMonitors) == LWS::Result::NotSupported);
     REQUIRE(window.SetAlwaysOnTop(true) == LWS::Result::NotSupported);
-    REQUIRE(window.BeginWindowDrag(LWS::WindowDragOperation::Move) == LWS::Result::NotSupported);
+    // Moving is supported, but requires a configured surface and a live pointer press serial.
+    REQUIRE(window.BeginWindowDrag(LWS::WindowDragOperation::Move) == LWS::Result::InvalidState);
 }
 
 // Requires a compositor that honors fullscreen/maximize requests.

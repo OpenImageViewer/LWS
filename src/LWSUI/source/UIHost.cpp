@@ -460,7 +460,7 @@ namespace LWSUI
         ClosePopup(phase);
         if (popup_)
             return false;
-        return !root_ || root_->Finish(phase);
+        return (!menuBar_ || menuBar_->Finish(phase)) && (!root_ || root_->Finish(phase));
     }
     void UIHost::Hover(Control* c)
     {
@@ -567,7 +567,8 @@ namespace LWSUI
         if (capture_)
             return true;
         auto* tree = popup_ ? popup_.get() : root_.get();
-        auto* target = keyboard ? focus_.Get() : tree ? tree->HitTest(input.x, input.y) : nullptr;
+        auto* target = keyboard ? focus_.Get() : menuBar_ && !popup_ && menuBar_->HitContent(input.x, input.y)
+            ? menuBar_->HitContent(input.x, input.y) : tree ? tree->HitTest(input.x, input.y) : nullptr;
         if (!Available(target) || (popup_ && !InPopup(target)))
             return false;
         auto* owner = target;
@@ -653,6 +654,7 @@ namespace LWSUI
             !input.alt)
             return input.repeat || RequestContextMenu(input, true);
         auto* preview = popup_ ? popup_.get() : root_.get();
+        if (!popup_ && menuBar_ && menuBar_->ContentActive() && menuBar_->Content()->PreviewInput(input)) return true;
         if (preview && preview->PreviewInput(input))
             return true;
         bool pointer = input.kind == InputKind::Down || input.kind == InputKind::Up || input.kind == InputKind::Move ||
@@ -677,6 +679,7 @@ namespace LWSUI
             target = capture_.Get();
             if (target && popup_ && !InPopup(target))
                 target = nullptr;
+            if (!target && !popup_ && menuBar_) target = menuBar_->HitContent(input.x, input.y);
             if (!target)
                 target = popup_  ? popup_->HitTest(input.x, input.y)
                          : root_ ? root_->HitTest(input.x, input.y)
@@ -716,12 +719,14 @@ namespace LWSUI
                 {
                     if (!c || !c->Visible() || !c->Enabled())
                         return;
+                    if (menuBar_ && menuBar_->InContent(c) && (c->Bounds().width <= 0 || c->Bounds().height <= 0)) return;
                     if (c->Focusable())
                         choices.push_back(c);
                     if (auto* group = dynamic_cast<Container*>(c))
                         for (auto& child : group->Children())
                             self(self, child.get());
                 };
+                if (!popup_ && menuBar_ && menuBar_->ContentActive()) collect(collect, menuBar_->Content());
                 collect(collect, popup_ ? popup_.get() : root_.get());
                 if (!choices.empty())
                 {
@@ -740,7 +745,7 @@ namespace LWSUI
                 return true;
             c = parent.Get();
         }
-        return popup_ != nullptr;
+        return popup_ != nullptr || (pointer && menuBar_ && menuBar_->ContentOccupied(input.x, input.y));
     }
     bool UIHost::Event(const LWS::AnyEvent& event)
     {
@@ -767,6 +772,12 @@ namespace LWSUI
         if (std::holds_alternative<LWS::EventMove>(event))
         {
             CloseMainMenu();
+            return false;
+        }
+        if (std::holds_alternative<LWS::EventShowStateChanged>(event))
+        {
+            CloseMainMenu();
+            Invalidate();
             return false;
         }
         if (std::holds_alternative<LWS::EventPaint>(event))
@@ -805,6 +816,8 @@ namespace LWSUI
         }
         if (std::holds_alternative<LWS::EventMouseLeave>(event))
         {
+            if (menuSession_)
+                menuSession_->LeaveBar();
             Hover(nullptr);
             return false;
         }

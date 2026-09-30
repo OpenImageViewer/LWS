@@ -1,5 +1,9 @@
 #include <LWSUI/UIHost.hpp>
 #include "MenuHost.hpp"
+#include <LWS/Platform.hpp>
+#ifdef LWS_HAS_WIN32_BACKEND
+    #include <LWS/Win32/WindowExtensions.hpp>
+#endif
 #include <algorithm>
 #include <cmath>
 namespace LWSUI
@@ -44,7 +48,8 @@ namespace LWSUI
             return mnemonic.index != kNoIndex && mnemonic.index < mnemonic.label.size() &&
                    Upper(mnemonic.label[mnemonic.index]) == Upper(key);
         }
-        int32_t Round(float value)        {
+        int32_t Round(float value)
+        {
             return static_cast<int32_t>(std::lround(value));
         }
         bool PointerKind(InputKind kind)
@@ -89,7 +94,8 @@ namespace LWSUI
         float span = 0;
         for (size_t index = 0; index < items_.size(); ++index)
             span += ItemExtent(index);
-        return span;
+        return IconSpan() + span + WindowControlsSpan() +
+               (ContentActive() ? std::max(contentMinimum_, content_->DesiredSize().width) : 0);
     }
     float MenuBar::Thickness() const
     {
@@ -98,10 +104,13 @@ namespace LWSUI
         float width = 0;
         for (const auto& item : items_)
             width = std::max(width, TextWidth(ParseMnemonic(item.label).label) + 2 * Style().menuBarPadding);
-        return width;
+        return std::max(width, IconSpan());
     }
     Size MenuBar::OnMeasure(Size available)
     {
+        if (ContentActive())
+            content_->Measure(
+                {std::max(0.f, available.width - IconSpan() - ItemsSpan() - WindowControlsSpan()), Thickness()});
         const bool horizontal = orientation == Orientation::Horizontal;
         const float limit = std::max(0.f, horizontal ? available.width : available.height);
         float span = stretch ? limit : NaturalSpan();
@@ -120,12 +129,17 @@ namespace LWSUI
         const auto bounds = Bounds();
         std::vector<Rect> rects;
         rects.reserve(items_.size());
-        float position = horizontal ? bounds.x : bounds.y;
+        float position = (horizontal ? bounds.x : bounds.y) + IconSpan();
         for (size_t index = 0; index < items_.size(); ++index)
         {
             const float extent = ItemExtent(index);
             rects.push_back(horizontal ? Rect{position, bounds.y, extent, bounds.height}
                                        : Rect{bounds.x, position, bounds.width, extent});
+            if (horizontal && (WindowControlsSpan() > 0 || ContentActive() || icon_))
+            {
+                const auto area = MenuItemsArea();
+                rects.back().width = std::max(0.f, std::min(extent, area.x + area.width - position));
+            }
             position += extent;
         }
         return rects;
@@ -159,35 +173,46 @@ namespace LWSUI
             canvas.Line(bounds.x + bounds.width, bounds.y, bounds.x + bounds.width, bounds.y + bounds.height,
                         style.borderWidth, style.line);
         }
-        const auto rects = ItemRects();
-        for (size_t index = 0; index < items_.size() && index < rects.size(); ++index)
         {
-            const auto& item = items_[index];
-            const auto& rect = rects[index];
-            const bool highlighted = int(index) == hot;
-            if (highlighted)
-                canvas.Fill(rect.x, rect.y, rect.width, rect.height, style.selection);
-            const auto mnemonic = ParseMnemonic(item.label);
-            const auto color = !item.enabled  ? style.muted
-                               : highlighted ? style.selectionForeground
-                                             : style.foreground;
-            const float width = TextWidth(mnemonic.label);
-            const float height = TextHeight(mnemonic.label);
-            const float x = rect.x + (rect.width - width) / 2;
-            const float y = rect.y + (rect.height - height) / 2;
-            DrawText(canvas, mnemonic.label, x, y, std::max(1.f, width), height, color, false, false);
-            if (mnemonic.index != kNoIndex)
+            const auto area = MenuItemsArea();
+            Canvas::ClipScope clip(canvas, area.x, area.y, area.width, area.height);
+            const auto rects = ItemRects();
+            for (size_t index = 0; index < items_.size() && index < rects.size(); ++index)
             {
-                const float start = x + TextWidth(mnemonic.label.substr(0, mnemonic.index));
-                const float end = start + TextWidth(mnemonic.label.substr(mnemonic.index, 1));
-                canvas.Line(start, y + height - style.borderWidth, end, y + height - style.borderWidth,
-                            style.borderWidth, color);
+                const auto& item = items_[index];
+                const auto& rect = rects[index];
+                const bool highlighted = int(index) == hot;
+                if (highlighted)
+                    canvas.Fill(rect.x, rect.y, rect.width, rect.height, style.selection);
+                const auto mnemonic = ParseMnemonic(item.label);
+                const auto color = !item.enabled ? style.muted
+                                   : highlighted ? style.selectionForeground
+                                                 : style.foreground;
+                const float width = TextWidth(mnemonic.label);
+                const float height = TextHeight(mnemonic.label);
+                const float x = rect.x + (rect.width - width) / 2;
+                const float y = rect.y + (rect.height - height) / 2;
+                DrawText(canvas, mnemonic.label, x, y, std::max(1.f, width), height, color, false, false);
+                if (mnemonic.index != kNoIndex)
+                {
+                    const float start = x + TextWidth(mnemonic.label.substr(0, mnemonic.index));
+                    const float end = start + TextWidth(mnemonic.label.substr(mnemonic.index, 1));
+                    canvas.Line(start, y + height - style.borderWidth, end, y + height - style.borderWidth,
+                                style.borderWidth, color);
+                }
             }
         }
+        RenderContent(canvas);
+        RenderWindowControls(canvas);
     }
-    bool MenuBar::OnInput(const Input&)
+    bool MenuBar::OnInput(const Input& input)
     {
-        // Interaction is owned by the menu session; the bar only renders state set through `hot`.
+        if (input.kind == InputKind::Cancel || input.kind == InputKind::Blur)
+        {
+            ClearWindowPress();
+            return true;
+        }
+        // Ordinary interaction is owned by the menu session.
         return false;
     }
     namespace internal
@@ -255,10 +280,9 @@ namespace LWSUI
         }
         float DropdownPanel::Row::HintWidth(float width) const
         {
-            return item_.shortcut.empty()
-                       ? 0
-                       : std::min(std::max(0.f, width * .4f),
-                                  Host()->MeasureText(item_.shortcut, 10000, false, Font()).width);
+            return item_.shortcut.empty() ? 0
+                                          : std::min(std::max(0.f, width * .4f),
+                                                     Host()->MeasureText(item_.shortcut, 10000, false, Font()).width);
         }
         void DropdownPanel::Row::OnRender(Canvas& canvas)
         {
@@ -267,8 +291,8 @@ namespace LWSUI
             const float padding = style.menuPadding;
             if (item_.separator)
             {
-                canvas.Fill(bounds.x + padding, bounds.y + bounds.height / 2,
-                            std::max(0.f, bounds.width - 2 * padding), style.borderWidth, style.line);
+                canvas.Fill(bounds.x + padding, bounds.y + bounds.height / 2, std::max(0.f, bounds.width - 2 * padding),
+                            style.borderWidth, style.line);
                 return;
             }
             if (active)
@@ -283,17 +307,20 @@ namespace LWSUI
                 canvas.Line(x + unit * .3f, y + unit * .25f, x + unit * .75f, y - unit * .3f, style.borderWidth, color);
             }
             const float hint = HintWidth(bounds.width);
-            const float labelWidth =
-                std::max(1.f, bounds.width - 2 * padding - check - arrow - (hint > 0 ? hint + padding : 0));
+            const float labelWidth = std::max(1.f, bounds.width - 2 * padding - check - arrow -
+                                                       (hint > 0 ? hint + padding : 0));
             const auto mnemonic = ParseMnemonic(item_.label);
-            const float height = std::min(bounds.height, Host()->MeasureText(mnemonic.label, labelWidth, false, Font()).height);
+            const float height = std::min(bounds.height,
+                                          Host()->MeasureText(mnemonic.label, labelWidth, false, Font()).height);
             const float y = bounds.y + (bounds.height - height) / 2;
             const float x = bounds.x + padding + check;
             DrawText(canvas, mnemonic.label, x, y, labelWidth, height, color, false, false);
             if (mnemonic.index != kNoIndex)
             {
-                const float start = x + Host()->MeasureText(mnemonic.label.substr(0, mnemonic.index), 10000, false, Font()).width;
-                const float end = start + Host()->MeasureText(mnemonic.label.substr(mnemonic.index, 1), 10000, false, Font()).width;
+                const float start =
+                    x + Host()->MeasureText(mnemonic.label.substr(0, mnemonic.index), 10000, false, Font()).width;
+                const float end =
+                    start + Host()->MeasureText(mnemonic.label.substr(mnemonic.index, 1), 10000, false, Font()).width;
                 canvas.Line(start, y + height - style.borderWidth, end, y + height - style.borderWidth,
                             style.borderWidth, color);
             }
@@ -334,7 +361,8 @@ namespace LWSUI
         bool DropdownPanel::Selectable(size_t index) const
         {
             const auto& item = items_[index];
-            return !item.separator && item.enabled && (bool(item.action) || !item.submenu.empty() || item.checked.has_value());
+            return !item.separator && item.enabled &&
+                   (bool(item.action) || !item.submenu.empty() || item.checked.has_value());
         }
         std::optional<size_t> DropdownPanel::First() const
         {
@@ -444,9 +472,29 @@ namespace LWSUI
         }
         std::optional<MenuSession::PanelBuild> MenuSession::BuildPanel(UIHost& host, const std::vector<MenuItem>& items)
         {
-            const auto metrics = host.Window().GetClientAreaMetrics();
-            const float availableWidth = std::max(1.f, float(metrics.logical.x));
-            const float availableHeight = std::max(1.f, float(metrics.logical.y));
+            // Dropdowns are separate windows, so a small (detached) owner must not clip them.
+            // Without output information, retain natural sizing and let popup placement constrain it.
+            float availableWidth = 10000.f, availableHeight = 10000.f;
+#ifdef LWS_HAS_WIN32_BACKEND
+            if (const auto hwnd = LWS::Win32::GetHwnd(host.Window()))
+            {
+                MONITORINFO monitor{sizeof(monitor)};
+                if (GetMonitorInfoW(MonitorFromWindow(*hwnd, MONITOR_DEFAULTTONEAREST), &monitor))
+                {
+                    const auto scale = host.Window().GetClientAreaMetrics().Scale();
+                    availableWidth = float(monitor.rcWork.right - monitor.rcWork.left) /
+                                     (scale ? float(scale->x) : 1.f);
+                    availableHeight = float(monitor.rcWork.bottom - monitor.rcWork.top) /
+                                      (scale ? float(scale->y) : 1.f);
+                }
+            }
+#else
+            if (const auto monitor = host.Window().GetPlatformContext().GetPrimaryMonitor())
+            {
+                availableWidth = std::max(1.f, float(monitor->workRect.GetWidth()));
+                availableHeight = std::max(1.f, float(monitor->workRect.GetHeight()));
+            }
+#endif
             auto panel = std::make_unique<DropdownPanel>(items);
             if (panel->Count() == 0)
                 return std::nullopt;
@@ -454,19 +502,19 @@ namespace LWSUI
             host.AttachPanel(*panel);
             const auto& style = host.PopupStyle();
             panel->SetStyle(host.MenuPanelStyle());
-            const float width = std::min(panel->NaturalWidth(host), availableWidth);
-            const float rowHeight =
-                std::max(style.menuRowHeight,
-                         host.MeasureText("Mg", width, false, style.font).height + 2 * style.menuPadding);
-            const float maxHeight =
-                std::min(availableHeight, std::max(1.f, style.menuMaxRows) * std::max(1.f, rowHeight));
+            const float width = std::min(std::ceil(panel->NaturalWidth(host)), std::floor(availableWidth));
+            const float rowHeight = std::max(
+                style.menuRowHeight, host.MeasureText("Mg", width, false, style.font).height + 2 * style.menuPadding);
+            const float maxHeight = std::min(availableHeight,
+                                             std::max(1.f, style.menuMaxRows) * std::max(1.f, rowHeight));
             const Size measured = panel->Measure({width, maxHeight});
             if (measured.height <= 0)
             {
                 host.DetachPanel(*panel);
                 return std::nullopt;
             }
-            return PanelBuild{std::move(panel), width, std::min(measured.height, availableHeight)};
+            return PanelBuild{std::move(panel), width,
+                              std::min(std::ceil(measured.height), std::floor(availableHeight))};
         }
         MenuSession& MenuSessionAccess::Get(UIHost& host)
         {
@@ -481,6 +529,11 @@ namespace LWSUI
         {
             hot_ = index;
             auto* bar = host_.MainMenu();
+            if (bar && bar->windowFocus_)
+            {
+                bar->windowFocus_.reset();
+                bar->Invalidate();
+            }
             if (bar && bar->hot != index)
             {
                 bar->hot = index;
@@ -603,10 +656,9 @@ namespace LWSUI
             if (reused)
             {
                 // A pooled Win32 popup keeps its native window: restate placement and show.
-                const auto placement = window->RequestPlacement(
-                    LWS::WindowPlacementRequest{.position = anchor,
-                                                .clientSize = LWS::LogicalSize{Round(build->width),
-                                                                               Round(build->height)}});
+                const auto placement = window->RequestPlacement(LWS::WindowPlacementRequest{
+                    .position = anchor,
+                    .clientSize = LWS::LogicalSize{Round(build->width), Round(build->height)}});
                 if (placement != LWS::Result::Success)
                 {
                     ReleaseWindow(std::move(window));
@@ -622,7 +674,8 @@ namespace LWSUI
                 config.backgroundColor = host_.MenuPanelStyle().background;
                 config.visible = true;
                 config.popupPlacement = LWS::PopupPlacement{anchor, gravity, LWS::Point{},
-                                                            LWS::LogicalSize{Round(build->width), Round(build->height)}, true};
+                                                            LWS::LogicalSize{Round(build->width), Round(build->height)},
+                                                            true};
                 if (window->Create(config) != LWS::Result::Success)
                 {
                     ReleaseWindow(std::move(window));
@@ -674,8 +727,8 @@ namespace LWSUI
             {
                 CloseDeepLevels(0);
                 const Rect anchor = TopMenuAnchor(barIndex);
-                CreateLevel(NoLevel, barIndex, item.items,
-                            LWS::Point{Round(anchor.x), Round(anchor.y)}, TopMenuGravity(), first);
+                CreateLevel(NoLevel, barIndex, item.items, LWS::Point{Round(anchor.x), Round(anchor.y)},
+                            TopMenuGravity(), first);
             }
         }
         bool MenuSession::ReplaceTopMenu(size_t barIndex, bool first)
@@ -744,16 +797,28 @@ namespace LWSUI
         void MenuSession::MoveHot(int step)
         {
             auto* bar = host_.MainMenu();
-            if (!bar || bar->Items().empty())
+            if (!bar)
                 return;
-            const size_t count = bar->Items().size();
-            size_t index = hot_ < 0 ? (step > 0 ? count - 1 : 0) : size_t(hot_);
-            for (size_t n = 0; n < count; ++n)
+            const int menus = int(bar->Items().size()), count = menus + 3;
+            int index = bar->windowFocus_ ? menus + int(*bar->windowFocus_) : hot_;
+            if (index < 0)
+                index = step > 0 ? count - 1 : 0;
+            for (int n = 0; n < count; ++n)
             {
-                index = (index + count + (step > 0 ? 1 : count - 1)) % count;
-                if (bar->Items()[index].enabled && !bar->Items()[index].items.empty())
+                index = (index + count + step) % count;
+                if (index < menus)
                 {
-                    SetHot(int(index));
+                    if (bar->Items()[index].enabled && !bar->Items()[index].items.empty())
+                    {
+                        SetHot(index);
+                        return;
+                    }
+                }
+                else if (bar->WindowButtonEnabled(MenuWindowAction(index - menus)))
+                {
+                    SetHot(-1);
+                    bar->windowFocus_ = MenuWindowAction(index - menus);
+                    bar->Invalidate();
                     return;
                 }
             }
@@ -833,15 +898,15 @@ namespace LWSUI
             pendingSubmenu_ = std::pair{level, row};
             if (!hoverTimer_)
             {
-                hoverTimer_ = std::make_unique<LWS::HighPrecisionTimer>(
-                    host_.Window().GetPlatformContext(),
-                    [this]
-                    {
-                        const auto pending = pendingSubmenu_;
-                        pendingSubmenu_.reset();
-                        if (pending)
-                            OpenSubmenu(pending->first, pending->second);
-                    });
+                hoverTimer_ = std::make_unique<LWS::HighPrecisionTimer>(host_.Window().GetPlatformContext(),
+                                                                        [this]
+                                                                        {
+                                                                            const auto pending = pendingSubmenu_;
+                                                                            pendingSubmenu_.reset();
+                                                                            if (pending)
+                                                                                OpenSubmenu(pending->first,
+                                                                                            pending->second);
+                                                                        });
             }
             hoverTimer_->SetDueTime(uint32_t(delay));
             hoverTimer_->SetRepeatInterval(0);
@@ -872,6 +937,8 @@ namespace LWSUI
         }
         void MenuSession::Close()
         {
+            if (auto* bar = host_.MainMenu())
+                bar->ClearWindowPress();
             CancelHover();
             active_ = false;
             menuUsed_ = false;
@@ -883,17 +950,15 @@ namespace LWSUI
         void MenuSession::Activate()
         {
             auto* bar = host_.MainMenu();
-            if (!bar || bar->Items().empty())
+            if (!bar)
                 return;
             active_ = true;
             menuUsed_ = false;
             orientationAtOpen_ = bar->orientation;
-            for (size_t index = 0; index < bar->Items().size(); ++index)
-                if (bar->Items()[index].enabled && !bar->Items()[index].items.empty())
-                {
-                    SetHot(int(index));
-                    break;
-                }
+            SetHot(-1);
+            MoveHot(1);
+            if (hot_ < 0 && !bar->windowFocus_)
+                active_ = false;
             host_.Invalidate();
         }
         bool MenuSession::Mnemonic(char key)
@@ -972,6 +1037,11 @@ namespace LWSUI
                 }
                 else if (input.key == K::Enter || input.key == K::Space)
                 {
+                    if (bar && bar->windowFocus_)
+                    {
+                        ActivateWindowButton(*bar->windowFocus_);
+                        return true;
+                    }
                     if (hot_ >= 0)
                         OpenTopMenu(size_t(hot_), true);
                 }
@@ -1003,14 +1073,19 @@ namespace LWSUI
             auto* bar = host_.MainMenu();
             if (!bar || !PointerKind(input.kind))
                 return false;
+            if (bar->HitContent(input.x, input.y))
+                return false;
             const bool overBar = bar->Bounds().Contains(input.x, input.y);
             const size_t hit = overBar ? bar->HitItem(input.x, input.y) : MenuBar::NoItem;
             const auto usable = [bar](size_t index)
-            {
-                return index != MenuBar::NoItem && bar->Items()[index].enabled && !bar->Items()[index].items.empty();
-            };
+            { return index != MenuBar::NoItem && bar->Items()[index].enabled && !bar->Items()[index].items.empty(); };
             if (levels_.empty() && !active_)
             {
+                if (input.kind == InputKind::Move)
+                {
+                    SetHot(usable(hit) ? int(hit) : -1);
+                    return overBar;
+                }
                 if (input.kind == InputKind::Down && input.button == LWS::MouseButton::Left && usable(hit))
                 {
                     OpenTopMenu(hit, true);
@@ -1018,7 +1093,9 @@ namespace LWSUI
                     host_.suppressPointerRelease_ = true;
                     return true;
                 }
-                return input.kind == InputKind::Wheel && overBar;
+                // Disabled items and unused bar space still cover the root. Letting a press
+                // through can leave an underlying control captured when a bar drag eats its release.
+                return overBar;
             }
             if (input.kind == InputKind::Move)
             {
@@ -1070,6 +1147,16 @@ namespace LWSUI
             }
             return true;
         }
+        void MenuSession::LeaveBar()
+        {
+            if (auto* bar = host_.MainMenu(); bar && bar->windowHover_)
+            {
+                bar->windowHover_.reset();
+                bar->Invalidate();
+            }
+            if (!active_ && levels_.empty())
+                SetHot(-1);
+        }
         bool MenuSession::OnInput(const Input& input)
         {
             auto* bar = host_.MainMenu();
@@ -1078,7 +1165,14 @@ namespace LWSUI
             if (active_ && bar->orientation != orientationAtOpen_)
                 Close();
             if (input.kind == InputKind::KeyDown)
+            {
+                if (input.key == LWS::KeyCode::Escape && bar->windowPressed_)
+                {
+                    Close();
+                    return true;
+                }
                 return KeyDown(input);
+            }
             if (input.kind == InputKind::KeyUp)
             {
                 if (input.key == LWS::KeyCode::Alt && active_ && !menuUsed_)
@@ -1098,7 +1192,22 @@ namespace LWSUI
                 menuUsed_ = true;
                 return Mnemonic(*character);
             }
-            return PointerInput(input);
+            if (bar->ContentActive() && !bar->windowPressed_ &&
+                (bar->InContent(host_.capture_.Get()) ||
+                 (PointerKind(input.kind) && bar->HitContent(input.x, input.y))))
+            {
+                if (input.kind == InputKind::Down)
+                    Close();
+                else if (input.kind == InputKind::Move)
+                {
+                    bar->windowHover_.reset();
+                    if (!active_)
+                        SetHot(-1);
+                    bar->Invalidate();
+                }
+                return false;
+            }
+            return WindowInput(input) || PointerInput(input);
         }
         bool MenuSession::PanelInput(size_t level, const Input& input)
         {

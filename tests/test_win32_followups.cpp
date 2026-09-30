@@ -139,6 +139,24 @@ TEST_CASE("Window style replacement updates the native frame once", "[win32][sty
     LWS::Window window(context);
     REQUIRE(window.Create() == LWS::Result::Success);
     const auto hwnd = *LWS::Win32::GetHwnd(window);
+    // NoStyle must be honored at creation, including when setting it again is a no-op.
+    const auto requireBorderless = [&]
+    {
+        REQUIRE((GetWindowLongW(hwnd, GWL_STYLE) & WS_CAPTION) == 0);
+        RECT client{}, outer{};
+        REQUIRE(GetClientRect(hwnd, &client));
+        REQUIRE(GetWindowRect(hwnd, &outer));
+        POINT origin{};
+        REQUIRE(ClientToScreen(hwnd, &origin));
+        REQUIRE(origin.x == outer.left);
+        REQUIRE(origin.y == outer.top);
+        REQUIRE(client.right == outer.right - outer.left);
+        REQUIRE(client.bottom == outer.bottom - outer.top);
+    };
+    requireBorderless();
+    REQUIRE(window.SetWindowStyles(LWS::WindowStyle::NoStyle) == LWS::Result::Success);
+    REQUIRE(window.SetVisible(true) == LWS::Result::Success);
+    requireBorderless();
     unsigned updates{};
     const SUBCLASSPROC observe = [](HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR,
                                     DWORD_PTR data) -> LRESULT
@@ -158,6 +176,7 @@ TEST_CASE("Window style replacement updates the native frame once", "[win32][sty
     REQUIRE(window.SetWindowStyles(LWS::WindowStyleFlags(LWS::WindowStyle::NoStyle)) == LWS::Result::Success);
     REQUIRE((GetWindowLongW(hwnd, GWL_STYLE) & WS_CAPTION) == 0);
     REQUIRE(updates == 2);
+    requireBorderless();
     REQUIRE(RemoveWindowSubclass(hwnd, observe, 1));
 }
 #endif

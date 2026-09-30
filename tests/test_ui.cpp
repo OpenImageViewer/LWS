@@ -6,9 +6,11 @@
     #ifdef LWS_HAS_WIN32_BACKEND
         #include <LWS/Win32/Platform.hpp>
         #include <LWS/Win32/WindowExtensions.hpp>
+        #include <commctrl.h>
     #endif
     #include "source/MenuHost.hpp"
     #include <memory>
+    #include <thread>
     #include <string>
     #include <utility>
     #include <vector>
@@ -189,6 +191,15 @@ namespace
             window_ = std::make_unique<LWS::Window>(context);
             REQUIRE(window_->Create({.clientSize = {640, 480}, .visible = true}) == LWS::Result::Success);
             host_ = std::make_unique<LWSUI::UIHost>(*window_);
+#ifndef LWS_HAS_WIN32_BACKEND
+            // Wayland publishes the drawable viewport asynchronously after the configure handshake.
+            for (int attempt = 0; attempt < 500 && !window_->IsConfigured(); ++attempt)
+            {
+                REQUIRE(context.ProcessMessages() == LWS::LoopResult::Continue);
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            REQUIRE(window_->IsConfigured());
+#endif
         }
         LWS::Window& window() { return *window_; }
         LWSUI::UIHost& host() { return *host_; }
@@ -220,6 +231,260 @@ namespace
     #endif
 }  // namespace
 
+TEST_CASE("Menu window buttons reserve space and defer cancellable close actions", "[ui][menu][window-controls]")
+{
+    using Access = LWSUI::internal::MenuSessionAccess;
+    using Action = LWSUI::internal::MenuWindowAction;
+    MenuEnvironment env;
+    MenuCounters counts;
+    unsigned closed = 0, underlying = 0, errors = 0;
+    auto root = std::make_unique<LWSUI::Button>("Underlying content");
+    auto click = root->OnClick.Connect([&] { ++underlying; });
+    auto error = env.host().OnError.Connect([&](const std::string&) { ++errors; });
+    env.host().SetRoot(std::move(root));
+    env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts)));
+    auto* bar = env.host().MainMenu();
+    bar->SetWindowControls({.minimize = true, .maximize = true, .draggable = true, .requestClose = [&] { ++closed; }});
+    env.host().Update();
+    const auto pump = [&] { REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue); };
+    const auto press = [&]
+    {
+        const auto b = Access::WindowButtonBounds(*bar, Action::Close);
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = b.x + b.width / 2, .y = b.y + b.height / 2}));
+        return b;
+    };
+    const auto release = [&](LWSUI::Rect b)
+    { REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = b.x + b.width / 2, .y = b.y + b.height / 2})); };
+    const auto minimize = Access::WindowButtonBounds(*bar, Action::Minimize);
+    const auto maximize = Access::WindowButtonBounds(*bar, Action::Maximize);
+    const auto close = Access::WindowButtonBounds(*bar, Action::Close);
+    REQUIRE(minimize.x + minimize.width <= maximize.x + .01f);
+    REQUIRE(maximize.x + maximize.width <= close.x + .01f);
+    REQUIRE(Access::DragBounds(*bar).width >= 48);
+    REQUIRE(bar->HitItem(close.x + 1, close.y + 1) == LWSUI::MenuBar::NoItem);
+    auto b = press();
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Move, .x = 300, .y = 300}));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = 300, .y = 300}));
+    pump(); REQUIRE(closed == 0); REQUIRE(underlying == 0);
+    b = press();
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Escape}));
+    release(b); pump(); REQUIRE(closed == 0);
+    b = press();
+    bar->SetItems(BuildTestMenu(counts));
+    release(b); pump(); REQUIRE(closed == 0);
+    b = press();
+    env.host().SetMainMenuDock(LWSUI::MenuDock::Floating);
+    release(b); pump(); REQUIRE(closed == 0);
+    REQUIRE(Access::WindowButtonBounds(*bar, Action::Close).width == 0);
+    REQUIRE(Access::DragBounds(*bar).width == 0);
+    env.host().SetMainMenuDock(LWSUI::MenuDock::Bottom); env.host().Update();
+    REQUIRE(Access::WindowButtonBounds(*bar, Action::Close).width > 0);
+    bar->orientation = LWSUI::Orientation::Vertical;
+    env.host().Invalidate(true); env.host().Update();
+    REQUIRE(Access::WindowButtonBounds(*bar, Action::Close).width == 0);
+    bar->orientation = LWSUI::Orientation::Horizontal;
+    env.host().SetMainMenuDock(LWSUI::MenuDock::Top); env.host().Update();
+    b = press(); release(b); REQUIRE(closed == 0); pump(); REQUIRE(closed == 1);
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::F10}));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Left}));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Enter}));
+    REQUIRE(closed == 1); pump(); REQUIRE(closed == 2);
+#ifndef LWS_HAS_WIN32_BACKEND
+    REQUIRE_FALSE(Access::WindowButtonEnabled(*bar, Action::Minimize));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = minimize.x + 2, .y = minimize.y + 2}));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = minimize.x + 2, .y = minimize.y + 2}));
+    pump(); REQUIRE(env.window().IsCreated());
+#endif
+    // Caption buttons retain their own hit regions even when labels and the drag region do not fit.
+    bar->Measure({90, 40}); bar->Arrange({0, 0, 90, 40});
+    for (auto action : {Action::Minimize, Action::Maximize, Action::Close})
+    {
+        const auto r = Access::WindowButtonBounds(*bar, action);
+        REQUIRE(r.width > 0);
+        REQUIRE(r.x >= 0);
+        REQUIRE(r.x + r.width <= 90.01f);
+        REQUIRE(bar->HitItem(r.x + r.width / 2, r.y + 2) == LWSUI::MenuBar::NoItem);
+    }
+    env.host().Invalidate(true); env.host().Update();
+    b = press(); release(b);
+    env.host().ClearMainMenu(); pump(); REQUIRE(closed == 2);
+    REQUIRE(errors == 0);
+    REQUIRE(underlying == 0);
+}
+#ifdef LWS_HAS_WIN32_BACKEND
+TEST_CASE("Captionless menu bars use native Windows state and move APIs", "[ui][menu][window-controls]")
+{
+    using Access = LWSUI::internal::MenuSessionAccess;
+    using Action = LWSUI::internal::MenuWindowAction;
+    MenuEnvironment env;
+    REQUIRE(env.window().SetWindowStyles(LWS::WindowStyle::ResizableBorder) == LWS::Result::Success);
+    env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>());
+    auto* bar = env.host().MainMenu();
+    bar->SetWindowControls({.minimize = true, .maximize = true, .draggable = true});
+    env.host().Update();
+    const HWND hwnd = Hwnd(env.window());
+    REQUIRE((GetWindowLongW(hwnd, GWL_STYLE) & WS_CAPTION) == 0);
+    REQUIRE((GetWindowLongW(hwnd, GWL_STYLE) & WS_THICKFRAME) != 0);
+    const auto click = [&](Action action)
+    {
+        const auto b = Access::WindowButtonBounds(*bar, action);
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = b.x + 2, .y = b.y + 2}));
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = b.x + 2, .y = b.y + 2}));
+        REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+        env.host().Update();
+    };
+    click(Action::Maximize);
+    REQUIRE(env.window().GetShowState() == LWS::WindowShowState::Maximized);
+    REQUIRE(IsZoomed(hwnd));
+    click(Action::Maximize);
+    REQUIRE(env.window().GetShowState() == LWS::WindowShowState::Restored);
+    REQUIRE_FALSE(IsZoomed(hwnd));
+    click(Action::Minimize);
+    REQUIRE(IsIconic(hwnd));
+    REQUIRE(env.window().RequestShowState(LWS::WindowShowState::Restored) == LWS::Result::Success);
+    env.host().Update();
+    unsigned moves = 0;
+    const SUBCLASSPROC observe = [](HWND h, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) -> LRESULT
+    {
+        if (message == WM_NCLBUTTONDOWN && w == HTCAPTION) { ++*reinterpret_cast<unsigned*>(data); return 0; }
+        return DefSubclassProc(h, message, w, l);
+    };
+    REQUIRE(SetWindowSubclass(hwnd, observe, 1, reinterpret_cast<DWORD_PTR>(&moves)));
+    POINT point{};
+    const bool pointerAvailable = GetCursorPos(&point) != FALSE;
+    const auto drag = Access::DragBounds(*bar);
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = drag.x + 4, .y = drag.y + 4}));
+    // LWS cannot issue the native move message on a desktop without pointer access.
+    if (pointerAvailable) REQUIRE(moves == 1);
+    REQUIRE(RemoveWindowSubclass(hwnd, observe, 1));
+    REQUIRE((GetWindowLongW(hwnd, GWL_STYLE) & WS_CAPTION) == 0);
+}
+#endif
+TEST_CASE("Menu icon items and owned content share layout and input safely", "[ui][menu][content]")
+{
+    struct Content final : LWSUI::Container
+    {
+        LWSUI::Label* title = &Emplace<LWSUI::Label>("Title");
+        LWSUI::TextBox* editor = &Emplace<LWSUI::TextBox>("Edit");
+        LWSUI::Button* action = &Emplace<LWSUI::Button>("Action");
+        LWSUI::Control* HitTest(float x, float y) override
+        {
+            if (!Bounds().Contains(x, y)) return nullptr;
+            for (auto& child : Children()) if (auto* hit = child->HitTest(x, y)) return hit;
+            return nullptr;
+        }
+        LWSUI::Size OnMeasure(LWSUI::Size available) override
+        {
+            for (auto& child : Children()) child->Measure({80, available.height});
+            return {280, available.height};
+        }
+        void OnArrange() override
+        {
+            const auto b = Bounds();
+            title->Arrange({b.x, b.y, 60, b.height});
+            editor->Arrange({b.x + 80, b.y, 80, b.height});
+            action->Arrange({b.x + b.width - 80, b.y, 80, b.height});
+        }
+    };
+    using Access = LWSUI::internal::MenuSessionAccess;
+    using Action = LWSUI::internal::MenuWindowAction;
+    MenuEnvironment env;
+    MenuCounters counts;
+    env.host().SetRoot(std::make_unique<LWSUI::Button>("Body"));
+    auto menu = std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts));
+    auto* bar = menu.get();
+    unsigned closed = 0, clicked = 0;
+    bar->SetWindowControls({.draggable = true, .requestClose = [&] { ++closed; }});
+    std::array<std::byte, 8 * 4 * 4> pixels{};
+    const auto icon = std::make_shared<LWS::Bitmap>(LWS::BitmapBuffer{.pixels = pixels, .width = 8, .height = 4, .rowPitch = 32});
+    bar->SetIcon(icon);
+    auto contents = std::make_unique<Content>();
+    auto* controls = contents.get();
+    auto click = controls->action->OnClick.Connect([&] { ++clicked; });
+    bar->SetContent(std::move(contents), 280);
+    env.host().SetMainMenu(std::move(menu));
+    env.host().Update();
+    REQUIRE(bar->Icon() == icon);
+    REQUIRE(bar->ItemRect(0).x > bar->Bounds().x);
+    REQUIRE(bar->Content()->Bounds().x >= bar->ItemRect(1).x + bar->ItemRect(1).width);
+    const auto close = Access::WindowButtonBounds(*bar, Action::Close);
+    REQUIRE(bar->Content()->Bounds().x + bar->Content()->Bounds().width <= close.x + .01f);
+    REQUIRE(bar->MinimumWidth() >= 280 + close.width + 40);
+    REQUIRE(Access::HitDrag(*bar, 4, 4));
+    REQUIRE_FALSE(Access::HitDrag(*bar, bar->ItemRect(0).x + 3, bar->ItemRect(0).y + 3));
+    REQUIRE_FALSE(Access::HitDrag(*bar, close.x + 3, close.y + 3));
+    for (auto* control : {static_cast<LWSUI::Control*>(controls->title),
+                          static_cast<LWSUI::Control*>(controls->editor),
+                          static_cast<LWSUI::Control*>(controls->action)})
+    {
+        const auto bounds = control->Bounds();
+        REQUIRE_FALSE(Access::HitDrag(*bar, bounds.x + 3, bounds.y + 3));
+    }
+    controls->action->SetEnabled(false);
+    REQUIRE_FALSE(Access::HitDrag(*bar, controls->action->Bounds().x + 3, controls->action->Bounds().y + 3));
+    controls->action->SetEnabled(true);
+    const auto captionControls = bar->WindowControls();
+    auto noDrag = captionControls; noDrag.draggable = false;
+    bar->SetWindowControls(noDrag);
+    REQUIRE_FALSE(Access::HitDrag(*bar, 4, 4));
+    bar->SetWindowControls(captionControls);
+    bar->SetEnabled(false); REQUIRE_FALSE(Access::HitDrag(*bar, 4, 4)); bar->SetEnabled(true);
+    const auto press = [&](LWSUI::Rect b)
+    { return env.host().Route({.kind = LWSUI::InputKind::Down, .x = b.x + 3, .y = b.y + 3}); };
+    const auto release = [&](LWSUI::Rect b)
+    { return env.host().Route({.kind = LWSUI::InputKind::Up, .x = b.x + 3, .y = b.y + 3}); };
+    REQUIRE(press(controls->action->Bounds())); REQUIRE(release(controls->action->Bounds()));
+    REQUIRE(clicked == 1); REQUIRE_FALSE(env.host().HasOpenMenu());
+    REQUIRE(env.host().Focus(controls->editor));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Text, .text = "draft"}));
+    const auto draft = controls->editor->Text();
+    REQUIRE(press(close));
+    REQUIRE(release(controls->action->Bounds())); // Release over content cancels the caption button.
+    REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+    REQUIRE(closed == 0); REQUIRE(clicked == 1);
+#ifdef LWS_HAS_WIN32_BACKEND
+    REQUIRE(GetCapture() == nullptr);
+    unsigned moves = 0;
+    const SUBCLASSPROC observer = [](HWND h, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) -> LRESULT
+    { if (message == WM_NCLBUTTONDOWN && w == HTCAPTION) { ++*reinterpret_cast<unsigned*>(data); return 0; }
+      return DefSubclassProc(h, message, w, l); };
+    REQUIRE(SetWindowSubclass(Hwnd(env.window()), observer, 9, reinterpret_cast<DWORD_PTR>(&moves)));
+    POINT point{}; const bool pointer = GetCursorPos(&point) != FALSE;
+    REQUIRE(press({1, 1, 20, 20})); REQUIRE(release({1, 1, 20, 20}));
+    if (pointer) REQUIRE(moves == 1);
+    const auto iconMoves = moves;
+    REQUIRE(press(controls->title->Bounds())); REQUIRE(release(controls->title->Bounds()));
+    controls->action->SetEnabled(false);
+    REQUIRE(press(controls->action->Bounds())); REQUIRE(release(controls->action->Bounds()));
+    REQUIRE(moves == iconMoves);
+    const auto b = controls->Bounds();
+    REQUIRE(press({b.x + 170, b.y, 10, b.height}));
+    if (pointer) REQUIRE(moves == iconMoves + 1);
+    REQUIRE(release({b.x + 170, b.y, 10, b.height}));
+    REQUIRE(RemoveWindowSubclass(Hwnd(env.window()), observer, 9));
+    controls->action->SetEnabled(true);
+#endif
+    REQUIRE(controls->editor->Text() == draft);
+    REQUIRE(env.host().Focus(controls->editor));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Tab}));
+    REQUIRE(env.host().IsFocused(*controls->action));
+    controls->action->SetContextMenuProvider([](auto&, const auto&)
+        { return std::vector<LWSUI::ContextMenuItem>{{"Choose", "", [](auto&) {}}}; });
+    const auto actionBounds = controls->action->Bounds();
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = actionBounds.x + 2, .y = actionBounds.y + 2, .button = LWS::MouseButton::Right}));
+    REQUIRE(env.host().HasContextMenu());
+    const auto old = controls->action->Handle();
+    bar->SetContent(std::make_unique<LWSUI::Label>("Replacement"), 80);
+    REQUIRE_FALSE(old);
+    env.host().Update(); REQUIRE_FALSE(env.host().HasContextMenu());
+    bar->SetIcon(nullptr); env.host().Update();
+    REQUIRE(bar->ItemRect(0).x == bar->Bounds().x);
+    bar->SetIcon(icon); bar->orientation = LWSUI::Orientation::Vertical;
+    env.host().SetMainMenuDock(LWSUI::MenuDock::Left); env.host().Update();
+    REQUIRE(bar->ItemRect(0).y > bar->Bounds().y);
+    REQUIRE_FALSE(Access::HitDrag(*bar, 4, 4));
+    REQUIRE(bar->Content()->Bounds().width == 0);
+}
 TEST_CASE("Menu bar docks, floats, and hit-tests items", "[ui][menu]")
 {
     MenuEnvironment env;
@@ -325,6 +590,18 @@ TEST_CASE("Menu pointer input opens, swallows releases, and closes on outside cl
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = 600, .y = 400}));
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = 600, .y = 400}));
     REQUIRE_FALSE(env.host().HasOpenMenu());
+    REQUIRE(clicks == 1);
+    // A floating drag grip is disabled menu content, not a hole exposing the button beneath it.
+    auto items = BuildTestMenu(counts);
+    items.insert(items.begin(), {"Grip", {}, false});
+    bar->SetItems(std::move(items));
+    env.host().Update();
+    const auto grip = bar->ItemRect(0);
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = grip.x + 4, .y = grip.y + 4}));
+#ifdef LWS_HAS_WIN32_BACKEND
+    REQUIRE(GetCapture() == nullptr);
+#endif
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = grip.x + 4, .y = grip.y + 4}));
     REQUIRE(clicks == 1);
 }
 
@@ -535,6 +812,85 @@ TEST_CASE("Menu structural changes close the open menu and drop pending commands
 }
 
 #ifdef LWS_HAS_WIN32_BACKEND
+TEST_CASE("Floating menu dropdowns track native mouse movement", "[ui][menu]")
+{
+    MenuEnvironment env;
+    MenuCounters counts;
+    REQUIRE(env.window().SetWindowStyles(LWS::WindowStyle::Caption | LWS::WindowStyle::CloseButton |
+                                        LWS::WindowStyle::ResizableBorder) == LWS::Result::Success);
+    env.host().SetRoot(std::make_unique<LWSUI::Button>("content"));
+    env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts)), LWSUI::MenuDock::Floating);
+    env.host().SetMainMenuPosition(40, 30);
+    env.host().Update();
+    auto& session = LWSUI::internal::MenuSessionAccess::Get(env.host());
+    const auto item = env.host().MainMenu()->ItemRect(0);
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Move, .x = item.x + 4, .y = item.y + 4}));
+    REQUIRE(env.host().MainMenu()->hot == 0);
+    REQUIRE_FALSE(env.host().HasOpenMenu());
+    SendMessageW(Hwnd(env.window()), WM_MOUSELEAVE, 0, 0);
+    REQUIRE(env.host().MainMenu()->hot == -1);
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = item.x + 4, .y = item.y + 4}));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = item.x + 4, .y = item.y + 4}));
+    env.host().Update();
+    REQUIRE(session.LevelCount() == 1);
+    auto* panel = session.Panel(0);
+    const HWND popup = Hwnd(*session.LevelWindow(0));
+    const auto scale = session.LevelWindow(0)->GetClientAreaMetrics().Scale();
+    REQUIRE(scale.has_value());
+    for (size_t row : {4U, 0U, 3U})
+    {
+        const auto bounds = panel->RowRect(row);
+        const int x = int((bounds.x + 4) * scale->x);
+        const int y = int((bounds.y + bounds.height / 2) * scale->y);
+        POINT screen{x, y};
+        REQUIRE(ClientToScreen(popup, &screen));
+        REQUIRE(GetWindow(popup, GW_OWNER) == Hwnd(env.window()));
+        REQUIRE(SendMessageW(popup, WM_NCHITTEST, 0, MAKELPARAM(screen.x, screen.y)) == HTCLIENT);
+        SendMessageW(popup, WM_MOUSEMOVE, 0, MAKELPARAM(x, y));
+        REQUIRE(panel->Active() == row);
+        env.host().Update();
+        // Inspect the panel's rendered output, not desktop pixels that another app can cover.
+        LWSUI::Canvas canvas;
+        canvas.Begin(int(panel->Bounds().width), int(panel->Bounds().height));
+        panel->Render(canvas);
+        const auto bitmap = canvas.End();
+        const auto* pixel = bitmap.pixels.data() + int(bounds.y + bounds.height / 2) * bitmap.rowPitch + int(bounds.x + 4) * 4;
+        const auto color = panel->Style().selection;
+        CHECK(std::to_integer<uint8_t>(pixel[0]) == color.B());
+        CHECK(std::to_integer<uint8_t>(pixel[1]) == color.G());
+        CHECK(std::to_integer<uint8_t>(pixel[2]) == color.R());
+    }
+    const auto leaf = panel->RowRect(4);
+    const LPARAM point = MAKELPARAM(int((leaf.x + 4) * scale->x), int((leaf.y + leaf.height / 2) * scale->y));
+    SendMessageW(popup, WM_LBUTTONDOWN, MK_LBUTTON, point);
+    SendMessageW(popup, WM_LBUTTONUP, 0, point);
+    REQUIRE_FALSE(env.host().HasOpenMenu());
+    env.host().Update();
+    REQUIRE(counts.quit == 1);
+}
+
+TEST_CASE("Detached menu dropdowns size independently of their owner", "[ui][menu]")
+{
+    MenuEnvironment env;
+    MenuCounters counts;
+    LWS::LogicalSize size{220, 36};
+    bool vertical = false;
+    SECTION("horizontal") {}
+    SECTION("vertical") { size = {60, 220}; vertical = true; }
+    REQUIRE(env.window().RequestPlacement({.clientSize = size}) == LWS::Result::Success);
+    env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts)), LWSUI::MenuDock::Floating);
+    env.host().MainMenu()->orientation = vertical ? LWSUI::Orientation::Vertical : LWSUI::Orientation::Horizontal;
+    env.host().Update();
+    auto& session = LWSUI::internal::MenuSessionAccess::Get(env.host());
+    const auto item = env.host().MainMenu()->ItemRect(0);
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = item.x + 4, .y = item.y + 4}));
+    env.host().Update();
+    REQUIRE(session.LevelCount() == 1);
+    const auto* panel = session.Panel(0);
+    const auto last = panel->RowRect(panel->Count() - 1);
+    REQUIRE(panel->Bounds().height >= last.y + last.height);
+    REQUIRE(panel->Bounds().width >= panel->NaturalWidth(env.host()));
+}
 TEST_CASE("Menu popups close when the owner window moves", "[ui][menu]")
 {
     MenuEnvironment env;

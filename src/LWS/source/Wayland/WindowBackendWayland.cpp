@@ -253,7 +253,7 @@ namespace LWS
                 static constexpr zxdg_toplevel_decoration_v1_listener decorationListener{
                     .configure = decorationConfigure};
                 zxdg_toplevel_decoration_v1_add_listener(decoration, &decorationListener, this);
-                const bool wantsCaption = (std::to_underlying(fWindowStyles) &
+                const bool wantsCaption = (std::to_underlying(owner.fWindowStyles) &
                                            std::to_underlying(WindowStyle::Caption)) != 0;
                 zxdg_toplevel_decoration_v1_set_mode(
                     decoration, wantsCaption ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
@@ -1043,7 +1043,7 @@ namespace LWS
         {
             fSize = size;
             if (fPopupPlacement.has_value())
-                fPopupPlacement->size = size;
+                fPopupPlacement->size = {size.x, size.y};
             if (fNativeState != nullptr)
                 fNativeState->pendingBitmap = nullptr;
             updateWindowGeometry();
