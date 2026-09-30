@@ -278,6 +278,7 @@ namespace
         std::map<uint32_t, std::unique_ptr<Surface>> surfaces;
         bool configureOnCommit{true};
         std::optional<LWS::Size> popupConfigureSize;
+        unsigned shellRoleOrderErrors{};
         unsigned cursorRequests{};
         uint32_t cursorSerial{};
         bool cursorHidden{};
@@ -615,7 +616,14 @@ namespace
                     auto& surface = *static_cast<Surface*>(wl_resource_get_user_data(native));
                     surface.shell = wl_resource_create(client, &xdg_surface_interface, 1, id);
                     static const struct xdg_surface_interface shell{
-                        .destroy = Destroy,
+                        .destroy = [](wl_client*, wl_resource* resource)
+                        {
+                            auto& surface = *static_cast<Surface*>(wl_resource_get_user_data(resource));
+                            if (surface.toplevel || surface.popup)
+                                ++surface.server->shellRoleOrderErrors;
+                            surface.shell = nullptr;
+                            wl_resource_destroy(resource);
+                        },
                         .get_toplevel =
                             [](wl_client* client, wl_resource* resource, uint32_t id)
                         {
@@ -784,6 +792,46 @@ namespace
                 .eraseBackground = false};
     }
 }  // namespace
+
+TEST_CASE("Wayland shell roles are released before their shared surface", "[wayland][protocol][lifetime]")
+{
+    ProtocolServer server;
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window window(context), popup(context);
+    auto config = Config(); config.visible = true;
+    REQUIRE(window.Create(config) == LWS::Result::Success);
+    server.Settle(context);
+    REQUIRE(popup.Create({.parent = &window, .visible = true,
+                          .popupPlacement = LWS::PopupPlacement{.anchor = {1, 1}, .size = {50, 50}}}) == LWS::Result::Success);
+    server.Settle(context);
+    REQUIRE(window.Destroy() == LWS::Result::Success);
+    server.Settle(context);
+    unsigned errors{};
+    server.Invoke([&] { errors = server.shellRoleOrderErrors; });
+    REQUIRE(errors == 0);
+    REQUIRE_FALSE(popup.IsCreated());
+}
+
+TEST_CASE("Wayland configure callbacks may destroy their window", "[wayland][protocol][lifetime]")
+{
+    ProtocolServer server;
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window window(context);
+    auto config = Config(); config.visible = true;
+    REQUIRE(window.Create(config) == LWS::Result::Success);
+    auto listener = window.Listen([&](const LWS::AnyEvent& event)
+    {
+        if (std::holds_alternative<LWS::EventClientAreaSizeChanged>(event))
+            REQUIRE(window.Destroy() == LWS::Result::Success);
+        return LWS::EventResponse::Unhandled;
+    });
+    REQUIRE(listener.has_value());
+    server.Settle(context);
+    REQUIRE_FALSE(window.IsCreated());
+    REQUIRE(context.IsUsable());
+}
 
 TEST_CASE("Wayland seat capability loss and deterministic promotion use real protocol events",
           "[wayland][protocol][seat]")

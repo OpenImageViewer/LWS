@@ -129,8 +129,7 @@ namespace LWS
                 wl_subsurface_destroy(captionSubsurface);
             if (captionSurface != nullptr)
                 wl_surface_destroy(captionSurface);
-            releasePopupRole();
-            releaseToplevelRole();
+            releaseShellRole();
             if (surface != nullptr)
                 wl_surface_destroy(surface);
         }
@@ -262,14 +261,18 @@ namespace LWS
             return true;
         }
 
-        void releaseToplevelRole()
+        void releaseShellRole()
         {
             if (decoration)
                 zxdg_toplevel_decoration_v1_destroy(decoration);
             if (toplevel)
                 xdg_toplevel_destroy(toplevel);
+            if (popup)
+                xdg_popup_destroy(popup);
             if (shellSurface)
                 xdg_surface_destroy(shellSurface);
+            popup = nullptr;
+            pendingPopupConfigure.reset();
             decoration = nullptr;
             toplevel = nullptr;
             shellSurface = nullptr;
@@ -341,18 +344,6 @@ namespace LWS
             return true;
         }
 
-        void releasePopupRole()
-        {
-            if (popup)
-                xdg_popup_destroy(popup);
-            if (shellSurface)
-                xdg_surface_destroy(shellSurface);
-            popup = nullptr;
-            shellSurface = nullptr;
-            pendingPopupConfigure.reset();
-            configured = false;
-        }
-
         static void popupConfigure(void* data, xdg_popup*, int32_t, int32_t, int32_t width, int32_t height)
         {
             auto& state = *static_cast<NativeState*>(data);
@@ -379,7 +370,7 @@ namespace LWS
                 state.pendingToplevelConfigure.reset();
                 state.owner.handleToplevelConfigure(configure.size, configure.maximized, configure.fullscreen);
             }
-            if (state.pendingPopupConfigure.has_value())
+            else if (state.pendingPopupConfigure.has_value())
             {
                 const Size size = *state.pendingPopupConfigure;
                 state.pendingPopupConfigure.reset();
@@ -723,7 +714,7 @@ namespace LWS
                             : nullptr;
                     if (parentSurface == nullptr || !fNativeState->createPopupRole(*fPopupPlacement, parentSurface))
                     {
-                        fNativeState->releasePopupRole();
+                        fNativeState->releaseShellRole();
                         internal::PlatformContextAccess::Fail(fPlatform.context(), ENOMEM, "xdg popup creation");
                         return;
                     }
@@ -755,7 +746,7 @@ namespace LWS
                 }
                 if (!fNativeState->createToplevelRole())
                 {
-                    fNativeState->releaseToplevelRole();
+                    fNativeState->releaseShellRole();
                     internal::PlatformContextAccess::Fail(fPlatform.context(), ENOMEM, "xdg toplevel remap");
                     return;
                 }
@@ -813,7 +804,7 @@ namespace LWS
             {
                 // Releasing the role unmaps the popup outright. A null-buffer commit would instead leave a
                 // compositor popup_done in flight, and a direct show() would race that dismissal.
-                fNativeState->releasePopupRole();
+                fNativeState->releaseShellRole();
                 return;
             }
             const bool hostFramedChild = fNativeState->subsurface != nullptr && fPlatform.hasHostWindowFrame();
@@ -846,7 +837,7 @@ namespace LWS
                 // Recreate only the private xdg role on show. This starts a fresh configure
                 // handshake on compositors which do not reconfigure an existing unmapped role.
                 // The borrowed wl_surface and its renderer/buffer resources remain stable.
-                fNativeState->releaseToplevelRole();
+                fNativeState->releaseShellRole();
             }
         }
     }
@@ -1859,7 +1850,7 @@ namespace LWS
         if (fNativeState == nullptr)
             return;
         // The popup role is inert after popup_done; release it before any further surface commit.
-        fNativeState->releasePopupRole();
+        fNativeState->releaseShellRole();
         dispatchEvent(EventPopupDismissed{});
         destroy();
     }
