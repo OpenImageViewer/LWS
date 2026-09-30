@@ -360,6 +360,50 @@ TEST_CASE("Captionless menu bars use native Windows state and move APIs", "[ui][
     REQUIRE((GetWindowLongW(hwnd, GWL_STYLE) & WS_CAPTION) == 0);
 }
 #endif
+TEST_CASE("Close caption hover and press colors are configurable", "[ui][menu][window-controls]")
+{
+    MenuEnvironment env;
+    auto theme = env.host().Style();
+    REQUIRE(theme.closeHoverBackground == LLUtils::Color{uint32_t{0xe81123ff}});
+    REQUIRE(theme.closePressedBackground == LLUtils::Color{uint32_t{0xc50f1fff}});
+    REQUIRE(theme.closeActiveForeground == LLUtils::Color{uint32_t{0xffffffff}});
+    theme.closeHoverBackground = LLUtils::Color{uint32_t{0x126543ff}};
+    theme.closePressedBackground = LLUtils::Color{uint32_t{0x543210ff}};
+    theme.closeActiveForeground = LLUtils::Color{uint32_t{0xfedcbaff}};
+    env.host().SetTheme(theme);
+    auto menu = std::make_unique<LWSUI::MenuBar>();
+    unsigned closed = 0;
+    menu->SetWindowControls({.minimize = true, .requestClose = [&] { ++closed; }});
+    env.host().SetMainMenu(std::move(menu));
+    env.host().Update();
+    auto* bar = env.host().MainMenu();
+    using Access = LWSUI::internal::MenuSessionAccess;
+    using Action = LWSUI::internal::MenuWindowAction;
+    const auto close = Access::WindowButtonBounds(*bar, Action::Close);
+    const auto check = [&](LLUtils::Color color)
+    {
+        LWSUI::Canvas canvas;
+        canvas.Begin(640, 480);
+        bar->Render(canvas);
+        const auto bitmap = canvas.End();
+        const auto* pixel = bitmap.pixels.data() + int(close.y + 4) * bitmap.rowPitch + int(close.x + 4) * 4;
+        REQUIRE(std::to_integer<uint8_t>(pixel[0]) == color.B());
+        REQUIRE(std::to_integer<uint8_t>(pixel[1]) == color.G());
+        REQUIRE(std::to_integer<uint8_t>(pixel[2]) == color.R());
+    };
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Move, .x = close.x + 4, .y = close.y + 4}));
+    check(theme.closeHoverBackground);
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = close.x + 4, .y = close.y + 4}));
+    check(theme.closePressedBackground);
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = 1, .y = 100}));
+    env.host().Update();
+    REQUIRE(closed == 0);
+    check(theme.surface);
+    bar->SetEnabled(false);
+    env.host().Route({.kind = LWSUI::InputKind::Move, .x = close.x + 4, .y = close.y + 4});
+    check(theme.surface);
+}
+
 TEST_CASE("Menu icon items and owned content share layout and input safely", "[ui][menu][content]")
 {
     struct Content final : LWSUI::Container

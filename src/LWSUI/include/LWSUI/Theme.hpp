@@ -26,6 +26,8 @@ namespace LWSUI
         LLUtils::Color surface{uint32_t{0x111720ff}}, accent{uint32_t{0x66b7ffff}};
         LLUtils::Color changed{uint32_t{0xfbbf24ff}}, error{uint32_t{0xff8080ff}};
         LLUtils::Color hoverSurface{uint32_t{0x354761ff}};
+        LLUtils::Color closeHoverBackground{uint32_t{0xe81123ff}}, closePressedBackground{uint32_t{0xc50f1fff}};
+        LLUtils::Color closeActiveForeground{uint32_t{0xffffffff}};
         LLUtils::Color line{uint32_t{0x303b4dff}}, muted{uint32_t{0x929fb4ff}};
         LLUtils::Color selectedRow{uint32_t{0x26394eff}}, hoveredRow{uint32_t{0x202b3aff}};
         LLUtils::Color selection{uint32_t{0x426389ff}}, selectedOption{uint32_t{0x2c4058ff}};

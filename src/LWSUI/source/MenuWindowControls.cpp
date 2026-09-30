@@ -122,9 +122,15 @@ namespace LWSUI
             const bool enabled = WindowButtonEnabled(action);
             const bool over = enabled && windowHover_ == action;
             const bool down = over && windowPressed_ == action;
+            const bool closeActive = over && action == WindowAction::Close;
             if (over)
-                canvas.Fill(r.x, r.y, r.width, r.height, down ? Style().selection : Style().hoverSurface);
-            const auto color = !enabled ? Style().muted : down ? Style().selectionForeground : Style().foreground;
+                canvas.Fill(r.x, r.y, r.width, r.height,
+                            closeActive ? (down ? Style().closePressedBackground : Style().closeHoverBackground)
+                                        : (down ? Style().selection : Style().hoverSurface));
+            const auto color = !enabled      ? Style().muted
+                               : closeActive ? Style().closeActiveForeground
+                               : down        ? Style().selectionForeground
+                                             : Style().foreground;
             const float unit = std::min(r.width, r.height) * .26f;
             const float cx = r.x + r.width / 2, cy = r.y + r.height / 2;
             const float left = cx - unit / 2, top = cy - unit / 2;
