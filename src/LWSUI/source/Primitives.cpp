@@ -10,7 +10,36 @@ namespace LWSUI
     {
         auto b = Bounds();
         const float p = Style().labelPadding;
-        DrawText(c, text_, b.x + p, b.y + p, b.width - 2 * p, b.height - 2 * p, Foreground(), wrap);
+        const float width = std::max(0.f, b.width - 2 * p);
+        std::string text = text_;
+        if (trimming == TextTrimming::Ellipsis && !wrap && c.Measure(text, Font()) > width)
+        {
+            const std::string dots = "\xe2\x80\xa6";
+            std::vector<size_t> offsets{0};
+            for (size_t at = 0; at < text.size();)
+            {
+                at = NextCharacter(text, at);
+                offsets.push_back(at);
+            }
+            size_t low = 0, high = offsets.size();
+            while (low + 1 < high)
+            {
+                const auto middle = (low + high) / 2;
+                if (c.Measure(text.substr(0, offsets[middle]) + dots, Font()) <= width)
+                    low = middle;
+                else
+                    high = middle;
+            }
+            text = c.Measure(dots, Font()) <= width ? text.substr(0, offsets[low]) + dots : "";
+        }
+        const float height = std::min(std::max(0.f, b.height - 2 * p),
+                                      c.TextHeight(text, std::max(1.f, width), Font(), wrap));
+        const float room = std::max(0.f, b.height - 2 * p - height);
+        const float y = b.y + p +
+                        (verticalAlignment == Alignment::Center ? room / 2
+                         : verticalAlignment == Alignment::End  ? room
+                                                                : 0);
+        DrawText(c, text, b.x + p, y, width, height, Foreground(), wrap);
     }
     Size Label::OnMeasure(Size available)
     {
@@ -32,9 +61,38 @@ namespace LWSUI
             }
             height = measurement_->height;
         }
-        return {available.width, std::max(Style().rowHeight, height + 2 * p)};
+        const float width = sizeToContent && !wrap ? (Host() ? Host()->MeasureText(text_, 100000, false, font).width
+                                                             : text_.size() * font.size * .6f) +
+                                                         2 * p
+                                                   : available.width;
+        return {width, std::max(Style().rowHeight, height + 2 * p)};
     }
-    void Button::OnRender(Canvas& c)
+    Size Label::OnMeasureContent(Size available)
+    {
+        auto size = OnMeasure(available);
+        const auto width = [&](std::string_view value)
+        { return Host() ? Host()->MeasureText(value, 100000, false, Font()).width : value.size() * Font().size * .6f; };
+        size.width = std::max(width(text_), width(minimumText)) + 2 * Style().labelPadding;
+        return size;
+    }
+    Size Button::OnMeasureContent(Size available)
+    {
+        auto size = Control::OnMeasure(available);
+        size.width = (Host() ? Host()->MeasureText(text_, 100000, false, Font()).width
+                             : text_.size() * Font().size * .6f) +
+                     2 * Style().padding;
+        return size;
+    }
+    Size Button::OnMeasure(Size available)
+    {
+        auto size = Control::OnMeasure(available);
+        if (sizeToContent)
+            size.width = (Host() ? Host()->MeasureText(text_, 100000, false, Font()).width
+                                 : text_.size() * Font().size * .6f) +
+                         2 * Style().padding;
+        return size;
+    }
+    void Button::RenderBackground(Canvas& c) const
     {
         auto b = Bounds();
         const bool enabled = Enabled();
@@ -44,11 +102,52 @@ namespace LWSUI
                    : pressed_  ? Style().selectedRow
                    : Hovered() ? Style().hoverSurface
                                : Style().line);
+    }
+    void Button::OnRender(Canvas& c)
+    {
+        RenderBackground(c);
+        const auto b = Bounds();
+        const bool enabled = Enabled();
         const float inset = flat ? 0.f : Style().padding;
         c.CenteredText(text_, b.x + inset, b.y, b.width - 2 * inset, b.height, enabled ? Foreground() : Style().muted,
                        Font(), enabled ? HighlightSpans(text_) : std::vector<TextSpan>{});
         if (enabled && Host() && Host()->IsFocused(*this))
             c.Fill(b.x, b.y + b.height - Style().focusWidth, b.width, Style().focusWidth, Style().accent);
+    }
+    Size GlyphButton::OnMeasure(Size available)
+    {
+        const auto height = Control::OnMeasure(available).height;
+        return {height, height};
+    }
+    void GlyphButton::OnRender(Canvas& canvas)
+    {
+        RenderBackground(canvas);
+        const auto b = Bounds();
+        const auto color = Enabled() ? Foreground() : Style().muted;
+        const float side = std::min(b.width, b.height) * .45f, left = b.x + (b.width - side) / 2;
+        const bool up = glyph_ == Glyph::ChevronUp || glyph_ == Glyph::DoubleChevronUp;
+        const bool twice = glyph_ == Glyph::DoubleChevronUp || glyph_ == Glyph::DoubleChevronDown;
+        for (int i = 0; i < (twice ? 2 : 1); ++i)
+        {
+            const float y = b.y + b.height / 2 + (twice ? (i ? .23f : -.23f) * side : 0);
+            const float direction = up ? -1.f : 1.f;
+            canvas.Line(left, y - direction * .18f * side, left + side / 2, y + direction * .18f * side,
+                        std::max(1.f, Style().borderWidth), color);
+            canvas.Line(left + side / 2, y + direction * .18f * side, left + side, y - direction * .18f * side,
+                        std::max(1.f, Style().borderWidth), color);
+        }
+    }
+    void Image::OnRender(Canvas& canvas)
+    {
+        if (!bitmap_)
+            return;
+        const auto b = Bounds();
+        const auto pixels = bitmap_->GetBuffer();
+        if (!pixels.width || !pixels.height)
+            return;
+        const float scale = std::min(b.width / pixels.width, b.height / pixels.height);
+        const float width = pixels.width * scale, height = pixels.height * scale;
+        canvas.Image(pixels, b.x + (b.width - width) / 2, b.y + (b.height - height) / 2, width, height);
     }
     bool Button::Finish(EditPhase phase)
     {
@@ -134,62 +233,6 @@ namespace LWSUI
         const float height = canvas.TextHeight(text_, std::max(0.f, b.width - inset), Font(), false);
         DrawText(canvas, text_, b.x + inset, b.y + (b.height - height) / 2, b.width - inset, height,
                  Enabled() ? Foreground() : Style().muted);
-    }
-    double Slider::Fraction(float x, float) const
-    {
-        return std::clamp((x - Bounds().x) / std::max(1.f, Bounds().width), 0.f, 1.f);
-    }
-    bool Slider::Finish(EditPhase phase)
-    {
-        if (dragging_)
-        {
-            dragging_ = false;
-            ReleaseCapture();
-            if (phase == EditPhase::Cancel)
-                SetValue(start_);
-            OnEdit.Raise(value_, phase);
-        }
-        return true;
-    }
-    bool Slider::OnInput(const Input& e)
-    {
-        if (e.kind == InputKind::Down)
-        {
-            start_ = value_;
-            dragging_ = true;
-            Capture();
-        }
-        if ((e.kind == InputKind::Down || e.kind == InputKind::Move) && dragging_)
-        {
-            SetValue(Fraction(e.x, e.y));
-            OnEdit.Raise(value_, EditPhase::Preview);
-            return true;
-        }
-        if (e.kind == InputKind::Up)
-            return Finish(EditPhase::Commit);
-        if (e.kind == InputKind::Cancel || (e.kind == InputKind::KeyDown && e.key == LWS::KeyCode::Escape))
-            return Finish(EditPhase::Cancel);
-        if (e.kind == InputKind::KeyDown && (e.key == LWS::KeyCode::Left || e.key == LWS::KeyCode::Right))
-        {
-            SetValue(value_ + (e.key == LWS::KeyCode::Left ? -1 : 1) * keyboardStep * (e.shift ? 10 : 1));
-            OnEdit.Raise(value_, EditPhase::Commit);
-            return true;
-        }
-        return false;
-    }
-    void Slider::OnRender(Canvas& c)
-    {
-        auto b = Bounds();
-        if (filled)
-        {
-            c.Fill(b.x, b.y, b.width, b.height, Style().surface);
-            c.Fill(b.x, b.y, float(value_) * b.width, b.height, Style().accent);
-            return;
-        }
-        c.Fill(b.x, b.y + b.height / 2 - Style().sliderThickness / 2, b.width, Style().sliderThickness,
-               Style().surface);
-        c.Fill(b.x + float(value_) * std::max(0.f, b.width - Style().sliderThumbWidth), b.y + Style().labelPadding,
-               Style().sliderThumbWidth, b.height - 2 * Style().labelPadding, Style().accent);
     }
     Rect ScrollBar::Thumb() const
     {

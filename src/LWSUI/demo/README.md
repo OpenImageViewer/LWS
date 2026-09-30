@@ -50,7 +50,9 @@ changes are required for these controls.
 
 ## Resizing containers without native windows
 
-Live Preview contains five ordinary control containers and four dividers:
+Live Preview composes five ordinary panes using four nested LWSUI `SplitPanel`
+controls. The outer workspace uses the same control and places its native child
+windows from the resulting pane bounds. There is no separate demo drag engine.
 
 ```text
 +------------------+----------------+
@@ -68,8 +70,8 @@ All five containers share the existing preview HWND/subsurface and UIHost. None
 of their dividers creates, moves, or resizes a native window. The outer workspace
 divider still resizes native child windows, providing a direct comparison.
 
-The upper new divider resizes Drawing and Details together against Inspector;
-the lower new divider independently resizes Quick Controls against Activity.
+The upper cross divider resizes Drawing and Details together against Inspector;
+the lower cross divider independently resizes Quick Controls against Activity.
 The short divider between Drawing and Details leaves Inspector unchanged. The
 full-width divider above Quick Controls moves the shared boundary between the
 upper and lower groups. Reset proportions are 50/30/20 for the three original
@@ -83,7 +85,7 @@ Content-based minimums constrain each divider. In smaller viewports they scale
 down, and each container remains independently scrollable.
 
 Dragging preserves keyboard focus and uncommitted edits. Tab focuses dividers;
-the relevant arrow keys adjust their position by 10 logical pixels. Home or
+the relevant arrow keys adjust their position by 10 logical pixels. Home or a double-click restores the focused divider;
 **Reset Split** restores all four inner splits; **Reset Layout** resets both outer
 and inner splits. Neither resets preview values or the selected theme. Escape,
 capture/focus loss, orientation changes, and resizing during a drag cancel it and
@@ -102,10 +104,10 @@ inventory is checked by the showcase integration tests.
 | --- | --- |
 | Controls: Text | Label, Button (normal/flat/disabled), TextBox (single-line/multiline notes/read-only/borderless/placeholder/validation) |
 | Controls: Choices | CheckBox, standalone RadioButton pair, RadioGroup, ComboBox |
-| Controls: Values | NumericEdit<int64_t>, NumericEdit<double>, Slider (outline/filled), standalone ScrollBar |
+| Controls: Values | NumericEdit<int64_t>, NumericEdit<double>, Slider (editable/read-only values, outline/filled), standalone ScrollBar |
 | Controls: Color and files | Standalone ColorSwatch, ColorPicker, FilePicker |
-| Container pane | Horizontal/vertical StackPanel, fixed/proportional Grid, ScrollView (reserved/overlay bars), TreeView, Branch, Row |
-| Workspace and Preview | Custom Container with native child placement and splitter; custom Control drawing through Canvas |
+| Container pane | Panel, DockPanel, FlowPanel, GlyphButton, Image, horizontal/vertical StackPanel, fixed/proportional Grid, ScrollView (reserved/overlay bars), TreeView, Branch, Row |
+| Workspace and Preview | Nested SplitPanel controls and custom Container with native child placement; custom Control drawing through Canvas |
 | All desktop windows | MenuBar; Menu Gallery adds cascades, separators, checked/disabled entries, orientation, docking, floating and detachment |
 
 The section buttons at the top of Controls Gallery jump to the corresponding

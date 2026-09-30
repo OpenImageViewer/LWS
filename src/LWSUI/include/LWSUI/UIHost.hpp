@@ -8,6 +8,7 @@ namespace LWSUI
     {
         class MenuSession;
         struct MenuSessionAccess;
+        struct UIHostTestAccess;
     }
     // Window must outlive host. The host owns root and popup trees; focus/capture
     // and popup owners are checked non-owning handles. Callbacks run on the UI thread.
@@ -83,6 +84,7 @@ namespace LWSUI
         friend class Control;
         friend class internal::MenuSession;
         friend struct internal::MenuSessionAccess;
+        friend struct internal::UIHostTestAccess;
         void Capture(Control* control);
         void ReleaseCapture(Control* control);
         void Detached(Control& control);
@@ -95,6 +97,8 @@ namespace LWSUI
         bool RouteContextMenu(const Input&);
         bool ContextMenuOwnerValid() const;
         void Hover(Control* control);
+        void UpdateCursor();
+        void RenderTooltip(Canvas&);
         /// Panel style: popup style, or the theme with the popup surface as background.
         Theme MenuPanelStyle() const;
         void LayoutMainMenu(float width, float height);
@@ -110,7 +114,8 @@ namespace LWSUI
         Rect popupBounds_, contextMenuBounds_;
         ControlHandle contextMenuOwner_;
         bool suppressPointerRelease_ = false;
-        bool popupModal_ = false;
+        bool popupModal_ = false, cursorApplied_ = false;
+        LWS::CursorShape cursorShape_ = LWS::CursorShape::Arrow;
         std::vector<std::pair<ControlHandle, std::function<void(Control&)>>> deferred_;
         std::unique_ptr<internal::MenuSession> menuSession_;
         std::unique_ptr<MenuBar> menuBar_;

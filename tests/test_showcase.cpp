@@ -13,33 +13,6 @@
         #include <LWS/Win32/WindowExtensions.hpp>
     #endif
 
-TEST_CASE("Showcase tiles flexible panes without resizing the fixed sample", "[ui][showcase][layout]")
-{
-    using LWSUI::demo::ArrangeWorkspace;
-    const auto first = ArrangeWorkspace({0, 100, 1100, 600}, .4f);
-    const auto wide = ArrangeWorkspace({0, 100, 1400, 800}, .4f);
-    const auto dragged = ArrangeWorkspace({0, 100, 1100, 600}, .7f);
-    for (const auto& layout : {first, wide, dragged})
-    {
-        REQUIRE(layout.showFixed);
-        REQUIRE(layout.fixed.width == 240);
-        REQUIRE(layout.fixed.height == 160);
-        REQUIRE(layout.gallery.y + layout.gallery.height < layout.fixed.y);
-        REQUIRE(layout.gallery.x + layout.gallery.width <= layout.divider.x);
-        REQUIRE(layout.divider.x + layout.divider.width <= layout.preview.x);
-        REQUIRE(layout.fixed.x + layout.fixed.width <= layout.divider.x);
-    }
-    REQUIRE(wide.gallery.width > first.gallery.width);
-    REQUIRE(wide.preview.width > first.preview.width);
-    REQUIRE(wide.gallery.height > first.gallery.height);
-    REQUIRE(dragged.gallery.width > first.gallery.width);
-    REQUIRE(dragged.preview.width < first.preview.width);
-    const auto tiny = ArrangeWorkspace({0, 0, 180, 150}, .4f);
-    REQUIRE_FALSE(tiny.showFixed);
-    REQUIRE(tiny.gallery.width >= 0);
-    REQUIRE(tiny.preview.width >= 0);
-}
-
 TEST_CASE("Showcase catalog binds every public control to the connected demo", "[ui][showcase]")
 {
     #ifdef LWS_HAS_WIN32_BACKEND
@@ -89,6 +62,12 @@ TEST_CASE("Showcase catalog binds every public control to the connected demo", "
                                               "ColorPicker",
                                               "FilePicker",
                                               "StackPanel",
+                                              "Panel",
+                                              "DockPanel",
+                                              "FlowPanel",
+                                              "SplitPanel",
+                                              "GlyphButton",
+                                              "Image",
                                               "Grid",
                                               "ScrollView",
                                               "TreeView",
@@ -297,16 +276,23 @@ TEST_CASE("Internal split containers preserve drafts and native geometry", "[ui]
     {
         const auto grip = split.Divider(index).Bounds();
         const float x = grip.x + grip.width / 2, y = grip.y + grip.height / 2;
-        const auto before = split.Pane(2 - index * 2).Parent()->Bounds();
+        const auto before = split.PaneContainer(2 - index * 2).Bounds();
         const auto ratios = split.Proportions();
         REQUIRE(host.Route({.kind = LWSUI::InputKind::Down, .x = x, .y = y}));
         REQUIRE(host.Route({.kind = LWSUI::InputKind::Move,
                             .x = x + (split.IsSideBySide() ? delta : 0),
                             .y = y + (split.IsSideBySide() ? 0 : delta)}));
         host.Update();
-        const auto after = split.Pane(2 - index * 2).Parent()->Bounds();
-        REQUIRE(after.width == Catch::Approx(before.width));
-        REQUIRE(after.height == Catch::Approx(before.height));
+        const auto after = split.PaneContainer(2 - index * 2).Bounds();
+        if (index == 0)
+        {
+            REQUIRE(after.width == Catch::Approx(before.width));
+            REQUIRE(after.height == Catch::Approx(before.height));
+        }
+        else if (split.IsSideBySide())
+            REQUIRE(after.width != Catch::Approx(before.width));
+        else
+            REQUIRE(after.height != Catch::Approx(before.height));
         REQUIRE(split.Proportions() != ratios);
         if (cancel)
             REQUIRE(host.Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Escape}));
@@ -331,7 +317,7 @@ TEST_CASE("Internal split containers preserve drafts and native geometry", "[ui]
     {
         const auto normalized = [&](size_t index)
         {
-            const auto b = split.Pane(index).Parent()->Bounds();
+            const auto b = split.PaneContainer(index).Bounds();
             return split.IsSideBySide() ? b : LWSUI::Rect{b.y, b.x, b.height, b.width};
         };
         const auto drawing = normalized(0), details = normalized(1), quick = normalized(2);
@@ -351,14 +337,14 @@ TEST_CASE("Internal split containers preserve drafts and native geometry", "[ui]
         const float x = divider.x + divider.width / 2, y = divider.y + divider.height / 2;
         const auto saved = split.CrossProportions();
         const auto frozenIndex = index == 2 ? 2 : 0;
-        const auto frozen = split.Pane(frozenIndex).Parent()->Bounds();
+        const auto frozen = split.PaneContainer(frozenIndex).Bounds();
         REQUIRE(host.Route({.kind = LWSUI::InputKind::Down, .x = x, .y = y}));
         REQUIRE(host.Route({.kind = LWSUI::InputKind::Move,
                             .x = x + (split.IsSideBySide() ? 0 : 12),
                             .y = y + (split.IsSideBySide() ? 12 : 0)}));
         host.Update();
         REQUIRE(split.CrossProportions() != saved);
-        const auto unchanged = split.Pane(frozenIndex).Parent()->Bounds();
+        const auto unchanged = split.PaneContainer(frozenIndex).Bounds();
         REQUIRE(unchanged.width == Catch::Approx(frozen.width));
         REQUIRE(unchanged.height == Catch::Approx(frozen.height));
         checkLayout();
@@ -398,19 +384,25 @@ TEST_CASE("Internal split containers preserve drafts and native geometry", "[ui]
     REQUIRE(host.Route({.kind = LWSUI::InputKind::Move, .x = grip.x + 22, .y = grip.y + 2}));
     host.Update();
     // A resize that forces the fallback cancels the drag before changing axes.
+    split.Measure({400, 600});
     split.Arrange({0, 0, 400, 600});
     REQUIRE_FALSE(split.Dragging());
     REQUIRE_FALSE(split.IsSideBySide());
     REQUIRE(split.PrefersSideBySide());
     REQUIRE(split.Proportions() == saved);
+    split.Measure({1000, 850});
     split.Arrange({0, 0, 1000, 850});
     REQUIRE(split.IsSideBySide());
     REQUIRE(host.Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Escape}));
     REQUIRE(editor->Text() == "committed");
+    split.ResetSplit();
+    host.Update();
     REQUIRE(host.Focus(&split.Divider(0)));
     REQUIRE(host.Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Right}));
     REQUIRE(host.Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Home}));
-    REQUIRE(split.Proportions() == std::array<float, 3>{.5f, .3f, .2f});
+    REQUIRE(split.Proportions()[0] == Catch::Approx(.5f));
+    REQUIRE(split.Proportions()[1] == Catch::Approx(.3f));
+    REQUIRE(split.Proportions()[2] == Catch::Approx(.2f));
     REQUIRE(split.CrossProportions() == std::array<float, 2>{.65f, .65f});
     host.Update();
     REQUIRE(host.Focus(&split.Divider(2)));
@@ -426,7 +418,7 @@ TEST_CASE("Internal split containers preserve drafts and native geometry", "[ui]
         REQUIRE(host.Route({.kind = LWSUI::InputKind::Down, .x = divider.x + 2, .y = divider.y + 2}));
         REQUIRE(host.Route({.kind = LWSUI::InputKind::Move, .x = divider.x + 100000, .y = divider.y + 2}));
         host.Update();
-        REQUIRE(split.Pane(1).Parent()->Bounds().width >= 139.99f);
+        REQUIRE(split.PaneContainer(1).Bounds().width >= 139.99f);
     };
     begin();
     #ifdef LWS_HAS_WIN32_BACKEND

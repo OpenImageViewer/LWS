@@ -7,6 +7,17 @@ namespace LWS
 }
 namespace LWSUI
 {
+    enum class Alignment
+    {
+        Start,
+        Center,
+        End
+    };
+    enum class TextTrimming
+    {
+        None,
+        Ellipsis
+    };
     class Label : public Control
     {
       public:
@@ -21,12 +32,16 @@ namespace LWSUI
             Invalidate(true);
         }
         const std::string& Text() const { return text_; }
-        bool wrap = false;
+        bool wrap = false, sizeToContent = false;
+        std::string minimumText;
+        Alignment verticalAlignment = Alignment::Start;
+        TextTrimming trimming = TextTrimming::None;
 
       protected:
 
         void OnRender(Canvas&) override;
         Size OnMeasure(Size) override;
+        Size OnMeasureContent(Size) override;
         void OnDetach() override { measurement_.reset(); }
 
       private:
@@ -50,12 +65,14 @@ namespace LWSUI
         explicit Button(std::string text = {}) : text_(std::move(text)) {}
         void SetText(std::string text)
         {
+            if (text_ == text)
+                return;
             text_ = std::move(text);
-            Invalidate();
+            Invalidate(sizeToContent);
         }
         const std::string& Text() const { return text_; }
-        bool Focusable() const override { return true; }
-        bool flat = false;
+        bool Focusable() const override { return focusable; }
+        bool flat = false, sizeToContent = false, focusable = true;
         LWSUI::Event<void()> OnClick;
         LWSUI::Event<void(bool)> OnPress;
         LWSUI::Event<void(EditPhase)> OnRelease;
@@ -64,11 +81,57 @@ namespace LWSUI
 
       protected:
 
+        Size OnMeasure(Size available) override;
+        Size OnMeasureContent(Size) override;
+        void RenderBackground(Canvas&) const;
         void OnRender(Canvas&) override;
         bool OnInput(const Input&) override;
         virtual void Activate() { OnClick.Raise(); }
         std::string text_;
         bool pressed_ = false, pointerInside_ = true;
+    };
+    enum class Glyph
+    {
+        ChevronUp,
+        ChevronDown,
+        DoubleChevronUp,
+        DoubleChevronDown
+    };
+    class GlyphButton : public Button
+    {
+      public:
+
+        explicit GlyphButton(Glyph glyph) : glyph_(glyph) { flat = true; }
+
+      protected:
+
+        Size OnMeasure(Size available) override;
+        Size OnMeasureContent(Size available) override { return OnMeasure(available); }
+        void OnRender(Canvas&) override;
+
+      private:
+
+        Glyph glyph_;
+    };
+    class Image : public Control
+    {
+      public:
+
+        void SetBitmap(LWS::BitmapSharedPtr bitmap)
+        {
+            bitmap_ = std::move(bitmap);
+            Invalidate(true);
+        }
+        float size = 32;
+
+      protected:
+
+        Size OnMeasure(Size) override { return {bitmap_ ? size : 0, bitmap_ ? size : 0}; }
+        void OnRender(Canvas&) override;
+
+      private:
+
+        LWS::BitmapSharedPtr bitmap_;
     };
     class CheckBox : public Button
     {
@@ -208,15 +271,44 @@ namespace LWSUI
         float textWidth_ = 0, caretX_ = 0;
         size_t geometryCaret_ = std::string::npos;
     };
-    class Slider : public Control
+    enum class SliderValueMode
+    {
+        Hidden,
+        ReadOnly,
+        Editable
+    };
+    template <class T>
+    struct NumericSpec;
+    template <class T>
+    class SliderValue;
+    namespace internal
+    {
+        struct SliderValueBinding
+        {
+            virtual ~SliderValueBinding() = default;
+            virtual void SetNormalized(double) = 0;
+            virtual void Begin() = 0;
+            virtual void Changed(double, EditPhase) = 0;
+            virtual bool Finish(EditPhase) = 0;
+            virtual void Step(int, int) = 0;
+            virtual void Display(SliderValueMode) = 0;
+            virtual Control* Field() const = 0;
+        };
+    }  // namespace internal
+    class Slider : public Container
     {
       public:
 
-        void SetValue(double value)
-        {
-            value_ = std::clamp(value, 0.0, 1.0);
-            Invalidate();
-        }
+        Slider();
+        ~Slider() override;
+        void SetValue(double value);
+        // Normalized Value/OnEdit stay source compatible; configured typed values never pass through double storage.
+        template <class T>
+        SliderValue<T>& ConfigureValue(NumericSpec<T> spec, T value, SliderValueMode mode = SliderValueMode::Editable);
+        void SetValueDisplay(SliderValueMode mode);
+        SliderValueMode ValueDisplay() const { return valueMode_; }
+        Control* ValueField() const;
+        Rect TrackBounds() const;
         double Value() const { return value_; }
         bool filled = false;
         double keyboardStep = .01;
@@ -226,11 +318,29 @@ namespace LWSUI
 
       protected:
 
+        Size OnMeasure(Size available) override;
+        void OnArrange() override;
+        void OnDetach() override { Abort(); }
+        void Abort();
         void OnRender(Canvas&) override;
         bool OnInput(const Input&) override;
         virtual double Fraction(float x, float y) const;
         bool dragging_ = false;
         double value_ = 0, start_ = 0;
+
+      private:
+
+        template <class T>
+        friend class SliderValue;
+        using Container::Add;
+        using Container::Clear;
+        using Container::Emplace;
+        using Container::Remove;
+        void Publish(EditPhase);
+        float FieldWidth() const;
+        float grab_ = 0;
+        SliderValueMode valueMode_ = SliderValueMode::Hidden;
+        std::unique_ptr<internal::SliderValueBinding> valueBinding_;
     };
     class ScrollBar : public Slider
     {
@@ -250,6 +360,8 @@ namespace LWSUI
 
       private:
 
+        using Slider::ConfigureValue;
+        using Slider::SetValueDisplay;
         Rect Thumb() const;
         double page_ = 1;
         float grab_ = 0.5f;

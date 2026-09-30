@@ -515,7 +515,7 @@ decision about reserving a guaranteed drag strip for combined-content bars.
 `LWSUI::MakeTheme(ThemePreset::Dark/Light/Warm)` returns a complete palette with the same
 font and geometry defaults. Dark is the original default. Apply a palette through the
 existing UIHost theme update path; close transient popups first so they reopen with the
-new style. The controls-only demo's Palette button demonstrates live switching.
+new style. The connected showcase Theme menus demonstrate live switching.
 Settings-specific sections, JSON profiles, Save/Revert, and the F6 editor remain in
 LWSSettings; LWSUI has no persistence or theme registry.
 
@@ -541,3 +541,64 @@ input cannot reach that unavailable subtree, and Focus rejects foreign-host cont
 When LWSUI is enabled, LWSTests also covers event connection mutation and lifetime,
 UTF-8 editing and validation, popup cancellation, deferred context-menu commands,
 and scrolling without losing editor drafts. Core-only builds omit these UI tests.
+
+### Composable layout and value presentation
+
+`SplitPanel` owns exactly two controls and its divider. Nest instances for larger
+layouts; `Orientation::Horizontal` places panes beside each other, and Vertical
+stacks them. `First()`, `Second()`, and `Divider()` expose the owned roles.
+`SetRatio()` selects the initial proportion, `SetMinimumSizes()` constrains panes,
+and `SetDefaultTrailingSize(size, maximumFraction)` supports a preferred details
+area. A user drag may exceed that initial fraction cap. When the available extent
+is too small, pane minima scale proportionally. Dragging preserves editor focus;
+Escape, detachment, or resizing cancels a drag. Tab/arrow keys resize a focused
+divider; Home/double-click restores its configured default. `OnEdit` reports
+preview/commit/cancel. Layout state is in memory only.
+
+```cpp
+auto split = std::make_unique<LWSUI::SplitPanel>(
+    std::move(settings), std::move(description));
+split->SetDefaultTrailingSize(180, .45f);
+split->SetMinimumSizes(100, 80);
+host.SetRoot(std::move(split));
+```
+
+`Panel` owns one content control and supplies background, borders, padding and a
+minimum height. `DockPanel::AddDocked()` consumes top/bottom/left/right space in
+insertion order, then assigns Fill children the remaining rectangle. Ownership
+order controls keyboard traversal independently of docking. Zero extent uses measured content. `Take()` removes
+a docked child. `FlowPanel::AddItem()` lays out intrinsic widths, wraps rows, and
+optionally grows an item to fill spare space. `firstLeading` and `alignEnd` support
+leading Reset plus trailing action buttons. These role-owning controls must not
+be structurally mutated through a base `Container` cast.
+
+`MeasureContent()` requests intrinsic width; horizontal `StackPanel::sizeToContent`
+uses those widths, and `clipPartialChildren` hides actions that cannot fit fully.
+Labels support `verticalAlignment`, `TextTrimming::Ellipsis`, and `minimumText`
+for stable intrinsic widths. `GlyphButton` supplies reusable chevrons; `Image`
+presents a shared bitmap. Controls may set `SetTooltip()` and an optional `cursor`;
+the host presents them. `hitTestVisible=false` makes a subtree pointer-transparent,
+and `Container::hitTestBackground=false` passes hits through empty container space.
+`OnAttach()` runs after children attach and complements `OnDetach()` for queued work.
+
+The existing `Slider` has optional `SliderValueMode::Hidden` (default), `ReadOnly`,
+and `Editable` presentation. `SetValueDisplay()` adds a normalized double readout
+without changing continuous dragging. `Value()` and `OnEdit` remain normalized.
+For a typed range, include `<LWSUI/Composites.hpp>` and configure the same slider:
+
+```cpp
+auto& amount = slider.ConfigureValue<int64_t>({0, 100, 1}, 25,
+                                             LWSUI::SliderValueMode::Editable);
+auto connection = amount.OnEdit.Connect([](int64_t value, LWSUI::EditPhase phase) {
+    // Preview, commit, or roll back the application's typed value.
+});
+amount.SetValue(30); // External writes cancel pending interaction without notifications.
+```
+
+The returned model belongs to the slider and is valid until reconfiguration or
+slider destruction. Reconfiguration is structural: post it through `UIHost::Post`
+when requested from a callback. The numeric editor retains exact typed values;
+integer slider bounds and span must fit within 2^53-1, while ordinary `NumericEdit`
+keeps its wider integer support. Steps must be positive and bounds finite/distinct.
+`TrackBounds()` excludes the value field; `ValueField()` returns the current visible
+field or null. `ScrollBar` retains its ordinary normalized behavior.

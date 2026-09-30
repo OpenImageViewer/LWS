@@ -1,4 +1,5 @@
 #pragma once
+#include <LWSUI/NumericSpec.hpp>
 #include <LWSUI/Containers.hpp>
 #include <LWSUI/UIHost.hpp>
 #include <LWS/Timer.hpp>
@@ -66,18 +67,6 @@ namespace LWSUI
         std::vector<Choice> choices_;
         std::string value_;
         std::vector<LWSUI::Event<void()>::Connection> choicesConnections_;
-    };
-    template <class T>
-    struct NumericSpec
-    {
-        std::optional<T> minimum, maximum;
-        T step = []
-        {
-            if constexpr (std::is_integral_v<T>)
-                return T{1};
-            else
-                return T{.1};
-        }();
     };
     template <class T>
     class NumericEdit : public Container
@@ -405,3 +394,5 @@ namespace LWSUI
         LWSUI::Event<void(const std::string&, EditPhase)>::Connection edit_;
     };
 }  // namespace LWSUI
+
+#include <LWSUI/SliderValue.hpp>

@@ -2,6 +2,7 @@
 #include "ContextMenu.hpp"
 #include "MenuHost.hpp"
 #include <LWS/Platform.hpp>
+#include <LWS/Cursor.hpp>
 #include <algorithm>
 #ifdef LWS_HAS_WIN32_BACKEND
     #include <LWS/Win32/WindowExtensions.hpp>
@@ -302,6 +303,7 @@ namespace LWSUI
         }
         if (contextMenu_)
             contextMenu_->Render(canvas_);
+        RenderTooltip(canvas_);
         const auto bitmap = canvas_.End();
         if (!current())
             return resizePending_;
@@ -406,6 +408,7 @@ namespace LWSUI
     void UIHost::Capture(Control* c)
     {
         capture_ = c->Handle();
+        UpdateCursor();
 #ifdef LWS_HAS_WIN32_BACKEND
         (void) LWS::Win32::SetMouseCapture(window_, true);
 #endif
@@ -416,12 +419,18 @@ namespace LWSUI
         if (capture_.Get() != c)
             return;
         capture_ = {};
+        UpdateCursor();
 #ifdef LWS_HAS_WIN32_BACKEND
         (void) LWS::Win32::SetMouseCapture(window_, false);
 #endif
     }
     void UIHost::Detached(Control& c)
     {
+        if (pointerHover_.Get() == &c)
+        {
+            pointerHover_ = {};
+            UpdateCursor();
+        }
         if (contextMenuOwner_.Get() == &c)
             CloseContextMenu();
         if (popupOwner_.Get() == &c)
@@ -513,6 +522,7 @@ namespace LWSUI
                 c->Invalidate();
             }
         }
+        UpdateCursor();
         if (popup_)
             c = popupOwner_.Get();
         if (c == hover_.Get())
@@ -523,6 +533,43 @@ namespace LWSUI
             ancestors.push_back(c);
         for (auto it = ancestors.rbegin(); it != ancestors.rend(); ++it)
             (*it)->OnHover.Raise();
+    }
+    void UIHost::UpdateCursor()
+    {
+        auto* target = capture_ ? capture_.Get() : pointerHover_.Get();
+        while (target && !target->cursor)
+            target = target->Parent();
+        if (!target && !cursorApplied_)
+            return;
+        const auto shape = target ? *target->cursor : LWS::CursorShape::Arrow;
+        if (!cursorApplied_ || shape != cursorShape_)
+            if (window_.IsCreated())
+                std::ignore = window_.SetMouseCursor(LWS::Cursor::FromShape(shape));
+        cursorShape_ = shape;
+        cursorApplied_ = target != nullptr;
+    }
+    void UIHost::RenderTooltip(Canvas& canvas)
+    {
+        if (popup_ || contextMenu_ || HasOpenMenu() || capture_)
+            return;
+        auto* owner = pointerHover_.Get();
+        while (owner && owner->Tooltip().empty())
+            owner = owner->Parent();
+        if (!Available(owner))
+            return;
+        const auto size = window_.GetClientAreaMetrics().logical;
+        const auto b = owner->Bounds();
+        const auto& style = PopupStyle();
+        const float p = style.padding;
+        const float width = std::min(float(size.x), canvas.Measure(owner->Tooltip(), style.smallFont) + 2 * p);
+        const float height = canvas.TextHeight(owner->Tooltip(), std::max(1.f, width - 2 * p), style.smallFont,
+                                                false) +
+                             2 * p;
+        const float x = std::clamp(b.x, 0.f, std::max(0.f, float(size.x) - width));
+        const float y = b.y + b.height + height <= size.y ? b.y + b.height : std::max(0.f, b.y - height);
+        canvas.Fill(x, y, width, height, style.background);
+        canvas.CenteredText(owner->Tooltip(), x + p, y, std::max(0.f, width - 2 * p), height, style.foreground,
+                             style.smallFont);
     }
     bool UIHost::ContextMenuOwnerValid() const
     {

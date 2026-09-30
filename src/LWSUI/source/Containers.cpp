@@ -10,12 +10,14 @@ namespace LWSUI
         const size_t count = std::count_if(Children().begin(), Children().end(),
                                            [](const auto& child) { return child->Visible(); });
         auto childSpace = available;
-        if (orientation == Orientation::Horizontal && count)
+        if (orientation == Orientation::Horizontal && sizeToContent)
+            childSpace.width = fallbackItemWidth;
+        else if (orientation == Orientation::Horizontal && count)
             childSpace.width = std::max(0.f, (available.width - spacing * float(count - 1)) / float(count));
         for (auto& child : Children())
             if (child->Visible())
             {
-                auto size = child->Measure(childSpace);
+                auto size = sizeToContent ? child->MeasureContent(childSpace) : child->Measure(childSpace);
                 if (orientation == Orientation::Vertical)
                 {
                     result.height += size.height;
@@ -56,6 +58,18 @@ namespace LWSUI
                 {
                     float width = std::max(0.f, (b.width - spacing * float(visible ? visible - 1 : 0)) /
                                                     std::max(size_t{1}, visible));
+                    if (sizeToContent)
+                    {
+                        const float gaps = spacing * float(visible ? visible - 1 : 0);
+                        const float scale = clipPartialChildren
+                                                ? 1.f
+                                                : std::clamp((b.width - gaps) /
+                                                                 std::max(1.f, DesiredSize().width - gaps),
+                                                             0.f, 1.f);
+                        width = size.width * scale;
+                    }
+                    if (clipPartialChildren && position + width > b.x + b.width)
+                        width = 0;
                     child->Arrange({position, b.y, width, b.height});
                     position += width + spacing;
                 }

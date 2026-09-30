@@ -1422,4 +1422,115 @@ TEST_CASE("Scrolling preserves child edits and clips hit testing", "[ui][scroll]
     REQUIRE(editor.Text() == "original");
 }
 
+TEST_CASE("SplitPanel owns panes and clamps resizing in both orientations", "[ui][split]")
+{
+    using namespace LWSUI;
+    SplitPanel split(std::make_unique<Label>("First"), std::make_unique<TextBox>("Second"));
+    REQUIRE(split.First().Parent() == &split);
+    REQUIRE(split.Second().Parent() == &split);
+    REQUIRE(split.Children().size() == 3);
+    split.SetMinimumSizes(60, 40);
+    split.SetRatio(.75f);
+    split.SetDividerSize(8);
+    split.Measure({200, 208});
+    split.Arrange({0, 0, 200, 208});
+    REQUIRE(split.First().Bounds().height == 150);
+    REQUIRE(split.Second().Bounds().height == 50);
+    split.SetDefaultTrailingSize(80, .25f);
+    split.Measure({200, 208});
+    split.Arrange({0, 0, 200, 208});
+    REQUIRE(split.Second().Bounds().height == 50);
+    REQUIRE(split.Divider().Dispatch({.kind = InputKind::KeyDown, .key = LWS::KeyCode::Up}));
+    split.Arrange({0, 0, 200, 208});
+    REQUIRE(split.Second().Bounds().height == 60);
+    split.Reset();
+    split.Arrange({0, 0, 200, 208});
+    REQUIRE(split.Second().Bounds().height == 50);
+    split.SetOrientation(Orientation::Horizontal);
+    split.Measure({58, 200});
+    split.Arrange({0, 0, 58, 200});
+    REQUIRE(split.First().Bounds().width == 30);
+    REQUIRE(split.Second().Bounds().width == 20);
+    REQUIRE(split.Divider().cursor == LWS::CursorShape::SizeEW);
+    REQUIRE_THROWS_AS(split.SetRatio(std::numeric_limits<float>::quiet_NaN()), std::invalid_argument);
+}
+TEST_CASE("Slider value presentation preserves normalized and exact typed editing", "[ui][slider]")
+{
+    using namespace LWSUI;
+    Slider slider;
+    slider.SetValue(.25);
+    REQUIRE(slider.ValueDisplay() == SliderValueMode::Hidden);
+    REQUIRE(slider.ValueField() == nullptr);
+    slider.SetValueDisplay(SliderValueMode::ReadOnly);
+    REQUIRE(dynamic_cast<Label*>(slider.ValueField()) != nullptr);
+    REQUIRE(slider.Value() == .25);
+    slider.SetValueDisplay(SliderValueMode::Editable);
+    REQUIRE(dynamic_cast<NumericEdit<double>*>(slider.ValueField()) != nullptr);
+    slider.Measure({300, 40});
+    slider.Arrange({0, 0, 300, 40});
+    REQUIRE(slider.TrackBounds().width < slider.Bounds().width);
+    REQUIRE(slider.TrackBounds().x + slider.TrackBounds().width <= slider.ValueField()->Bounds().x);
+    slider.SetValueDisplay(SliderValueMode::Hidden);
+    REQUIRE(slider.ValueField() == nullptr);
+    REQUIRE(slider.TrackBounds().width == 300);
+    auto& value = slider.ConfigureValue<int64_t>({9007199254740987LL, 9007199254740991LL, 1}, 9007199254740990LL);
+    REQUIRE(slider.Dispatch({.kind = InputKind::KeyDown, .key = LWS::KeyCode::Right}));
+    REQUIRE(value.Value() == 9007199254740991LL);
+    REQUIRE(slider.Dispatch({.kind = InputKind::KeyDown, .key = LWS::KeyCode::Left}));
+    REQUIRE(value.Value() == 9007199254740990LL);
+    REQUIRE_THROWS_AS(slider.ConfigureValue<int64_t>({0, 0, 1}, 0), std::invalid_argument);
+    REQUIRE(value.Value() == 9007199254740990LL);
+    REQUIRE_THROWS_AS(slider.SetValue(std::numeric_limits<double>::quiet_NaN()), std::invalid_argument);
+    auto* number = dynamic_cast<NumericEdit<int64_t>*>(slider.ValueField());
+    REQUIRE(number);
+    value.SetValue(9007199254740987LL);
+    REQUIRE(number->Value() == value.Value());
+    auto& decimal = slider.ConfigureValue<double>({.5, 3., .1}, 1.03);
+    slider.Measure({300, 40});
+    slider.Arrange({0, 0, 300, 40});
+    REQUIRE(slider.Dispatch({.kind = InputKind::Down, .x = 0, .y = 2}));
+    REQUIRE(decimal.Value() == .5);
+    REQUIRE(slider.Finish(EditPhase::Cancel));
+    REQUIRE(decimal.Value() == 1.03);
+    REQUIRE(slider.Dispatch({.kind = InputKind::KeyDown, .key = LWS::KeyCode::Right}));
+    REQUIRE(decimal.Value() == 1.13);
+    std::vector<EditPhase> phases;
+    auto edits = decimal.OnEdit.Connect([&](double, EditPhase phase) { phases.push_back(phase); });
+    REQUIRE(slider.Dispatch({.kind = InputKind::Down, .x = 0, .y = 2}));
+    REQUIRE(slider.Dispatch({.kind = InputKind::KeyDown, .key = LWS::KeyCode::Right}));
+    REQUIRE(decimal.Value() == .6);
+    REQUIRE(phases == std::vector<EditPhase>{EditPhase::Preview, EditPhase::Commit, EditPhase::Commit});
+    REQUIRE(slider.Finish(EditPhase::Cancel));
+    REQUIRE(slider.Dispatch({.kind = InputKind::Up}));
+    REQUIRE(decimal.Value() == .6);
+    REQUIRE(phases.size() == 3);
+    ScrollBar scroll;
+    scroll.SetValue(.4);
+    scroll.Measure({20, 200});
+    scroll.Arrange({0, 0, 20, 200});
+    REQUIRE(scroll.Value() == .4);
+    REQUIRE(scroll.ValueField() == nullptr);
+}
+TEST_CASE("Intrinsic stacks preserve glyph sizing and flows wrap actions", "[ui][layout]")
+{
+    using namespace LWSUI;
+    StackPanel stack;
+    stack.orientation = Orientation::Horizontal;
+    stack.sizeToContent = true;
+    auto& glyph = stack.Emplace<GlyphButton>(Glyph::ChevronDown);
+    stack.Emplace<Button>("A much longer action");
+    const auto size = stack.Measure({400, 40});
+    stack.Arrange({0, 0, size.width, size.height});
+    REQUIRE(glyph.Bounds().width == glyph.Bounds().height);
+    FlowPanel flow;
+    flow.minimumItemWidth = 100;
+    flow.firstLeading = flow.alignEnd = true;
+    for (auto text : {"Reset", "Cancel", "Apply", "Revert", "Save"})
+        flow.AddItem(std::make_unique<Button>(text));
+    const auto wrapped = flow.Measure({400, 300});
+    flow.Arrange({0, 0, 400, wrapped.height});
+    REQUIRE(flow.Children().back()->Bounds().y > flow.Children().front()->Bounds().y);
+    for (auto& child : flow.Children())
+        REQUIRE(child->Bounds().x + child->Bounds().width <= 400);
+}
 #endif

@@ -15,20 +15,6 @@
 
 namespace LWSUI::demo
 {
-    WorkspaceGeometry ArrangeWorkspace(Rect b, float ratio)
-    {
-        constexpr float gap = 12, divider = 10;
-        b = {b.x + gap, b.y + gap, std::max(0.f, b.width - 2 * gap), std::max(0.f, b.height - 2 * gap)};
-        const float usable = std::max(0.f, b.width - divider);
-        const float left = usable >= 480 ? std::clamp(usable * ratio, 260.f, usable - 220.f) : usable * .5f;
-        const bool fixed = left >= 240 && b.height >= 260;
-        const float top = std::max(0.f, b.height - (fixed ? 172.f : 0.f));
-        return {{b.x, b.y, left, top},
-                {b.x + left + divider, b.y, std::max(0.f, usable - left), b.height},
-                {b.x, b.y + top + gap, 240, 160},
-                {b.x + left, b.y, divider, b.height},
-                fixed};
-    }
     namespace
     {
         void Check(LWS::Result result, const char* operation)
@@ -256,23 +242,13 @@ namespace LWSUI::demo
                                         "native panes; inner dividers resize containers.");
                 note_->wrap = true;
                 status_ = &Emplace<Label>();
+                split_ = &Emplace<SplitPanel>(std::make_unique<Control>(), std::make_unique<Control>(),
+                                              Orientation::Horizontal);
+                split_->SetRatio(.4f);
+                split_->SetMinimumSizes(260, 220);
+                split_->SetDividerSize(10);
             }
-            void Reset()
-            {
-                ratio_ = .4f;
-                Invalidate(true);
-            }
-            void PointerCursor(std::optional<LWS::Point> point)
-            {
-                const bool over = dragging_ || (point && geometry_.divider.Contains(float(point->x), float(point->y)));
-                const auto shape = over ? LWS::CursorShape::SizeEW : LWS::CursorShape::Arrow;
-                if (shape != cursor_ && Host())
-                {
-                    cursor_ = shape;
-                    std::ignore = Host()->Window().SetMouseCursor(LWS::Cursor::FromShape(shape));
-                }
-            }
-            bool Focusable() const override { return true; }
+            void Reset() { split_->Reset(); }
 
           protected:
 
@@ -291,72 +267,27 @@ namespace LWSUI::demo
                 note_->Arrange({b.x + 12, b.y + th + 18, std::max(0.f, b.width - 24), nh});
                 const float start = th + nh + 24;
                 content_ = {b.x, b.y + start, b.width, std::max(0.f, b.height - start - 42)};
-                geometry_ = ArrangeWorkspace(content_, ratio_);
-                Place(gallery_, geometry_.gallery, true);
-                Place(preview_, geometry_.preview, true);
-                Place(fixed_, geometry_.fixed, geometry_.showFixed);
-                status_->SetText(geometry_.showFixed
-                                     ? "Drag divider or focus it and use Left / Right. Home restores the split."
-                                     : "Expand this window to show the fixed 240 x 160 pane.");
+                const auto c = content_;
+                split_->Measure({std::max(0.f, c.width - 24), std::max(0.f, c.height - 24)});
+                split_->Arrange({c.x + 12, c.y + 12, std::max(0.f, c.width - 24), std::max(0.f, c.height - 24)});
+                auto left = split_->First().Bounds();
+                const bool showFixed = left.width >= 240 && left.height >= 260;
+                const float top = std::max(0.f, left.height - (showFixed ? 172.f : 0.f));
+                Place(gallery_, {left.x, left.y, left.width, top}, true);
+                Place(preview_, split_->Second().Bounds(), true);
+                Place(fixed_, {left.x, left.y + top + 12, 240, 160}, showFixed);
+                status_->SetText(showFixed ? "Drag divider or focus it and use Left / Right. Home restores the split."
+                                           : "Expand this window to show the fixed 240 x 160 pane.");
                 status_->Arrange({b.x + 12, b.y + std::max(0.f, b.height - 38), std::max(0.f, b.width - 24), 34});
             }
-            void OnRender(Canvas& c) override
-            {
-                Container::OnRender(c);
-                const auto d = geometry_.divider;
-                c.Fill(d.x + 2, d.y, std::max(1.f, d.width - 4), d.height, dragging_ ? Style().accent : Style().line);
-            }
-            bool OnInput(const Input& input) override
-            {
-                if (input.kind == InputKind::Down && geometry_.divider.Contains(input.x, input.y))
-                {
-                    dragging_ = true;
-                    Capture();
-                    return true;
-                }
-                if (input.kind == InputKind::Move && dragging_)
-                {
-                    ratio_ = std::clamp((input.x - content_.x - 12) / std::max(1.f, content_.width - 34), .05f, .95f);
-                    Invalidate(true);
-                    return true;
-                }
-                if (input.kind == InputKind::Up || input.kind == InputKind::Cancel || input.kind == InputKind::Blur)
-                {
-                    if (dragging_)
-                    {
-                        dragging_ = false;
-                        ReleaseCapture();
-                        Invalidate();
-                        return true;
-                    }
-                }
-                if (input.kind == InputKind::KeyDown && Host() && Host()->IsFocused(*this))
-                {
-                    if (input.key == LWS::KeyCode::Home)
-                        Reset();
-                    else if (input.key == LWS::KeyCode::Left || input.key == LWS::KeyCode::Right)
-                    {
-                        ratio_ = std::clamp(ratio_ + (input.key == LWS::KeyCode::Left ? -.03f : .03f), .05f, .95f);
-                        Invalidate(true);
-                    }
-                    else
-                        return false;
-                    return true;
-                }
-                return false;
-            }
-
           private:
 
             Surface &gallery_, &preview_, &fixed_;
             Control* toolbar_;
             Label *note_, *status_;
             Connections connections_;
-            WorkspaceGeometry geometry_;
             Rect content_;
-            float ratio_ = .4f;
-            bool dragging_ = false;
-            LWS::CursorShape cursor_ = LWS::CursorShape::Arrow;
+            SplitPanel* split_;
         };
         struct Image
         {
@@ -530,23 +461,6 @@ namespace LWSUI::demo
             if (fixedSize)
                 config.clientSizeLimits = {size, size};
             Check(surface.window->Create(config), "Cannot create showcase window");
-            auto cursorListener = surface.window->Listen(
-                [this, &surface](const LWS::AnyEvent& event)
-                {
-                    std::optional<LWS::Point> point;
-                    if (const auto* move = std::get_if<LWS::EventMouseMove>(&event))
-                        point = move->position;
-                    else if (!std::holds_alternative<LWS::EventMouseLeave>(event))
-                        return LWS::EventResponse::Unhandled;
-                    if (&surface == &main && workspace)
-                        workspace->PointerCursor(point);
-                    if (&surface == &preview && splitPreview)
-                        splitPreview->PointerCursor(point);
-                    return LWS::EventResponse::Unhandled;
-                });
-            if (!cursorListener)
-                throw std::runtime_error("Cannot observe divider hover");
-            surface.listeners.push_back(std::move(*cursorListener));
             if (parent)
             {
                 auto keys = surface.window->Listen(
@@ -945,11 +859,13 @@ namespace LWSUI::demo
                                          state.scale = value;
                                          Refresh();
                                      });
-            Text(*list, "Slider: outline and filled variants share preview opacity.");
+            Text(*list, "Slider: editable and read-only values share preview opacity.");
             opacity = &SampleControl(*list, "Slider", std::make_unique<Slider>());
             opacity->SetValue(state.opacity);
+            opacity->SetValueDisplay(SliderValueMode::Editable);
             filled = &list->Emplace<Slider>();
             filled->filled = true;
+            filled->SetValueDisplay(SliderValueMode::ReadOnly);
             filled->SetValue(state.opacity);
             controls.connections.Add(opacity->OnEdit,
                                      [this](double value, EditPhase)
@@ -1026,6 +942,30 @@ namespace LWSUI::demo
             Text(*content, "One native child window, many ordinary controls", true);
             Text(*content, "These nested containers share this pane's native surface. Only the three labeled panes are "
                            "separate native windows.");
+            auto surface = std::make_unique<Panel>();
+            samples.push_back({"Panel", surface.get()});
+            auto dock = std::make_unique<DockPanel>();
+            samples.push_back({"DockPanel", dock.get()});
+            auto flow = std::make_unique<FlowPanel>();
+            samples.push_back({"FlowPanel", flow.get()});
+            auto glyph = std::make_unique<GlyphButton>(Glyph::DoubleChevronUp);
+            samples.push_back({"GlyphButton", glyph.get()});
+            glyph->SetTooltip("Scroll to the top");
+            gallery.connections.Add(glyph->OnClick, [this] { containerScroll->SetOffset(0); });
+            flow->AddItem(std::move(glyph));
+            flow->AddItem(std::make_unique<Label>("FlowPanel wraps intrinsic controls"));
+            dock->AddDocked(std::move(flow), Dock::Fill);
+            surface->SetContent(std::move(dock));
+            content->Add(std::move(surface));
+            auto picture = std::make_unique<LWSUI::Image>();
+            samples.push_back({"Image", picture.get()});
+            const std::array<std::byte, 16> pixels{std::byte{40},  std::byte{140}, std::byte{230}, std::byte{255},
+                                                   std::byte{230}, std::byte{140}, std::byte{40},  std::byte{255},
+                                                   std::byte{230}, std::byte{140}, std::byte{40},  std::byte{255},
+                                                   std::byte{40},  std::byte{140}, std::byte{230}, std::byte{255}};
+            picture->SetBitmap(std::make_shared<LWS::Bitmap>(
+                LWS::BitmapBuffer{.pixels = pixels, .width = 2, .height = 2, .rowPitch = 8}));
+            content->Add(std::move(picture));
             Text(*content, "Horizontal StackPanel: children share the available width.");
             auto& horizontal = content->Emplace<StackPanel>();
             horizontal.orientation = Orientation::Horizontal;
@@ -1128,6 +1068,7 @@ namespace LWSUI::demo
                 std::array<std::unique_ptr<Control>, 5>{std::move(body), std::move(information), std::move(quick),
                                                         std::move(inspectorContent), std::move(activityContent)});
             splitPreview = panes.get();
+            samples.push_back({"SplitPanel", splitPreview->Divider(1).Parent()});
             SetPaneRoot(preview, std::move(panes), "Live preview / one native child");
             auto fixedBody = std::make_unique<Grid>();
             fixedBody->columns = {60, -1};
@@ -1278,7 +1219,7 @@ namespace LWSUI::demo
     }
     bool Showcase::Verify()
     {
-        bool result = !impl_->failed && Samples().size() == 23;
+        bool result = !impl_->failed && Samples().size() == 29;
         for (const auto& sample : Samples())
             result = result && sample.control && sample.control->Host();
         result = result && impl_->fixed.window->GetClientAreaMetrics().logical == LWS::LogicalSize{240, 160};

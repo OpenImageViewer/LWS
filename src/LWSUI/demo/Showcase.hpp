@@ -18,13 +18,6 @@ namespace LWSUI::demo
         std::string_view type;
         Control* control;
     };
-    struct WorkspaceGeometry
-    {
-        Rect gallery, preview, fixed, divider;
-        bool showFixed = false;
-    };
-    WorkspaceGeometry ArrangeWorkspace(Rect bounds, float ratio);
-
     // Demo-only application model. Native windows outlive their hosts and all subscriptions.
     class Showcase
     {
