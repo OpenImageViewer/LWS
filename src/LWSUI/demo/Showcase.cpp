@@ -154,6 +154,8 @@ namespace LWSUI::demo
         struct PreviewState
         {
             std::string title = "A connected showcase", scene = "Circles", quality = "Balanced", file;
+            std::string notes = "Scene notes\nEnter adds a line. Ctrl+Enter commits; Escape restores the draft.\n\n"
+                                "Resize this gallery to see wrapping, or add more lines to scroll.";
             double opacity = .85, scale = 1;
             int64_t count = 5;
             bool enabled = true;
@@ -412,7 +414,7 @@ namespace LWSUI::demo
         CheckBox* quickEnabled = nullptr;
         Slider* quickOpacity = nullptr;
         ThemePreset themePreset = DefaultThemePreset;
-        TextBox* name = nullptr;
+        TextBox *name = nullptr, *notes = nullptr;
         CheckBox* enabled = nullptr;
         Slider *opacity = nullptr, *filled = nullptr;
         NumericEdit<int64_t>* count = nullptr;
@@ -756,6 +758,7 @@ namespace LWSUI::demo
             state = {};
             name->SetText(state.title);
             name->SetValidation("");
+            notes->SetText(state.notes);
             count->SetValue(state.count);
             scale->SetValue(state.scale);
             quality->SetValue(state.quality);
@@ -817,6 +820,17 @@ namespace LWSUI::demo
                                          Refresh();
                                          if (phase != EditPhase::Preview)
                                              Log("Title edit finished");
+                                     });
+            Text(*list, "Multiline notes: Enter adds a line; Ctrl+Enter commits; Escape restores the draft.");
+            notes = &list->Emplace<TextBox>(state.notes, TextBoxMode::Multiline);
+            notes->SetVisibleLines(4);
+            notes->SetPlaceholder("Add notes about this scene...");
+            controls.connections.Add(notes->OnEdit,
+                                     [this](const std::string& value, EditPhase phase)
+                                     {
+                                         state.notes = value;
+                                         if (phase != EditPhase::Preview)
+                                             Log(phase == EditPhase::Cancel ? "Notes restored" : "Notes committed");
                                      });
             auto& readonly = list->Emplace<TextBox>("Read-only TextBox: select and copy this explanation.");
             readonly.SetReadOnly(true);

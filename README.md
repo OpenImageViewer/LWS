@@ -388,6 +388,27 @@ the existing structural-edit lifetime rules and must not capture shorter-lived o
 Long menus scroll using existing menu theme metrics. Submenus, icons, native menus,
 and automatic shortcut registration are intentionally deferred.
 
+### Multiline text
+
+TextBox remains single-line by default. Use the same control for wrapped notes:
+
+```cpp
+auto& notes = panel.Emplace<LWSUI::TextBox>("First line\nSecond line", LWSUI::TextBoxMode::Multiline);
+notes.SetVisibleLines(4);
+```
+
+The mode is fixed at construction. Visible lines set the preferred height; the
+parent supplies the actual allocation. Multiline text wraps and gets a vertical
+scrollbar when needed. Enter inserts a newline, Ctrl+Enter commits, Escape cancels
+the current edit, and Tab changes focus. Home/End navigate visual lines;
+Ctrl+Home/End navigate the document. Up/Down retain the preferred caret column,
+and PageUp/PageDown move by the viewport. Shift extends selection.
+
+Assigned and pasted multiline text normalizes CRLF/CR to LF. Existing OnEdit,
+validation, read-only, clipboard, placeholder, borderless, and highlighting APIs
+apply. Scrollbar interaction keeps the draft and does not add a Tab stop. These
+are plain-text notes, without rich text, syntax highlighting, or undo history.
+
 ### Main-menu input and popup ownership
 
 Each native dropdown has its own UIHost for layout, rendering, scrolling, and
@@ -424,6 +445,12 @@ native caption or caption-button flags: the Win32 backend adds a caption for
 `CloseButton`, `MinimizeButton`, and `MaximizeButton`. The controls-only showcase's
 main Workspace demonstrates this configuration while its companion windows keep
 native captions.
+
+Close uses red hover and darker red pressed backgrounds with a white X. Applications
+can customize `Theme::closeHoverBackground`, `closePressedBackground`, and
+`closeActiveForeground`. Normal/disabled Close appearance and other caption buttons
+continue to use the ordinary theme colors. These are C++ theme properties; this
+change does not extend LWSSettings JSON definitions or its theme catalog.
 
 ### Menu-bar icons and custom content
 

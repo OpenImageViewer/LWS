@@ -1,6 +1,10 @@
 #pragma once
 #include <LWSUI/Control.hpp>
 #include <cstdint>
+namespace LWS
+{
+    class HighPrecisionTimer;
+}
 namespace LWSUI
 {
     class Label : public Control
@@ -111,11 +115,21 @@ namespace LWSUI
             }
         }
     };
-    class TextBox : public Control
+    enum class TextBoxMode
+    {
+        SingleLine,
+        Multiline
+    };
+    class ScrollBar;
+    class TextBox : public Container
     {
       public:
 
-        explicit TextBox(std::string value = {});
+        explicit TextBox(std::string value = {}, TextBoxMode mode = TextBoxMode::SingleLine);
+        ~TextBox() override;
+        TextBoxMode Mode() const { return mode_; }
+        // Preferred multiline height; allocation remains the parent's responsibility.
+        void SetVisibleLines(unsigned lines);
         void SetText(std::string value);
         // Read-only retains selection/copy; enabling it cancels the current draft.
         void SetReadOnly(bool value);
@@ -146,26 +160,49 @@ namespace LWSUI
 
       protected:
 
+        Size OnMeasure(Size available) override;
         void OnArrange() override { UpdateGeometry(); }
+        void OnDetach() override;
         void OnRender(Canvas&) override;
         bool OnInput(const Input&) override;
 
       private:
 
+        using Container::Add;
+        using Container::Clear;
+        using Container::Emplace;
+        using Container::Remove;
         void SelectAll();
         void Copy(bool cut);
         void Paste();
         std::vector<ContextMenuItem> TextMenu(const ContextMenuRequest&);
-        void UpdateGeometry();
+        void UpdateGeometry(bool reveal = false);
+        void SetCaret(TextPosition position, bool extend);
+        TextPosition Position(float x, float y);
+        size_t CaretLine() const;
+        void SetScrollOffset(float offset);
+        void StopSelecting();
+        void SelectPointer(float x, float y);
         void Replace(std::string text);
-        size_t Position(float x);
+        const TextBoxMode mode_;
+        unsigned visibleLines_ = 4;
+        ScrollBar* scrollbar_ = nullptr;
+        Event<void(double, EditPhase)>::Connection scrollConnection_;
+        std::unique_ptr<LWS::HighPrecisionTimer> selectionTimer_;
+        Rect viewport_;
+        Size geometrySize_;
+        std::vector<TextLine> lines_;
+        TextCaret caretBounds_;
+        std::optional<float> preferredX_;
+        float scrollY_ = 0, contentHeight_ = 0, geometryGutter_ = 0, pointerX_ = 0, pointerY_ = 0;
+        bool caretUpstream_ = false;
         std::string text_, committed_, validation_, placeholder_;
         size_t caret_ = 0, anchor_ = 0;
         uint64_t pasteGeneration_ = 0;
         float scroll_ = 0;
         bool editing_ = false, selecting_ = false, readOnly_ = false, borderless_ = false;
         // Host text metrics are refreshed on text/font changes, independently of paint.
-        // A local cache is enough for this single-line editor; no general layout framework.
+        // Multiline geometry also depends on viewport dimensions and the scrollbar gutter.
         bool geometryDirty_ = true;
         FontSpec geometryFont_;
         float textWidth_ = 0, caretX_ = 0;

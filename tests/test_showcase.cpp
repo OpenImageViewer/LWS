@@ -155,6 +155,24 @@ TEST_CASE("Showcase catalog binds every public control to the connected demo", "
     REQUIRE(dynamic_cast<LWSUI::RadioButton*>(find("RadioButton"))->Value() == false);
     showcase.SetTheme(LWSUI::ThemePreset::Light);
     REQUIRE(find("Control")->Host()->Style().background == LWSUI::MakeTheme(LWSUI::ThemePreset::Light).background);
+    LWSUI::TextBox* notes = nullptr;
+    const auto findNotes = [&](auto&& self, LWSUI::Control& control) -> void
+    {
+        if (auto* text = dynamic_cast<LWSUI::TextBox*>(&control); text && text->Mode() == LWSUI::TextBoxMode::Multiline)
+            notes = text;
+        if (auto* container = dynamic_cast<LWSUI::Container*>(&control))
+            for (auto& child : container->Children()) self(self, *child);
+    };
+    findNotes(findNotes, *find("TextBox")->Host()->Root());
+    REQUIRE(notes != nullptr);
+    const auto originalNotes = notes->Text();
+    REQUIRE(notes->Host()->Focus(notes));
+    REQUIRE(notes->Dispatch({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::End, .control = true}));
+    REQUIRE(notes->Dispatch({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Enter}));
+    REQUIRE(notes->Dispatch({.kind = LWSUI::InputKind::Text, .text = "Additional note"}));
+    REQUIRE(notes->Text() == originalNotes + "\nAdditional note");
+    REQUIRE(notes->Dispatch({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Escape}));
+    REQUIRE(notes->Text() == originalNotes);
     auto* title = dynamic_cast<LWSUI::TextBox*>(find("TextBox"));
     REQUIRE(title != nullptr);
     REQUIRE(title->Host()->Focus(title));

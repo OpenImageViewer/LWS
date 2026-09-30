@@ -97,7 +97,7 @@ inventory is checked by the showcase integration tests.
 
 | Location | Named examples |
 | --- | --- |
-| Controls: Text | Label, Button (normal/flat/disabled), TextBox (editable/read-only/borderless/placeholder/validation) |
+| Controls: Text | Label, Button (normal/flat/disabled), TextBox (single-line/multiline notes/read-only/borderless/placeholder/validation) |
 | Controls: Choices | CheckBox, standalone RadioButton pair, RadioGroup, ComboBox |
 | Controls: Values | NumericEdit<int64_t>, NumericEdit<double>, Slider (outline/filled), standalone ScrollBar |
 | Controls: Color and files | Standalone ColorSwatch, ColorPicker, FilePicker |

@@ -269,7 +269,7 @@ option(LWSUI_BUILD_DEMO "Build the controls-only demo" ${PROJECT_IS_TOP_LEVEL})
 if(LWS_BUILD_UI)
     add_library(LWSUI STATIC
         src/LWSUI/source/Control.cpp src/LWSUI/source/UIHost.cpp
-        src/LWSUI/source/Primitives.cpp src/LWSUI/source/Containers.cpp
+        src/LWSUI/source/Primitives.cpp src/LWSUI/source/TextBox.cpp src/LWSUI/source/Containers.cpp
         src/LWSUI/source/Composites.cpp src/LWSUI/source/Menu.cpp src/LWSUI/source/MenuWindowControls.cpp src/LWSUI/source/MenuContent.cpp)
     # Keep core-only consumers from building unused controls. Linking LWSUI still
     # builds it normally; standalone builds continue to include the library.
