@@ -83,9 +83,10 @@ namespace LWSUI::internal
         bool OnInput(const Input& input);
         /// Clear passive bar hover when the pointer leaves the owner window.
         void LeaveBar();
+        void FocusLost();
         /// Popup-window listener hook; true = handled.
         bool OnLevelEvent(LWS::Window* window, const LWS::AnyEvent& event);
-        /// Presents dirty panels; called from UIHost::Update after the main present.
+        /// Updates popup hosts and reaps levels retired during input dispatch.
         void Update();
         void Close();
 
@@ -96,28 +97,20 @@ namespace LWSUI::internal
         LWS::Window* LevelWindow(size_t level) const;
         /// Panel-local input as delivered by a level window; also the seam tests drive.
         bool PanelInput(size_t level, const Input& input);
-        /// Windows waiting in the reuse pool.
-        size_t PooledWindows() const { return pool_.size(); }
 
       private:
 
         struct Level
         {
             std::unique_ptr<LWS::Window> window;
-            std::unique_ptr<DropdownPanel> panel;
+            std::unique_ptr<UIHost> host;
+            DropdownPanel* panel = nullptr;
             LWS::EventConnection listener;
             LWSUI::Event<void(std::optional<size_t>)>::Connection selection;
             LWSUI::Event<void(size_t)>::Connection activation;
-            Rect logical{};
-            bool dirty = true;
+            LWSUI::Event<void(const std::string&)>::Connection error;
         };
-        struct PanelBuild
-        {
-            std::unique_ptr<DropdownPanel> panel;
-            float width = 0, height = 0;
-        };
-
-        static std::optional<PanelBuild> BuildPanel(UIHost& host, const std::vector<MenuItem>& items);
+        std::optional<Size> InstallPanel(Level& level, const std::vector<MenuItem>& items, bool first);
         bool KeyDown(const Input& input);
         bool PointerInput(const Input& input);
         bool WindowInput(const Input& input);
@@ -127,7 +120,6 @@ namespace LWSUI::internal
         void MoveHot(int step);
         void OpenTopMenu(size_t barIndex, bool first);
         bool ReplaceTopMenu(size_t barIndex, bool first);
-        void SwitchTopMenuTo(size_t barIndex);
         void SwitchTopMenu(int step);
         void OpenSubmenu(size_t level, size_t row);
         void ActivateRow(size_t level, size_t row);
@@ -138,27 +130,20 @@ namespace LWSUI::internal
         void SetHot(int index);
         void ArmHover(size_t level, size_t row);
         void CancelHover();
-        void PresentLevel(Level& level);
-        void ReleaseWindow(std::unique_ptr<LWS::Window> window);
-        void TrimPool();
-        std::unique_ptr<LWS::Window> AcquireWindow(LWS::Window* parent);
         std::optional<size_t> FindLevel(LWS::Window* window) const;
         size_t IndexOf(const Level* level) const;
         bool CanReuseWindows() const;
         Rect TopMenuAnchor(size_t barIndex) const;
         LWS::PopupGravity TopMenuGravity() const;
-        bool CreateLevel(size_t parentLevel, size_t row, std::vector<MenuItem> items, LWS::Point anchor,
+        bool CreateLevel(size_t parentLevel, std::vector<MenuItem> items, LWS::Point anchor,
                          LWS::PopupGravity gravity, bool first);
 
         static constexpr size_t NoLevel = static_cast<size_t>(-1);
         UIHost& host_;
         std::vector<std::unique_ptr<Level>> levels_;
         std::vector<std::unique_ptr<Level>> retired_;
-        std::vector<std::unique_ptr<LWS::Window>> pool_;
-        std::vector<std::unique_ptr<LWS::Window>> retiredWindows_;
         std::unique_ptr<LWS::HighPrecisionTimer> hoverTimer_;
         std::optional<std::pair<size_t, size_t>> pendingSubmenu_;
-        Canvas canvas_;
         int hot_ = -1;
         bool active_ = false, menuUsed_ = false;
         Orientation orientationAtOpen_ = Orientation::Horizontal;

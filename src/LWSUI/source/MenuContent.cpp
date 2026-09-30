@@ -90,7 +90,7 @@ namespace LWSUI
     }
     Control* MenuBar::HitContent(float x, float y) const
     {
-        return ContentActive() && ContentRect().Contains(x, y) ? content_->HitTest(x, y) : nullptr;
+        return Enabled() && Visible() && ContentActive() && ContentRect().Contains(x, y) ? content_->HitTest(x, y) : nullptr;
     }
     bool MenuBar::ContentOccupied(float x, float y) const
     {

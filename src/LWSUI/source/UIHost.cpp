@@ -41,7 +41,6 @@ namespace LWSUI
         if (!listener)
             throw std::runtime_error("Cannot register UI window listener");
         listener_ = std::move(*listener);
-        menuSession_ = std::make_unique<internal::MenuSession>(*this);
     }
     UIHost::~UIHost()
     {
@@ -80,6 +79,8 @@ namespace LWSUI
         if (menuBar_)
             menuBar_->Attach(nullptr, nullptr);
         menuBar_ = std::move(menu);
+        if (menuBar_ && !menuSession_)
+            menuSession_ = std::make_unique<internal::MenuSession>(*this);
         dock_ = dock;
         if (menuBar_)
         {
@@ -128,14 +129,6 @@ namespace LWSUI
     {
         if (menuSession_)
             menuSession_->Close();
-    }
-    void UIHost::AttachPanel(Control& panel)
-    {
-        panel.Attach(this, nullptr);
-    }
-    void UIHost::DetachPanel(Control& panel)
-    {
-        panel.Attach(nullptr, nullptr);
     }
     Theme UIHost::MenuPanelStyle() const
     {
@@ -312,8 +305,9 @@ namespace LWSUI
                 rootBounds_ = {0, 0, std::max(0.f, width - thickness), height};
                 break;
             default:
-                barBounds_ = {std::clamp(floatingX_, 0.f, std::max(0.f, width - span)),
-                              std::clamp(floatingY_, 0.f, std::max(0.f, height - thickness)), span, thickness};
+                barBounds_ = {std::clamp(floatingX_, 0.f, std::max(0.f, width - measured.width)),
+                              std::clamp(floatingY_, 0.f, std::max(0.f, height - measured.height)),
+                              measured.width, measured.height};
                 break;
         }
         menuBar_->Arrange(barBounds_);
@@ -415,6 +409,7 @@ namespace LWSUI
         // Cancel is another callback boundary: it may retire the owner or open a popup.
         if (popup_ || capture_ || !ownerHandle || owner.Host() != this)
             return false;
+        CloseMainMenu();
         popupModal_ = modal;
         popupOwner_ = owner.Handle();
         popup_ = std::move(popup);
@@ -510,6 +505,7 @@ namespace LWSUI
             normalized.pop_back();
         if (normalized.empty())
             return false;
+        CloseMainMenu();
         const auto handle = owner.Handle();
         auto menu = std::make_unique<internal::ContextMenu>(
             std::move(normalized),
@@ -639,8 +635,10 @@ namespace LWSUI
         }
         if (input.kind == InputKind::Down)
             suppressPointerRelease_ = false;
-        // The menu session sees input first: it owns the bar, the dropdown chain and Escape/Alt chains.
-        if (menuSession_ && menuSession_->OnInput(input))
+        // A captured gesture and an active overlay own input until completed. The menu's own
+        // caption-button capture still belongs to its session; all other capture uses normal routing.
+        if (!popup_ && !contextMenu_ && (!capture_ || capture_.Get() == menuBar_.get()) &&
+            menuSession_ && menuSession_->OnInput(input))
             return true;
         if (contextMenu_)
             return RouteContextMenu(input);
@@ -654,7 +652,7 @@ namespace LWSUI
             !input.alt)
             return input.repeat || RequestContextMenu(input, true);
         auto* preview = popup_ ? popup_.get() : root_.get();
-        if (!popup_ && menuBar_ && menuBar_->ContentActive() && menuBar_->Content()->PreviewInput(input)) return true;
+        if (!popup_ && menuBar_ && menuBar_->Visible() && menuBar_->Enabled() && menuBar_->ContentActive() && menuBar_->Content()->PreviewInput(input)) return true;
         if (preview && preview->PreviewInput(input))
             return true;
         bool pointer = input.kind == InputKind::Down || input.kind == InputKind::Up || input.kind == InputKind::Move ||
@@ -726,7 +724,7 @@ namespace LWSUI
                         for (auto& child : group->Children())
                             self(self, child.get());
                 };
-                if (!popup_ && menuBar_ && menuBar_->ContentActive()) collect(collect, menuBar_->Content());
+                if (!popup_ && menuBar_ && menuBar_->Visible() && menuBar_->Enabled() && menuBar_->ContentActive()) collect(collect, menuBar_->Content());
                 collect(collect, popup_ ? popup_.get() : root_.get());
                 if (!choices.empty())
                 {
@@ -803,7 +801,8 @@ namespace LWSUI
         }
         if (std::holds_alternative<LWS::EventFocusLost>(event))
         {
-            CloseMainMenu();
+            if (menuSession_)
+                menuSession_->FocusLost();
             CloseContextMenu();
             if (auto* captured = capture_.Get())
             {

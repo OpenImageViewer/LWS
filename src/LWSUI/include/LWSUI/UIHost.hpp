@@ -87,9 +87,6 @@ namespace LWSUI
         bool RouteContextMenu(const Input&);
         bool ContextMenuOwnerValid() const;
         void Hover(Control* control);
-        /// Rootless attachment for popup dropdown panels: host services without tree membership.
-        void AttachPanel(Control& panel);
-        void DetachPanel(Control& panel);
         /// Panel style: popup style, or the theme with the popup surface as background.
         Theme MenuPanelStyle() const;
         void LayoutMainMenu(float width, float height);

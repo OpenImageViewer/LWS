@@ -2149,6 +2149,60 @@ TEST_CASE("Wayland popup requires a toplevel parent", "[wayland][protocol][popup
     REQUIRE_FALSE(popup.IsCreated());
 }
 #ifdef LWS_TEST_UI
+TEST_CASE("Menu popup hosts repaint keyboard selection and retain their focus chain", "[ui][menu][wayland][protocol]")
+{
+    ProtocolServer server;
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window window(context);
+    auto config = Config(); config.visible = true;
+    REQUIRE(window.Create(config) == LWS::Result::Success);
+    server.Settle(context);
+    LWSUI::UIHost host(window);
+    host.SetMainMenu(std::make_unique<LWSUI::MenuBar>(std::vector<LWSUI::MenuBarItem>{
+        {"File", {{"First", "", [] {}}, {"Second", "", [] {}}}}}));
+    host.Update();
+    const auto id = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*LWS::Wayland::GetSurface(window)));
+    server.Invoke([&]
+    {
+        wl_array keys{};
+        wl_keyboard_send_enter(server.seats[0]->keyboards.at(0), 500, server.surfaces.at(id)->surface, &keys);
+        server.Enter(0, id, 501);
+        server.Button(0, 502);
+    });
+    server.Settle(context);
+    auto& session = LWSUI::internal::MenuSessionAccess::Get(host);
+    REQUIRE(session.LevelCount() == 1);
+    const auto popupId = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*LWS::Wayland::GetSurface(*session.LevelWindow(0))));
+    server.Invoke([&]
+    {
+        auto* keyboard = server.seats[0]->keyboards.at(0);
+        wl_array keys{};
+        wl_keyboard_send_leave(keyboard, 503, server.surfaces.at(id)->surface);
+        wl_keyboard_send_enter(keyboard, 504, server.surfaces.at(popupId)->surface, &keys);
+    });
+    server.Settle(context);
+    host.Update();
+    REQUIRE(session.LevelCount() == 1);
+    REQUIRE(session.LevelWindow(0)->HasKeyboardFocus());
+    server.Settle(context);
+    size_t before{}, after{};
+    server.Invoke([&] { before = server.surfaces.at(popupId)->submittedBuffers.size(); });
+    REQUIRE(before > 0);
+    REQUIRE(host.Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Down}));
+    host.Update();
+    server.Settle(context);
+    REQUIRE(session.Panel(0)->Active() == 1);
+    server.Invoke([&] { after = server.surfaces.at(popupId)->submittedBuffers.size(); });
+    REQUIRE(after > before);
+    // Leaving the entire focus group still dismisses a keyboard-opened or grabbed menu.
+    server.Invoke([&] { wl_keyboard_send_leave(server.seats[0]->keyboards.at(0), 505,
+                                              server.surfaces.at(popupId)->surface); });
+    server.Settle(context);
+    host.Update();
+    REQUIRE_FALSE(host.HasOpenMenu());
+}
+
 TEST_CASE("Menu bar dragging sends the Wayland move request with the pointer serial", "[ui][menu][window-controls][wayland][protocol]")
 {
     ProtocolServer server;

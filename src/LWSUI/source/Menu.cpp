@@ -412,11 +412,16 @@ namespace LWSUI
             }
             if (reveal && active_ && Bounds().height > 0)
             {
-                const auto row = rows_[*active_]->Bounds();
-                if (row.y < Bounds().y)
-                    SetOffset(Offset() + row.y - Bounds().y);
-                else if (row.y + row.height > Bounds().y + Bounds().height)
-                    SetOffset(Offset() + row.y + row.height - Bounds().y - Bounds().height);
+                // Offsets can change several times between layouts (wheel/drag followed by a key).
+                // Use content coordinates rather than rectangles from the previous layout.
+                float top = 0;
+                for (size_t row = 0; row < *active_; ++row)
+                    top += rows_[row]->DesiredSize().height;
+                const float bottom = top + rows_[*active_]->DesiredSize().height;
+                if (top < Offset())
+                    SetOffset(top);
+                else if (bottom > Offset() + Bounds().height)
+                    SetOffset(bottom - Bounds().height);
             }
         }
         void DropdownPanel::OnRender(Canvas& canvas)
@@ -442,7 +447,13 @@ namespace LWSUI
                     OnActivate.Raise(*active_);
                 return true;
             }
-            if (PointerKind(input.kind))
+            if (input.kind == InputKind::Cancel)
+            {
+                pressed_.reset();
+                ReleaseCapture();
+                return true;
+            }
+            if (input.kind == InputKind::Move || input.kind == InputKind::Down || input.kind == InputKind::Up)
             {
                 std::optional<size_t> hit;
                 if (Bounds().Contains(input.x, input.y))
@@ -458,11 +469,15 @@ namespace LWSUI
                 if (input.button != LWS::MouseButton::Left)
                     return true;
                 if (input.kind == InputKind::Down)
+                {
                     pressed_ = hit;
+                    Capture();
+                }
                 if (input.kind == InputKind::Up)
                 {
                     const bool activate = hit && hit == pressed_;
                     pressed_.reset();
+                    ReleaseCapture();
                     if (activate)
                         OnActivate.Raise(*hit);
                 }
@@ -470,10 +485,11 @@ namespace LWSUI
             }
             return ScrollView::OnInput(input);
         }
-        std::optional<MenuSession::PanelBuild> MenuSession::BuildPanel(UIHost& host, const std::vector<MenuItem>& items)
+        std::optional<Size> MenuSession::InstallPanel(Level& level, const std::vector<MenuItem>& items, bool first)
         {
             // Dropdowns are separate windows, so a small (detached) owner must not clip them.
             // Without output information, retain natural sizing and let popup placement constrain it.
+            auto& host = host_;
             float availableWidth = 10000.f, availableHeight = 10000.f;
 #ifdef LWS_HAS_WIN32_BACKEND
             if (const auto hwnd = LWS::Win32::GetHwnd(host.Window()))
@@ -498,23 +514,29 @@ namespace LWSUI
             auto panel = std::make_unique<DropdownPanel>(items);
             if (panel->Count() == 0)
                 return std::nullopt;
-            // Rows measure text through the host, so the panel is attached before any Measure.
-            host.AttachPanel(*panel);
-            const auto& style = host.PopupStyle();
-            panel->SetStyle(host.MenuPanelStyle());
-            const float width = std::min(std::ceil(panel->NaturalWidth(host)), std::floor(availableWidth));
+            level.selection = {};
+            level.activation = {};
+            level.panel = panel.get();
+            level.host->SetRoot(std::move(panel));
+            auto& surface = *level.host;
+            auto& content = *level.panel;
+            const auto& style = surface.Style();
+            const float width = std::min(std::ceil(content.NaturalWidth(surface)), std::floor(availableWidth));
             const float rowHeight = std::max(
-                style.menuRowHeight, host.MeasureText("Mg", width, false, style.font).height + 2 * style.menuPadding);
+                style.menuRowHeight, surface.MeasureText("Mg", width, false, style.font).height + 2 * style.menuPadding);
             const float maxHeight = std::min(availableHeight,
                                              std::max(1.f, style.menuMaxRows) * std::max(1.f, rowHeight));
-            const Size measured = panel->Measure({width, maxHeight});
+            const Size measured = content.Measure({width, maxHeight});
             if (measured.height <= 0)
-            {
-                host.DetachPanel(*panel);
                 return std::nullopt;
-            }
-            return PanelBuild{std::move(panel), width,
-                              std::min(std::ceil(measured.height), std::floor(availableHeight))};
+            const Size size{width, std::min(std::ceil(measured.height), std::floor(availableHeight))};
+            content.Arrange({0, 0, size.width, size.height});
+            content.Select(first ? content.First() : content.Last());
+            level.selection = content.OnSelect.Connect([this, raw = &level](std::optional<size_t> row)
+                                                       { OnRowSelected(raw, row); });
+            level.activation = content.OnActivate.Connect([this, raw = &level](size_t row)
+                                                          { OnRowActivated(raw, row); });
+            return size;
         }
         MenuSession& MenuSessionAccess::Get(UIHost& host)
         {
@@ -544,43 +566,6 @@ namespace LWSUI
         {
             return host_.Window().GetPlatformContext().GetBackendId() == LWS::BackendId::Win32;
         }
-        std::unique_ptr<LWS::Window> MenuSession::AcquireWindow(LWS::Window* parent)
-        {
-            while (!pool_.empty())
-            {
-                auto window = std::move(pool_.back());
-                pool_.pop_back();
-                // Only windows still owned by the expected parent are reusable; a destroyed native
-                // lifetime drops out here rather than being restated.
-                if (window->IsCreated() && window->GetParent() == parent)
-                    return window;
-            }
-            return std::make_unique<LWS::Window>(host_.Window().GetPlatformContext());
-        }
-        void MenuSession::ReleaseWindow(std::unique_ptr<LWS::Window> window)
-        {
-            if (!window)
-                return;
-            // The Win32 pool survives the session; Wayland popups cannot be re-shown once dismissed,
-            // so anything else retires to the next update, after any in-flight dispatch returns.
-            if (CanReuseWindows() && window->IsCreated() && window->GetParent() == &host_.Window())
-            {
-                std::ignore = window->SetVisible(false);
-                pool_.push_back(std::move(window));
-                return;
-            }
-            // Destruction is deferred, but a dismissed popup must leave the screen now: an owner
-            // regaining focus or visibility would otherwise keep republishing the stale surface.
-            if (window->IsCreated())
-                std::ignore = window->SetVisible(false);
-            retiredWindows_.push_back(std::move(window));
-        }
-        void MenuSession::TrimPool()
-        {
-            for (auto& window : pool_)
-                retiredWindows_.push_back(std::move(window));
-            pool_.clear();
-        }
         void MenuSession::CancelHover()
         {
             if (hoverTimer_)
@@ -603,7 +588,7 @@ namespace LWSUI
         }
         DropdownPanel* MenuSession::Panel(size_t level) const
         {
-            return level < levels_.size() ? levels_[level]->panel.get() : nullptr;
+            return level < levels_.size() ? levels_[level]->panel : nullptr;
         }
         LWS::Window* MenuSession::LevelWindow(size_t level) const
         {
@@ -642,72 +627,37 @@ namespace LWSUI
                     return LWS::PopupGravity::DownRight;
             }
         }
-        bool MenuSession::CreateLevel(size_t parentLevel, size_t row, std::vector<MenuItem> items, LWS::Point anchor,
+        bool MenuSession::CreateLevel(size_t parentLevel, std::vector<MenuItem> items, LWS::Point anchor,
                                       LWS::PopupGravity gravity, bool first)
         {
             LWS::Window* parentWindow = parentLevel == NoLevel ? &host_.Window() : LevelWindow(parentLevel);
-            if (parentWindow == nullptr || !parentWindow->IsCreated())
+            if (!parentWindow || !parentWindow->IsCreated())
                 return false;
-            auto build = BuildPanel(host_, items);
-            if (!build)
-                return false;
-            auto window = AcquireWindow(parentWindow);
-            const bool reused = window->IsCreated();
-            if (reused)
-            {
-                // A pooled Win32 popup keeps its native window: restate placement and show.
-                const auto placement = window->RequestPlacement(LWS::WindowPlacementRequest{
-                    .position = anchor,
-                    .clientSize = LWS::LogicalSize{Round(build->width), Round(build->height)}});
-                if (placement != LWS::Result::Success)
-                {
-                    ReleaseWindow(std::move(window));
-                    return false;
-                }
-                std::ignore = window->SetVisible(true);
-            }
-            else
-            {
-                LWS::WindowConfig config;
-                config.parent = parentWindow;
-                config.title = NativeText("Menu");
-                config.backgroundColor = host_.MenuPanelStyle().background;
-                config.visible = true;
-                config.popupPlacement = LWS::PopupPlacement{anchor, gravity, LWS::Point{},
-                                                            LWS::LogicalSize{Round(build->width), Round(build->height)},
-                                                            true};
-                if (window->Create(config) != LWS::Result::Success)
-                {
-                    ReleaseWindow(std::move(window));
-                    return false;
-                }
-            }
             auto level = std::make_unique<Level>();
-            level->window = std::move(window);
-            level->panel = std::move(build->panel);
-            level->logical = {0, 0, build->width, build->height};
-            host_.AttachPanel(*level->panel);
-            level->panel->Measure({build->width, build->height});
-            level->panel->Arrange({0, 0, build->width, build->height});
-            first ? level->panel->Select(level->panel->First()) : level->panel->Select(level->panel->Last());
-            LWS::Window* windowHandle = level->window.get();
-            auto listener = level->window->Listen(
-                [this, windowHandle](const LWS::AnyEvent& event)
-                {
-                    return OnLevelEvent(windowHandle, event) ? LWS::EventResponse::Handled
-                                                             : LWS::EventResponse::Unhandled;
-                });
-            if (!listener)
+            level->window = std::make_unique<LWS::Window>(host_.Window().GetPlatformContext());
+            // Coordinate keyboard/dismissal before the popup host handles its own window-local input.
+            auto listener = level->window->Listen([this, window = level->window.get()](const LWS::AnyEvent& event)
             {
-                host_.DetachPanel(*level->panel);
-                ReleaseWindow(std::move(level->window));
+                return OnLevelEvent(window, event) ? LWS::EventResponse::Handled : LWS::EventResponse::Unhandled;
+            });
+            if (!listener)
                 return false;
-            }
             level->listener = std::move(*listener);
-            Level* raw = level.get();
-            level->selection = level->panel->OnSelect.Connect([this, raw](std::optional<size_t> activeRow)
-                                                              { OnRowSelected(raw, activeRow); });
-            level->activation = level->panel->OnActivate.Connect([this, raw](size_t row) { OnRowActivated(raw, row); });
+            level->host = std::make_unique<UIHost>(*level->window, host_.MenuPanelStyle());
+            level->error = level->host->OnError.Connect([this](const std::string& message) { host_.ReportError(message); });
+            const auto size = InstallPanel(*level, items, first);
+            if (!size)
+                return false;
+            LWS::WindowConfig config;
+            config.parent = parentWindow;
+            config.title = NativeText("Menu");
+            config.backgroundColor = level->host->Style().background;
+            config.visible = true;
+            config.popupPlacement = LWS::PopupPlacement{anchor, gravity, {},
+                LWS::LogicalSize{Round(size->width), Round(size->height)}, true};
+            if (level->window->Create(config) != LWS::Result::Success)
+                return false;
+            level->host->Invalidate(true);
             levels_.push_back(std::move(level));
             host_.Invalidate();
             return true;
@@ -727,54 +677,27 @@ namespace LWSUI
             {
                 CloseDeepLevels(0);
                 const Rect anchor = TopMenuAnchor(barIndex);
-                CreateLevel(NoLevel, barIndex, item.items, LWS::Point{Round(anchor.x), Round(anchor.y)},
+                CreateLevel(NoLevel, item.items, LWS::Point{Round(anchor.x), Round(anchor.y)},
                             TopMenuGravity(), first);
             }
         }
         bool MenuSession::ReplaceTopMenu(size_t barIndex, bool first)
         {
             auto* bar = host_.MainMenu();
-            if (!bar || levels_.size() != 1)
+            if (!bar || levels_.empty() || !CanReuseWindows())
                 return false;
-            const MenuBarItem& item = bar->Items()[barIndex];
-            if (!item.enabled || item.items.empty())
-                return false;
-            Level& level = *levels_[0];
-            LWS::Window* parentWindow = level.window ? level.window->GetParent() : nullptr;
-            if (parentWindow == nullptr || !level.window->IsCreated())
-                return false;
-            auto build = BuildPanel(host_, item.items);
-            if (!build)
-                return false;
-            const Rect anchor = TopMenuAnchor(barIndex);
-            const auto placement = level.window->RequestPlacement(
-                LWS::WindowPlacementRequest{.position = LWS::Point{Round(anchor.x), Round(anchor.y)},
-                                            .clientSize = LWS::LogicalSize{Round(build->width), Round(build->height)}});
-            if (placement != LWS::Result::Success)
+            const auto& item = bar->Items()[barIndex];
+            if (!item.enabled || item.items.empty() || !levels_[0]->window->IsCreated())
                 return false;
             CloseDeepLevels(1);
             CancelHover();
-            level.selection = {};
-            level.activation = {};
-            host_.DetachPanel(*level.panel);
-            level.panel = std::move(build->panel);
-            level.logical = {0, 0, build->width, build->height};
-            host_.AttachPanel(*level.panel);
-            level.panel->Measure({build->width, build->height});
-            level.panel->Arrange({0, 0, build->width, build->height});
-            first ? level.panel->Select(level.panel->First()) : level.panel->Select(level.panel->Last());
-            Level* raw = &level;
-            level.selection = level.panel->OnSelect.Connect([this, raw](std::optional<size_t> activeRow)
-                                                            { OnRowSelected(raw, activeRow); });
-            level.activation = level.panel->OnActivate.Connect([this, raw](size_t row) { OnRowActivated(raw, row); });
-            level.dirty = true;
-            SetHot(int(barIndex));
-            host_.Invalidate();
-            return true;
-        }
-        void MenuSession::SwitchTopMenuTo(size_t barIndex)
-        {
-            OpenTopMenu(barIndex, true);
+            Level& level = *levels_[0];
+            const auto size = InstallPanel(level, item.items, first);
+            if (!size)
+                return false;
+            const auto anchor = TopMenuAnchor(barIndex);
+            return level.window->RequestPlacement({.position = LWS::Point{Round(anchor.x), Round(anchor.y)},
+                .clientSize = LWS::LogicalSize{Round(size->width), Round(size->height)}}) == LWS::Result::Success;
         }
         void MenuSession::SwitchTopMenu(int step)
         {
@@ -838,14 +761,14 @@ namespace LWSUI
             parent.panel->Select(row);
             CloseDeepLevels(level + 1);
             const Rect anchor = parent.panel->RowRect(row);
-            CreateLevel(level, row, item.submenu, LWS::Point{Round(anchor.x + anchor.width), Round(anchor.y)},
+            CreateLevel(level, item.submenu, LWS::Point{Round(anchor.x + anchor.width), Round(anchor.y)},
                         LWS::PopupGravity::DownRight, true);
         }
         void MenuSession::ActivateRow(size_t level, size_t row)
         {
             if (level >= levels_.size())
                 return;
-            DropdownPanel* panel = levels_[level]->panel.get();
+            DropdownPanel* panel = levels_[level]->panel;
             if (row >= panel->Count() || !panel->Selectable(row))
                 return;
             const MenuItem& item = panel->Item(row);
@@ -869,8 +792,13 @@ namespace LWSUI
         void MenuSession::OnRowSelected(Level* level, std::optional<size_t> row)
         {
             const size_t index = IndexOf(level);
-            if (index == NoLevel || !row)
+            if (index == NoLevel)
                 return;
+            if (!row)
+            {
+                CancelHover();
+                return;
+            }
             const MenuItem& item = level->panel->Item(*row);
             if (!item.submenu.empty() && level->panel->Selectable(*row))
                 ArmHover(index, *row);
@@ -922,9 +850,10 @@ namespace LWSUI
             entry->selection = {};
             entry->activation = {};
             entry->listener = {};
-            if (entry->panel)
-                host_.DetachPanel(*entry->panel);
-            ReleaseWindow(std::move(entry->window));
+            // Retain the complete host/tree/window until its input or native dispatch has returned.
+            entry->host->Finish(EditPhase::Cancel);
+            if (entry->window->IsCreated())
+                std::ignore = entry->window->SetVisible(false);
             retired_.push_back(std::move(entry));
             auto* bar = host_.MainMenu();
             if (bar)
@@ -943,7 +872,6 @@ namespace LWSUI
             active_ = false;
             menuUsed_ = false;
             CloseDeepLevels(0);
-            TrimPool();
             SetHot(-1);
             host_.Invalidate();
         }
@@ -965,7 +893,7 @@ namespace LWSUI
         {
             for (size_t level = levels_.size(); level-- > 0;)
             {
-                auto* panel = levels_[level]->panel.get();
+                auto* panel = levels_[level]->panel;
                 const auto row = panel->Mnemonic(key, panel->Active().value_or(kNoIndex));
                 if (row)
                 {
@@ -1049,7 +977,7 @@ namespace LWSUI
             }
             if (input.key == K::Left || input.key == K::Right)
             {
-                auto* panel = levels_.back()->panel.get();
+                auto* panel = levels_.back()->panel;
                 const auto row = panel ? panel->Active() : std::nullopt;
                 // Right descends into the active row's submenu when there is one; otherwise
                 // both arrows move along the bar. Left at depth 1 moves to the previous menu.
@@ -1063,7 +991,7 @@ namespace LWSUI
                     CloseLevel(levels_.size() - 1);
                 return true;
             }
-            auto* panel = levels_.back()->panel.get();
+            auto* panel = levels_.back()->panel;
             if (panel && panel->Dispatch(input))
                 return true;
             return true;
@@ -1108,7 +1036,7 @@ namespace LWSUI
                         if (levels_.empty())
                             SetHot(int(hit));
                         else if (CanReuseWindows())
-                            SwitchTopMenuTo(hit);
+                            OpenTopMenu(hit, true);
                     }
                 }
                 else if (levels_.empty())
@@ -1162,6 +1090,11 @@ namespace LWSUI
             auto* bar = host_.MainMenu();
             if (!bar)
                 return false;
+            if (!bar->Visible() || !bar->Enabled())
+            {
+                if (active_) Close();
+                return false;
+            }
             if (active_ && bar->orientation != orientationAtOpen_)
                 Close();
             if (input.kind == InputKind::KeyDown)
@@ -1193,8 +1126,7 @@ namespace LWSUI
                 return Mnemonic(*character);
             }
             if (bar->ContentActive() && !bar->windowPressed_ &&
-                (bar->InContent(host_.capture_.Get()) ||
-                 (PointerKind(input.kind) && bar->HitContent(input.x, input.y))))
+                PointerKind(input.kind) && bar->HitContent(input.x, input.y))
             {
                 if (input.kind == InputKind::Down)
                     Close();
@@ -1209,15 +1141,26 @@ namespace LWSUI
             }
             return WindowInput(input) || PointerInput(input);
         }
+        void MenuSession::FocusLost()
+        {
+            auto* bar = host_.MainMenu();
+            if (!bar || host_.Window().GetPlatformContext().GetBackendId() != LWS::BackendId::Wayland)
+            {
+                Close();
+                return;
+            }
+            // Wayland sends leave/enter for focus transfers within the popup chain. Decide after
+            // the event batch, when the destination is known, including keyboard-opened popups.
+            host_.Post(bar->Handle(), [this](Control&)
+            {
+                if (!host_.Window().HasKeyboardFocus() &&
+                    std::ranges::none_of(levels_, [](const auto& level) { return level->window->HasKeyboardFocus(); }))
+                    Close();
+            });
+        }
         bool MenuSession::PanelInput(size_t level, const Input& input)
         {
-            if (level >= levels_.size())
-                return false;
-            Level& entry = *levels_[level];
-            entry.dirty = true;
-            const bool consumed = entry.panel->Dispatch(input);
-            host_.Invalidate();
-            return consumed;
+            return level < levels_.size() && levels_[level]->host->Route(input);
         }
         bool MenuSession::OnLevelEvent(LWS::Window* window, const LWS::AnyEvent& event)
         {
@@ -1226,48 +1169,17 @@ namespace LWSUI
                 return false;
             if (std::holds_alternative<LWS::EventPopupDismissed>(event))
             {
-                CloseDeepLevels(*index);
-                CancelHover();
+                *index == 0 ? Close() : CloseDeepLevels(*index);
                 return true;
             }
-            if (std::holds_alternative<LWS::EventClientAreaSizeChanged>(event) ||
-                std::holds_alternative<LWS::EventPaint>(event))
-            {
-                levels_[*index]->dirty = true;
-                host_.Invalidate();
-                return false;
-            }
+            if (std::holds_alternative<LWS::EventFocusLost>(event))
+                FocusLost();
             const auto input = InputFromEvent(event, host_.Window().GetPlatformContext());
-            if (!input)
-                return false;
-            if (PointerKind(input->kind))
-                return PanelInput(*index, *input);
-            return OnInput(*input);
-        }
-        void MenuSession::PresentLevel(Level& level)
-        {
-            if (!level.dirty || !level.window || !level.window->IsCreated())
-                return;
-            const auto metrics = level.window->GetClientAreaMetrics();
-            const auto scale = metrics.Scale();
-            if (!scale || !metrics.pixels || metrics.pixels->x <= 0 || metrics.pixels->y <= 0)
-                return;
-            const float width = float(metrics.logical.x), height = float(metrics.logical.y);
-            if (width <= 0 || height <= 0)
-                return;
-            level.logical = {0, 0, width, height};
-            level.panel->Measure({width, height});
-            level.panel->Arrange({0, 0, width, height});
-            canvas_.Begin(metrics.pixels->x, metrics.pixels->y, *scale);
-            level.panel->Render(canvas_);
-            const auto result = level.window->PresentBitmap(canvas_.End());
-            // An unconfigured surface publishes readiness through its own metrics/paint events.
-            level.dirty = result != LWS::Result::Success;
+            return input && !PointerKind(input->kind) && OnInput(*input);
         }
         void MenuSession::Update()
         {
             retired_.clear();
-            retiredWindows_.clear();
             if (levels_.empty())
                 return;
             if (!host_.Window().IsCreated())
@@ -1276,7 +1188,7 @@ namespace LWSUI
                 return;
             }
             for (auto& level : levels_)
-                PresentLevel(*level);
+                level->host->Update();
         }
     }  // namespace internal
 }  // namespace LWSUI

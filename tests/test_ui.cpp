@@ -720,7 +720,6 @@ TEST_CASE("Menu dropdown rows activate, cascade, and reuse windows", "[ui][menu]
     REQUIRE(session.LevelWindow(0)->IsCreated());
     #ifdef LWS_HAS_WIN32_BACKEND
     REQUIRE(session.LevelWindow(0) == first);
-    REQUIRE(session.PooledWindows() == 0);
     #endif
     // Dismissal releases everything back to the session.
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Escape}));
@@ -728,7 +727,6 @@ TEST_CASE("Menu dropdown rows activate, cascade, and reuse windows", "[ui][menu]
     REQUIRE(session.LevelWindow(0) == nullptr);
     env.host().Update();
     #ifdef LWS_HAS_WIN32_BACKEND
-    REQUIRE(session.PooledWindows() == 0);
     #endif
 }
 
@@ -943,6 +941,157 @@ TEST_CASE("Menu popups unmap at once when the owner loses focus", "[ui][menu]")
     REQUIRE_FALSE(IsWindowVisible(submenu));
 }
 #endif
+
+TEST_CASE("Menus preserve captured root gestures and overlay priority", "[ui][menu][routing]")
+{
+    MenuEnvironment env;
+    MenuCounters counts;
+    env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts)));
+    SECTION("root capture ends even when released over the menu")
+    {
+        auto slider = std::make_unique<LWSUI::Slider>();
+        unsigned commits = 0, previews = 0;
+        auto edit = slider->OnEdit.Connect([&](double, LWSUI::EditPhase phase)
+        { commits += phase == LWSUI::EditPhase::Commit; previews += phase == LWSUI::EditPhase::Preview; });
+        env.host().SetRoot(std::move(slider));
+        env.host().Update();
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = 100, .y = 100}));
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Move, .x = 200, .y = 5}));
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = 200, .y = 5}));
+        REQUIRE(commits == 1);
+        const auto completed = previews;
+        env.host().Route({.kind = LWSUI::InputKind::Move, .x = 400, .y = 100});
+        REQUIRE(previews == completed);
+#ifdef LWS_HAS_WIN32_BACKEND
+        REQUIRE(GetCapture() == nullptr);
+#endif
+    }
+    SECTION("modal popup blocks pointer and keyboard menu activation")
+    {
+        auto root = std::make_unique<LWSUI::Button>("owner");
+        auto* owner = root.get();
+        env.host().SetRoot(std::move(root));
+        env.host().Update();
+        auto popup = std::make_unique<LWSUI::TextBox>("draft");
+        auto* editor = popup.get();
+        REQUIRE(env.host().OpenPopup(*owner, std::move(popup), {100, 100, 200, 100}, {}, true));
+        REQUIRE(env.host().Focus(editor));
+        env.host().Update();
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::F10}));
+        REQUIRE_FALSE(env.host().HasOpenMenu());
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = 10, .y = 5}));
+        REQUIRE(env.host().HasPopup());
+        REQUIRE_FALSE(env.host().HasOpenMenu());
+    }
+    SECTION("context menu owns outside clicks and F10")
+    {
+        auto root = std::make_unique<LWSUI::Button>("owner");
+        auto* owner = root.get();
+        env.host().SetRoot(std::move(root));
+        env.host().Update();
+        REQUIRE(env.host().ShowContextMenu(*owner, {.target = owner->Handle(), .x = 100, .y = 100},
+                                           {{"Action", "", [](auto&) {}}}));
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::F10}));
+        REQUIRE(env.host().HasContextMenu());
+        REQUIRE_FALSE(env.host().HasOpenMenu());
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = 10, .y = 5}));
+        REQUIRE_FALSE(env.host().HasContextMenu());
+        REQUIRE_FALSE(env.host().HasOpenMenu());
+    }
+}
+
+TEST_CASE("Floating menu bounds preserve either orientation", "[ui][menu][layout]")
+{
+    MenuEnvironment env;
+    MenuCounters counts;
+    auto bar = std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts));
+    SECTION("horizontal") {}
+    SECTION("vertical") { bar->orientation = LWSUI::Orientation::Vertical; }
+    env.host().SetMainMenu(std::move(bar), LWSUI::MenuDock::Floating);
+    env.host().SetMainMenuPosition(1000, 1000);
+    env.host().Update();
+    const auto* menu = env.host().MainMenu();
+    const auto bounds = menu->Bounds();
+    REQUIRE(bounds.width == menu->DesiredSize().width);
+    REQUIRE(bounds.height == menu->DesiredSize().height);
+    REQUIRE(bounds.x + bounds.width <= 640);
+    REQUIRE(bounds.y + bounds.height <= 480);
+    const auto last = menu->ItemRect(1);
+    REQUIRE(menu->HitItem(last.x + 1, last.y + 1) == 1);
+}
+
+TEST_CASE("Dropdown windows host scrolling and keyboard layout locally", "[ui][menu][scroll]")
+{
+    MenuEnvironment env;
+    auto theme = env.host().Style(); theme.menuMaxRows = 4;
+    env.host().SetTheme(theme);
+    std::vector<LWSUI::MenuItem> items;
+    for (int i = 0; i < 24; ++i) items.push_back({"Item " + std::to_string(i), "", [] {}});
+    env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>(
+        std::vector<LWSUI::MenuBarItem>{{"File", std::move(items)}}));
+    env.host().Update();
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::F10}));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Down}));
+    auto& session = LWSUI::internal::MenuSessionAccess::Get(env.host());
+    REQUIRE(session.LevelCount() == 1);
+    for (int i = 0; i < 500 && !session.LevelWindow(0)->IsConfigured(); ++i)
+    {
+        REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    auto* panel = session.Panel(0);
+    REQUIRE(&panel->Host()->Window() == session.LevelWindow(0));
+    env.host().Update();
+    REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Wheel, .x = 4, .y = 4, .wheel = -1}));
+    REQUIRE(panel->Offset() > 0);
+    env.host().Update();
+    REQUIRE(panel->RowRect(0).y < 0);
+    const auto bounds = panel->Bounds();
+    const float x = bounds.width - panel->Style().scrollbarMargin - panel->Style().scrollbarWidth / 2;
+    REQUIRE(dynamic_cast<LWSUI::ScrollBar*>(panel->HitTest(x, bounds.height / 2)));
+    REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Down, .x = x, .y = bounds.height / 2}));
+#ifdef LWS_HAS_WIN32_BACKEND
+    REQUIRE(GetCapture() == Hwnd(*session.LevelWindow(0)));
+#endif
+    REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Move, .x = x, .y = bounds.height}));
+    REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Up, .x = x, .y = bounds.height}));
+    REQUIRE(panel->Offset() > 100);
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Home}));
+    env.host().Update();
+    REQUIRE(panel->Active() == 0);
+    REQUIRE(panel->RowRect(0).y == 0);
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::End}));
+    env.host().Update();
+    REQUIRE(panel->Active() == 23);
+    const auto last = panel->RowRect(23);
+    REQUIRE(last.y + last.height <= bounds.height + .01f);
+}
+
+TEST_CASE("Leaving a submenu row cancels delayed opening", "[ui][menu][hover]")
+{
+    MenuEnvironment env;
+    MenuCounters counts;
+    auto theme = env.host().Style(); theme.menuHoverDelayMs = 15;
+    env.host().SetTheme(theme);
+    env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts)));
+    env.host().Update();
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::F10}));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Down}));
+    auto& session = LWSUI::internal::MenuSessionAccess::Get(env.host());
+    const auto move = [&](size_t row)
+    {
+        const auto b = session.Panel(0)->RowRect(row);
+        REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Move, .x = b.x + 4, .y = b.y + b.height / 2}));
+    };
+    move(3);
+    SECTION("separator") { move(2); }
+    SECTION("disabled row") { move(1); }
+    REQUIRE_FALSE(session.Panel(0)->Active());
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+    REQUIRE(session.LevelCount() == 1);
+    REQUIRE_FALSE(session.Panel(0)->Active());
+}
 
 TEST_CASE("Scrolling preserves child edits and clips hit testing", "[ui][scroll]")
 {
