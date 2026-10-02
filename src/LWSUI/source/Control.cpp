@@ -1,6 +1,8 @@
 #include <LWSUI/Control.hpp>
 #include <LWSUI/UIHost.hpp>
 #include <algorithm>
+#include <cmath>
+#include <stdexcept>
 namespace LWSUI
 {
     Control::Control() : lifetime_(std::make_shared<ControlHandle::Lifetime>(ControlHandle::Lifetime{this})) {}
@@ -62,13 +64,39 @@ namespace LWSUI
     }
     Size Control::Measure(Size available)
     {
-        desired_ = visible_ ? OnMeasure(available) : Size{};
+        desired_ = visible_ ? ConstrainSize(OnMeasure(ConstrainSize(available))) : Size{};
         return desired_;
     }
     Size Control::MeasureContent(Size available)
     {
-        desired_ = visible_ ? OnMeasureContent(available) : Size{};
+        desired_ = visible_ ? ConstrainSize(OnMeasureContent(ConstrainSize(available))) : Size{};
         return desired_;
+    }
+    void Control::SetMaxWidth(std::optional<float> width)
+    {
+        if (width && (!std::isfinite(*width) || *width < 0))
+            throw std::invalid_argument("Invalid maximum control width");
+        if (maxWidth_ == width)
+            return;
+        maxWidth_ = width;
+        Invalidate(true);
+    }
+    void Control::SetMaxHeight(std::optional<float> height)
+    {
+        if (height && (!std::isfinite(*height) || *height < 0))
+            throw std::invalid_argument("Invalid maximum control height");
+        if (maxHeight_ == height)
+            return;
+        maxHeight_ = height;
+        Invalidate(true);
+    }
+    Size Control::ConstrainSize(Size size) const
+    {
+        if (maxWidth_)
+            size.width = std::min(size.width, *maxWidth_);
+        if (maxHeight_)
+            size.height = std::min(size.height, *maxHeight_);
+        return size;
     }
     Size Control::OnMeasure(Size available)
     {
@@ -78,7 +106,8 @@ namespace LWSUI
     }
     void Control::Arrange(Rect bounds)
     {
-        bounds_ = bounds;
+        const auto size = ConstrainSize({bounds.width, bounds.height});
+        bounds_ = {bounds.x, bounds.y, size.width, size.height};
         OnArrange();
     }
     void Control::Render(Canvas& canvas)

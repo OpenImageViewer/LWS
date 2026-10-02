@@ -111,6 +111,13 @@ namespace LWSUI
         Control& operator=(const Control&) = delete;
         Size Measure(Size available);
         Size MeasureContent(Size available);
+        // Optional maximum dimensions in logical pixels; nullopt removes a limit.
+        // Limits apply to measurement and arrangement, retaining the assigned origin.
+        // Values must be finite and nonnegative. Changes invalidate layout.
+        void SetMaxWidth(std::optional<float> width);
+        void SetMaxHeight(std::optional<float> height);
+        std::optional<float> MaxWidth() const { return maxWidth_; }
+        std::optional<float> MaxHeight() const { return maxHeight_; }
         void Arrange(Rect bounds);
         void Render(Canvas& canvas);
         bool Dispatch(const Input& input);
@@ -199,10 +206,12 @@ namespace LWSUI
         friend class Container;
         friend class UIHost;
         void Attach(UIHost* host, Container* parent);
+        Size ConstrainSize(Size size) const;
         ContextMenuProvider contextMenuProvider_;
         std::string tooltip_;
         Rect bounds_;
         Size desired_;
+        std::optional<float> maxWidth_, maxHeight_;
         bool visible_ = true, enabled_ = true, hovered_ = false;
         std::optional<LLUtils::Color> foreground_;
         std::optional<Theme> style_;

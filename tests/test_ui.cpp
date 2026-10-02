@@ -10,6 +10,8 @@
     #endif
     #include "source/MenuHost.hpp"
     #include <memory>
+    #include <limits>
+    #include <stdexcept>
     #include <thread>
     #include <string>
     #include <utility>
@@ -1420,6 +1422,130 @@ TEST_CASE("Scrolling preserves child edits and clips hit testing", "[ui][scroll]
     REQUIRE(scroll.HitTest(2, 2) == &editor);
     REQUIRE(editor.Finish(LWSUI::EditPhase::Cancel));
     REQUIRE(editor.Text() == "original");
+}
+
+TEST_CASE("Control maximum dimensions constrain measurement and arrangement", "[ui][layout][size-limits]")
+{
+    using namespace LWSUI;
+    struct Oversized : Control
+    {
+        Size offered, contentOffered;
+        Size OnMeasure(Size available) override
+        {
+            offered = available;
+            return {400, 300};
+        }
+        Size OnMeasureContent(Size available) override
+        {
+            contentOffered = available;
+            return {300, 200};
+        }
+    } control;
+    REQUIRE_FALSE(control.MaxWidth());
+    REQUIRE_FALSE(control.MaxHeight());
+    REQUIRE(control.Measure({500, 500}).width == 400);
+    REQUIRE(control.DesiredSize().height == 300);
+    control.SetMaxWidth(90);
+    control.SetMaxHeight(60);
+    REQUIRE(control.Measure({500, 500}).width == 90);
+    REQUIRE(control.DesiredSize().height == 60);
+    REQUIRE(control.offered.width == 90);
+    REQUIRE(control.offered.height == 60);
+    REQUIRE(control.MeasureContent({500, 500}).width == 90);
+    REQUIRE(control.DesiredSize().height == 60);
+    REQUIRE(control.contentOffered.width == 90);
+    REQUIRE(control.contentOffered.height == 60);
+    control.Arrange({7, 9, 500, 500});
+    REQUIRE(control.Bounds().x == 7);
+    REQUIRE(control.Bounds().y == 9);
+    REQUIRE(control.Bounds().width == 90);
+    REQUIRE(control.Bounds().height == 60);
+    control.Arrange({7, 9, 20, 15});
+    REQUIRE(control.Bounds().width == 20);
+    REQUIRE(control.Bounds().height == 15);
+    for (float invalid : {-1.f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()})
+    {
+        REQUIRE_THROWS_AS(control.SetMaxWidth(invalid), std::invalid_argument);
+        REQUIRE_THROWS_AS(control.SetMaxHeight(invalid), std::invalid_argument);
+        REQUIRE(control.MaxWidth() == 90);
+        REQUIRE(control.MaxHeight() == 60);
+    }
+    control.SetMaxWidth(0);
+    control.SetMaxHeight(0);
+    REQUIRE(control.Measure({500, 500}).width == 0);
+    REQUIRE(control.DesiredSize().height == 0);
+    control.Arrange({7, 9, 500, 500});
+    REQUIRE(control.Bounds().width == 0);
+    REQUIRE(control.Bounds().height == 0);
+    REQUIRE(control.HitTest(7, 9) == nullptr);
+    control.SetMaxWidth(std::nullopt);
+    control.SetMaxHeight(std::nullopt);
+    REQUIRE(control.MeasureContent({500, 500}).width == 300);
+    REQUIRE(control.DesiredSize().height == 200);
+    control.Arrange({7, 9, 500, 500});
+    REQUIRE(control.Bounds().width == 500);
+    REQUIRE(control.Bounds().height == 500);
+    control.SetVisible(false);
+    REQUIRE(control.Measure({500, 500}).width == 0);
+    REQUIRE(control.MeasureContent({500, 500}).height == 0);
+}
+
+TEST_CASE("A height-limited splitter leaves following stack controls visible", "[ui][layout][split][size-limits]")
+{
+    using namespace LWSUI;
+    MenuEnvironment env;
+    auto stack = std::make_unique<StackPanel>();
+    auto& split = stack->Emplace<SplitPanel>(std::make_unique<TextBox>("First", TextBoxMode::Multiline),
+                                             std::make_unique<TextBox>("Second", TextBoxMode::Multiline));
+    split.SetMaxHeight(120);
+    auto& name = stack->Emplace<TextBox>();
+    auto& greeting = stack->Emplace<Label>("Hello!");
+    auto& clear = stack->Emplace<Button>("Clear");
+    env.host().SetRoot(std::move(stack));
+    env.host().Update();
+    REQUIRE(split.Bounds().height == 120);
+    REQUIRE(split.First().Bounds().height + split.Divider().Bounds().height + split.Second().Bounds().height == 120);
+    REQUIRE(name.Bounds().y >= split.Bounds().y + split.Bounds().height);
+    REQUIRE(clear.Bounds().y >= greeting.Bounds().y + greeting.Bounds().height);
+    REQUIRE(clear.Bounds().y + clear.Bounds().height <= env.host().Root()->Bounds().height);
+    REQUIRE(env.host().Root()->HitTest(clear.Bounds().x + 2, clear.Bounds().y + 2) == &clear);
+    const float previousY = name.Bounds().y;
+    split.SetMaxHeight(60);
+    env.host().Update();  // The setter must trigger layout without explicit invalidation.
+    REQUIRE(split.Bounds().height == 60);
+    REQUIRE(name.Bounds().y == previousY - 60);
+    split.SetMaxHeight(std::nullopt);
+    env.host().Update();
+    REQUIRE(split.Bounds().height == env.host().Root()->Bounds().height);
+
+    // A capped splitter also respects smaller allocations and a stretching parent.
+    split.SetMaxHeight(120);
+    REQUIRE(split.Measure({200, 80}).height == 80);
+    split.Arrange({0, 0, 200, 80});
+    REQUIRE(split.Bounds().height == 80);
+    split.Arrange({0, 0, 200, 500});
+    REQUIRE(split.Bounds().height == 120);
+}
+
+TEST_CASE("Maximum width reflows wrapped content and limits stretched bounds", "[ui][layout][size-limits]")
+{
+    using namespace LWSUI;
+    MenuEnvironment env;
+    auto label = std::make_unique<Label>("This text should wrap into several lines when its maximum width is reduced.");
+    auto* text = label.get();
+    text->wrap = true;
+    env.host().SetRoot(std::move(label));
+    env.host().Update();
+    const float wideHeight = text->DesiredSize().height;
+    text->SetMaxWidth(100);
+    env.host().Update();
+    REQUIRE(text->Bounds().width == 100);
+    REQUIRE(text->DesiredSize().height > wideHeight);
+    REQUIRE(text->HitTest(text->Bounds().x + 101, text->Bounds().y + 2) == nullptr);
+    text->SetMaxWidth(std::nullopt);
+    env.host().Update();
+    REQUIRE(text->Bounds().width == env.window().GetClientAreaMetrics().logical.x);
+    REQUIRE(text->DesiredSize().height == wideHeight);
 }
 
 TEST_CASE("SplitPanel owns panes and clamps resizing in both orientations", "[ui][split]")

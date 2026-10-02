@@ -7,8 +7,11 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 #ifdef LWS_HAS_WIN32_BACKEND
     #include <LWS/Win32/WindowExtensions.hpp>
 #endif
@@ -22,14 +25,26 @@ namespace LWSUI::demo
             if (result != LWS::Result::Success)
                 throw std::runtime_error(operation);
         }
-        struct Connections
+        class ConnectionSet
         {
+          public:
+
+            ConnectionSet() = default;
+            ConnectionSet(const ConnectionSet&) = delete;
+            ConnectionSet& operator=(const ConnectionSet&) = delete;
+            ConnectionSet(ConnectionSet&&) noexcept = default;
+            ConnectionSet& operator=(ConnectionSet&&) noexcept = default;
+
             template <class E, class F>
-            void Add(E& event, F callback)
+            void Connect(E& event, F callback)
             {
-                values.push_back(std::make_shared<typename E::Connection>(event.Connect(std::move(callback))));
+                connections_.push_back(std::make_shared<typename E::Connection>(event.Connect(std::move(callback))));
             }
-            std::vector<std::shared_ptr<void>> values;
+            void Clear() { connections_.clear(); }
+
+          private:
+
+            std::vector<std::shared_ptr<void>> connections_;
         };
         Label& Text(Container& parent, std::string text, bool heading = false)
         {
@@ -202,7 +217,7 @@ namespace LWSUI::demo
             // Reverse destruction order disconnects subscriptions, then destroys host, then window.
             std::unique_ptr<LWS::Window> window;
             std::unique_ptr<UIHost> host;
-            Connections connections;
+            ConnectionSet connections;
             std::vector<LWS::EventConnection> listeners;
         };
         void Place(Surface& surface, Rect bounds, bool visible)
@@ -235,7 +250,7 @@ namespace LWSUI::demo
                 for (auto name : {"Controls Gallery", "Menu Gallery", "Reset layout"})
                 {
                     auto& button = toolbar.Emplace<Button>(name);
-                    connections_.Add(button.OnClick, [action, name] { action(name); });
+                    connections_.Connect(button.OnClick, [action, name] { action(name); });
                 }
                 toolbar_ = &toolbar;
                 note_ = &Emplace<Label>("Drag empty menu-bar space to move the window. The outer divider resizes "
@@ -285,7 +300,7 @@ namespace LWSUI::demo
             Surface &gallery_, &preview_, &fixed_;
             Control* toolbar_;
             Label *note_, *status_;
-            Connections connections_;
+            ConnectionSet connections_;
             Rect content_;
             SplitPanel* split_;
         };
@@ -332,7 +347,7 @@ namespace LWSUI::demo
         UIHost& menuHost;
         PreviewState state;
         Surface main, controls, gallery, preview, fixed;
-        Connections menuConnections;
+        ConnectionSet menuConnections;
         std::vector<Sample> samples;
         std::vector<Label*> sections;
         std::vector<std::string> history;
@@ -411,7 +426,7 @@ namespace LWSUI::demo
         {
             *alive = false;
             menuListeners.clear();
-            menuConnections.values.clear();
+            menuConnections.Clear();
             menuHost.SetRoot(nullptr);
             // Surface members and declarations already encode child-before-parent teardown.
         }
@@ -497,12 +512,12 @@ namespace LWSUI::demo
                 surface.listeners.push_back(std::move(*keys));
             }
             surface.host = std::make_unique<UIHost>(*surface.window, MakeTheme(DefaultThemePreset));
-            surface.connections.Add(surface.host->OnError,
-                                    [this](const std::string& message)
-                                    {
-                                        failed = true;
-                                        std::cerr << "Showcase: " << message << '\n';
-                                    });
+            surface.connections.Connect(surface.host->OnError,
+                                        [this](const std::string& message)
+                                        {
+                                            failed = true;
+                                            std::cerr << "Showcase: " << message << '\n';
+                                        });
         }
         void CloseSurface(Surface& surface, bool primary)
         {
@@ -717,14 +732,14 @@ namespace LWSUI::demo
             for (size_t i = 0; i < names.size(); ++i)
             {
                 auto& button = index.Emplace<Button>(names[i]);
-                controls.connections.Add(button.OnClick,
-                                         [this, i]
-                                         {
-                                             if (i < sections.size())
-                                                 catalogScroll->SetOffset(catalogScroll->Offset() +
-                                                                          sections[i]->Bounds().y -
-                                                                          catalogScroll->Bounds().y);
-                                         });
+                controls.connections.Connect(button.OnClick,
+                                             [this, i]
+                                             {
+                                                 if (i < sections.size())
+                                                     catalogScroll->SetOffset(catalogScroll->Offset() +
+                                                                              sections[i]->Bounds().y -
+                                                                              catalogScroll->Bounds().y);
+                                             });
             }
             Section(*list, "01 / Text and actions",
                     "Label wraps with the window. TextBox supports selection, clipboard, validation, and Escape to "
@@ -735,28 +750,28 @@ namespace LWSUI::demo
             label.wrap = true;
             name = &SampleControl(*list, "TextBox", std::make_unique<TextBox>(state.title));
             name->SetPlaceholder("Enter a preview title");
-            controls.connections.Add(name->OnEdit,
-                                     [this](const std::string& value, EditPhase phase)
-                                     {
-                                         const bool valid = value.size() <= 80;
-                                         name->SetValidation(valid ? "" : "Use at most 80 bytes for this title");
-                                         if (valid)
-                                             state.title = value;
-                                         Refresh();
-                                         if (phase != EditPhase::Preview)
-                                             Log("Title edit finished");
-                                     });
+            controls.connections.Connect(name->OnEdit,
+                                         [this](const std::string& value, EditPhase phase)
+                                         {
+                                             const bool valid = value.size() <= 80;
+                                             name->SetValidation(valid ? "" : "Use at most 80 bytes for this title");
+                                             if (valid)
+                                                 state.title = value;
+                                             Refresh();
+                                             if (phase != EditPhase::Preview)
+                                                 Log("Title edit finished");
+                                         });
             Text(*list, "Multiline notes: Enter adds a line; Ctrl+Enter commits; Escape restores the draft.");
             notes = &list->Emplace<TextBox>(state.notes, TextBoxMode::Multiline);
             notes->SetVisibleLines(4);
             notes->SetPlaceholder("Add notes about this scene...");
-            controls.connections.Add(notes->OnEdit,
-                                     [this](const std::string& value, EditPhase phase)
-                                     {
-                                         state.notes = value;
-                                         if (phase != EditPhase::Preview)
-                                             Log(phase == EditPhase::Cancel ? "Notes restored" : "Notes committed");
-                                     });
+            controls.connections.Connect(notes->OnEdit,
+                                         [this](const std::string& value, EditPhase phase)
+                                         {
+                                             state.notes = value;
+                                             if (phase != EditPhase::Preview)
+                                                 Log(phase == EditPhase::Cancel ? "Notes restored" : "Notes committed");
+                                         });
             auto& readonly = list->Emplace<TextBox>("Read-only TextBox: select and copy this explanation.");
             readonly.SetReadOnly(true);
             auto& borderless = list->Emplace<TextBox>("Borderless TextBox: this line is editable.");
@@ -767,23 +782,23 @@ namespace LWSUI::demo
             actions.orientation = Orientation::Horizontal;
             auto& reset = SampleControl(actions, "Button", std::make_unique<Button>("Reset values"));
             reset.focusLossPhase = EditPhase::Cancel;
-            controls.connections.Add(reset.OnClick, [this] { Command("Reset values"); });
+            controls.connections.Connect(reset.OnClick, [this] { Command("Reset values"); });
             auto& flat = actions.Emplace<Button>("Flat: show Tiles");
             flat.flat = true;
-            controls.connections.Add(flat.OnClick, [this] { Command("Tiles"); });
+            controls.connections.Connect(flat.OnClick, [this] { Command("Tiles"); });
             actions.Emplace<Button>("Disabled").SetEnabled(false);
             Section(*list, "02 / Choices",
                     "CheckBox toggles the preview. Standalone RadioButtons are paired by this app; RadioGroup manages "
                     "a set itself.");
             enabled = &SampleControl(*list, "CheckBox", std::make_unique<CheckBox>("Enable preview colors"));
             enabled->SetValue(true);
-            controls.connections.Add(enabled->OnChange,
-                                     [this](bool value)
-                                     {
-                                         state.enabled = value;
-                                         Refresh();
-                                         Log("Enabled state changed");
-                                     });
+            controls.connections.Connect(enabled->OnChange,
+                                         [this](bool value)
+                                         {
+                                             state.enabled = value;
+                                             Refresh();
+                                             Log("Enabled state changed");
+                                         });
             enabled->SetContextMenuProvider(
                 [this](Control&, const ContextMenuRequest&)
                 {
@@ -801,41 +816,41 @@ namespace LWSUI::demo
             circles.SetValue(true);
             circleRadio = &circles;
             tileRadio = &tiles;
-            controls.connections.Add(circles.OnChange,
-                                     [this](bool on)
-                                     {
-                                         if (on)
+            controls.connections.Connect(circles.OnChange,
+                                         [this](bool on)
                                          {
-                                             Command("Circles");
-                                         }
-                                     });
-            controls.connections.Add(tiles.OnChange,
-                                     [this](bool on)
-                                     {
-                                         if (on)
+                                             if (on)
+                                             {
+                                                 Command("Circles");
+                                             }
+                                         });
+            controls.connections.Connect(tiles.OnChange,
+                                         [this](bool on)
                                          {
-                                             Command("Tiles");
-                                         }
-                                     });
+                                             if (on)
+                                             {
+                                                 Command("Tiles");
+                                             }
+                                         });
             quality = &SampleControl(*list, "RadioGroup",
                                      std::make_unique<RadioGroup>(std::vector<Choice>{{"Fast", "Fast"},
                                                                                       {"Balanced", "Balanced"},
                                                                                       {"High", "High quality"}}));
             quality->orientation = Orientation::Horizontal;
             quality->SetValue(state.quality);
-            controls.connections.Add(quality->OnChange,
-                                     [this](const std::string& value)
-                                     {
-                                         state.quality = value;
-                                         Refresh();
-                                         Log("Quality: " + value);
-                                     });
+            controls.connections.Connect(quality->OnChange,
+                                         [this](const std::string& value)
+                                         {
+                                             state.quality = value;
+                                             Refresh();
+                                             Log("Quality: " + value);
+                                         });
             Text(*list, "ComboBox: select the scene, or open its popup with the keyboard.");
             scene = &SampleControl(*list, "ComboBox",
                                    std::make_unique<ComboBox>(
                                        std::vector<Choice>{{"Circles", "Circles"}, {"Tiles", "Tiles"}}));
             scene->SetValue(state.scene);
-            controls.connections.Add(scene->OnChange, [this](const std::string& value) { Command(value); });
+            controls.connections.Connect(scene->OnChange, [this](const std::string& value) { Command(value); });
             Section(*list, "03 / Numbers, sliders, and scrolling",
                     "NumericEdit: type a value or hold the rocker. Sliders preview while dragging; Escape restores the "
                     "previous value.");
@@ -843,22 +858,22 @@ namespace LWSUI::demo
             count = &SampleControl(*list, "NumericEdit<int64_t>",
                                    std::make_unique<NumericEdit<int64_t>>(NumericSpec<int64_t>{1, 12, 1}));
             count->SetValue(state.count);
-            controls.connections.Add(count->OnEdit,
-                                     [this](int64_t value, EditPhase)
-                                     {
-                                         state.count = value;
-                                         Refresh();
-                                     });
+            controls.connections.Connect(count->OnEdit,
+                                         [this](int64_t value, EditPhase)
+                                         {
+                                             state.count = value;
+                                             Refresh();
+                                         });
             Text(*list, "NumericEdit<double>: shape scale, 0.5 to 2.0.");
             scale = &SampleControl(*list, "NumericEdit<double>",
                                    std::make_unique<NumericEdit<double>>(NumericSpec<double>{.5, 2, .1}));
             scale->SetValue(state.scale);
-            controls.connections.Add(scale->OnEdit,
-                                     [this](double value, EditPhase)
-                                     {
-                                         state.scale = value;
-                                         Refresh();
-                                     });
+            controls.connections.Connect(scale->OnEdit,
+                                         [this](double value, EditPhase)
+                                         {
+                                             state.scale = value;
+                                             Refresh();
+                                         });
             Text(*list, "Slider: editable and read-only values share preview opacity.");
             opacity = &SampleControl(*list, "Slider", std::make_unique<Slider>());
             opacity->SetValue(state.opacity);
@@ -867,18 +882,18 @@ namespace LWSUI::demo
             filled->filled = true;
             filled->SetValueDisplay(SliderValueMode::ReadOnly);
             filled->SetValue(state.opacity);
-            controls.connections.Add(opacity->OnEdit,
-                                     [this](double value, EditPhase)
-                                     {
-                                         state.opacity = value;
-                                         Refresh();
-                                     });
-            controls.connections.Add(filled->OnEdit,
-                                     [this](double value, EditPhase)
-                                     {
-                                         state.opacity = value;
-                                         Refresh();
-                                     });
+            controls.connections.Connect(opacity->OnEdit,
+                                         [this](double value, EditPhase)
+                                         {
+                                             state.opacity = value;
+                                             Refresh();
+                                         });
+            controls.connections.Connect(filled->OnEdit,
+                                         [this](double value, EditPhase)
+                                         {
+                                             state.opacity = value;
+                                             Refresh();
+                                         });
             Text(*list, "Standalone ScrollBar: move its thumb to inspect different lines in a fixed-height viewport.");
             auto scrollGrid = std::make_unique<Grid>();
             scrollGrid->columns = {-1, 22};
@@ -887,15 +902,15 @@ namespace LWSUI::demo
             viewportText.wrap = true;
             auto& scrollbar = SampleControl(*scrollGrid, "ScrollBar", std::make_unique<ScrollBar>());
             scrollbar.SetPage(.2);
-            controls.connections.Add(scrollbar.OnEdit,
-                                     [&viewportText](double value, EditPhase)
-                                     {
-                                         const int first = 1 + int(value * 16);
-                                         std::string text;
-                                         for (int i = first; i < first + 4; ++i)
-                                             text += "Sample line " + std::to_string(i) + "\n";
-                                         viewportText.SetText(text);
-                                     });
+            controls.connections.Connect(scrollbar.OnEdit,
+                                         [&viewportText](double value, EditPhase)
+                                         {
+                                             const int first = 1 + int(value * 16);
+                                             std::string text;
+                                             for (int i = first; i < first + 4; ++i)
+                                                 text += "Sample line " + std::to_string(i) + "\n";
+                                             viewportText.SetText(text);
+                                         });
             list->Emplace<Viewport>(std::move(scrollGrid), 110);
             Section(*list, "04 / Color and files",
                     "ColorSwatch is a standalone button. ColorPicker previews RGB/HSL edits and restores the color on "
@@ -903,31 +918,31 @@ namespace LWSUI::demo
             auto& sample = SampleControl(*list, "ColorSwatch", std::make_unique<ColorSwatch>());
             sample.SetValue(state.color);
             catalogSwatch = &sample;
-            controls.connections.Add(sample.OnClick,
-                                     [this]
-                                     {
-                                         state.color = LLUtils::Color{uint32_t{0xf6a44cff}};
-                                         color->SetValue(state.color);
-                                         Refresh();
-                                         Log("Swatch: amber");
-                                     });
+            controls.connections.Connect(sample.OnClick,
+                                         [this]
+                                         {
+                                             state.color = LLUtils::Color{uint32_t{0xf6a44cff}};
+                                             color->SetValue(state.color);
+                                             Refresh();
+                                             Log("Swatch: amber");
+                                         });
             color = &SampleControl(*list, "ColorPicker", std::make_unique<ColorPicker>());
             color->SetValue(state.color);
-            controls.connections.Add(color->OnEdit,
-                                     [this](LLUtils::Color value, EditPhase)
-                                     {
-                                         state.color = value;
-                                         Refresh();
-                                     });
+            controls.connections.Connect(color->OnEdit,
+                                         [this](LLUtils::Color value, EditPhase)
+                                         {
+                                             state.color = value;
+                                             Refresh();
+                                         });
             Text(*list, "FilePicker: edit an existing file path, click Browse, or press F4. The selected file is never "
                         "modified.");
             file = &SampleControl(*list, "FilePicker", std::make_unique<FilePicker>());
-            controls.connections.Add(file->OnEdit,
-                                     [this](const std::string& value, EditPhase)
-                                     {
-                                         state.file = value;
-                                         Refresh();
-                                     });
+            controls.connections.Connect(file->OnEdit,
+                                         [this](const std::string& value, EditPhase)
+                                         {
+                                             state.file = value;
+                                             Refresh();
+                                         });
             auto scroll = std::make_unique<ScrollView>();
             catalogScroll = scroll.get();
             scroll->overlayScrollBar = false;
@@ -951,7 +966,7 @@ namespace LWSUI::demo
             auto glyph = std::make_unique<GlyphButton>(Glyph::DoubleChevronUp);
             samples.push_back({"GlyphButton", glyph.get()});
             glyph->SetTooltip("Scroll to the top");
-            gallery.connections.Add(glyph->OnClick, [this] { containerScroll->SetOffset(0); });
+            gallery.connections.Connect(glyph->OnClick, [this] { containerScroll->SetOffset(0); });
             flow->AddItem(std::move(glyph));
             flow->AddItem(std::make_unique<Label>("FlowPanel wraps intrinsic controls"));
             dock->AddDocked(std::move(flow), Dock::Fill);
@@ -972,7 +987,7 @@ namespace LWSUI::demo
             for (auto name : {"Circles", "Tiles"})
             {
                 auto& button = horizontal.Emplace<Button>(name);
-                gallery.connections.Add(button.OnClick, [this, name] { Command(name); });
+                gallery.connections.Connect(button.OnClick, [this, name] { Command(name); });
             }
             Text(*content, "Grid: a fixed 90-pixel label column and a proportional value column.");
             auto& grid = SampleControl(*content, "Grid", std::make_unique<Grid>());
@@ -992,8 +1007,8 @@ namespace LWSUI::demo
                                                           std::make_unique<Label>("1")));
             auto& nested = branch.Content().Emplace<TreeView::Branch>("Nested StackPanel");
             Text(nested.Content(), "Labels, buttons, grids, and branches do not allocate individual HWNDs.");
-            gallery.connections.Add(branch.OnExpanded,
-                                    [this](bool on) { Log(on ? "Branch expanded" : "Branch collapsed"); });
+            gallery.connections.Connect(branch.OnExpanded,
+                                        [this](bool on) { Log(on ? "Branch expanded" : "Branch collapsed"); });
             Text(*content, "Fixed-height ScrollView / overlay scrollbar: scroll here independently of the outer pane.");
             auto inner = std::make_unique<ScrollView>();
             inner->overlayScrollBar = true;
@@ -1037,27 +1052,27 @@ namespace LWSUI::demo
             details = information.get();
             auto quick = std::make_unique<QuickControls>();
             quickEnabled = &quick->Emplace<CheckBox>("Enabled");
-            preview.connections.Add(quickEnabled->OnChange,
-                                    [this](bool value)
-                                    {
-                                        state.enabled = value;
-                                        Refresh();
-                                        Log(state.enabled ? "Quick Controls: enabled" : "Quick Controls: disabled");
-                                    });
+            preview.connections.Connect(quickEnabled->OnChange,
+                                        [this](bool value)
+                                        {
+                                            state.enabled = value;
+                                            Refresh();
+                                            Log(state.enabled ? "Quick Controls: enabled" : "Quick Controls: disabled");
+                                        });
             Text(*quick, "Opacity");
             quickOpacity = &quick->Emplace<Slider>();
             quickOpacity->filled = true;
-            preview.connections.Add(quickOpacity->OnEdit,
-                                    [this](double value, EditPhase phase)
-                                    {
-                                        state.opacity = value;
-                                        Refresh();
-                                        if (phase != EditPhase::Preview)
-                                            Log(phase == EditPhase::Cancel ? "Opacity restored" : "Opacity changed");
-                                    });
+            preview.connections.Connect(quickOpacity->OnEdit,
+                                        [this](double value, EditPhase phase)
+                                        {
+                                            state.opacity = value;
+                                            Refresh();
+                                            if (phase != EditPhase::Preview)
+                                                Log(phase == EditPhase::Cancel ? "Opacity restored" : "Opacity changed");
+                                        });
             auto& reset = quick->Emplace<Button>("Reset values");
             reset.focusLossPhase = EditPhase::Cancel;
-            preview.connections.Add(reset.OnClick, [this] { Command("Reset values"); });
+            preview.connections.Connect(reset.OnClick, [this] { Command("Reset values"); });
             auto inspectorContent = std::make_unique<Label>();
             inspectorContent->wrap = true;
             inspector = inspectorContent.get();
@@ -1074,9 +1089,9 @@ namespace LWSUI::demo
             fixedBody->columns = {60, -1};
             swatch = &fixedBody->Emplace<ColorSwatch>();
             swatch->SetValue(state.color);
-            fixed.connections.Add(swatch->OnClick, [this] { Command("Controls Gallery"); });
+            fixed.connections.Connect(swatch->OnClick, [this] { Command("Controls Gallery"); });
             auto& button = fixedBody->Emplace<Button>("Show Controls");
-            fixed.connections.Add(button.OnClick, [this] { Command("Controls Gallery"); });
+            fixed.connections.Connect(button.OnClick, [this] { Command("Controls Gallery"); });
 #ifdef LWS_HAS_WIN32_BACKEND
             Text(*fixedBody, "HWND");
 #else
@@ -1101,7 +1116,7 @@ namespace LWSUI::demo
             for (const auto* name : {"Controls Gallery", "Reset values"})
             {
                 auto& button = actions.Emplace<Button>(name);
-                menuConnections.Add(button.OnClick, [this, name] { Command(name); });
+                menuConnections.Connect(button.OnClick, [this, name] { Command(name); });
             }
             Text(*list, "Keyboard: Alt or F10 opens a menu; arrows navigate; Enter runs a command; Escape closes it. "
                         "Shift+F10 opens a control's context menu.");
