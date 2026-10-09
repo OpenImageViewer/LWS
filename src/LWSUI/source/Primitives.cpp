@@ -50,7 +50,7 @@ namespace LWSUI
         {
             const float contentWidth = std::max(1.f, available.width - 2 * p);
             const float keyWidth = wrap ? contentWidth : 0.f;
-            const auto scale = host->Window().GetClientAreaMetrics().Scale();
+            const auto scale = host->DrawingScale();
             if (!measurement_ || measurement_->font != font || measurement_->scale != scale ||
                 measurement_->wrap != wrap || measurement_->width != keyWidth)
             {

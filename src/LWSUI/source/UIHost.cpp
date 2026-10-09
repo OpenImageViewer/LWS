@@ -170,6 +170,14 @@ namespace LWSUI
             ReportError("Cannot schedule UI update");
         }
     }
+    std::optional<LWS::ContentScale> UIHost::DrawingScale() const
+    {
+#ifdef LWS_HAS_WIN32_BACKEND
+        if (const auto dpi = LWS::Win32::GetDpi(window_); dpi)
+            return LWS::ContentScale{double(*dpi) / 96.0, double(*dpi) / 96.0};
+#endif
+        return window_.GetClientAreaMetrics().Scale();
+    }
     Size UIHost::MeasureText(std::string_view text, float width, bool wrap, const FontSpec& font)
     {
         return {wrap ? width : canvas_.Measure(text, font), canvas_.TextHeight(text, width, font, wrap)};
@@ -203,6 +211,9 @@ namespace LWSUI
         if (updating_ || !window_.IsCreated() || !window_.IsVisible())
             return;
         updating_ = true;
+        // Allocation hints belong to this update only. Layout modes and content can change
+        // between updates, while reconciliation passes inside an update share the same hint.
+        ++layoutGeneration_;
         try
         {
             if (processDeferred)
@@ -228,7 +239,8 @@ namespace LWSUI
                     updating_ = false;
                     return;
                 }
-                if (!redrawOnResize_ || !resizePending_)
+                // Settle measure/arrange corrections before presenting, in either redraw mode.
+                if (!resizePending_)
                     break;
             }
             if (processDeferred && menuSession_)
@@ -249,16 +261,18 @@ namespace LWSUI
         if (!window_.IsCreated() || !window_.IsVisible())
             return false;
         const auto metrics = window_.GetClientAreaMetrics();
-        const auto scale = metrics.Scale();
+        const auto scale = DrawingScale();
         if (!scale || !metrics.pixels || metrics.pixels->x <= 0 || metrics.pixels->y <= 0)
             return false;
-        const auto size = metrics.logical;
+        // Keep the DPI transform fixed during resizing. Fractional layout extents account for
+        // leftover framebuffer pixels instead of stretching every control and glyph run.
+        const Size size{float(metrics.pixels->x / scale->x), float(metrics.pixels->y / scale->y)};
         if (!paintDirty_ && !layoutDirty_)
             return true;
         if (layoutDirty_)
         {
             layoutDirty_ = false;
-            LayoutMainMenu(float(size.x), float(size.y));
+            LayoutMainMenu(float(size.width), float(size.height));
             if (root_)
             {
                 root_->Measure({rootBounds_.width, rootBounds_.height});
@@ -279,7 +293,7 @@ namespace LWSUI
         {
             if (!window_.IsCreated() || !window_.IsVisible())
                 return false;
-            if (window_.GetClientAreaMetrics() == metrics && (!redrawOnResize_ || !layoutDirty_))
+            if (window_.GetClientAreaMetrics() == metrics && DrawingScale() == scale && !layoutDirty_)
                 return true;
             layoutDirty_ = paintDirty_ = resizePending_ = true;
             return false;
@@ -288,7 +302,7 @@ namespace LWSUI
             return resizePending_;
         paintDirty_ = false;
         canvas_.Begin(metrics.pixels->x, metrics.pixels->y, *scale);
-        canvas_.Fill(0, 0, float(size.x), float(size.y), theme_.background);
+        canvas_.Fill(0, 0, float(size.width), float(size.height), theme_.background);
         if (root_)
             root_->Render(canvas_);
         if (menuBar_)
@@ -296,7 +310,7 @@ namespace LWSUI
         if (popup_)
         {
             if (popupModal_)
-                canvas_.Fill(0, 0, float(size.x), float(size.y), popup_->Style().modalOverlay);
+                canvas_.Fill(0, 0, float(size.width), float(size.height), popup_->Style().modalOverlay);
             canvas_.Fill(popupBounds_.x, popupBounds_.y, popupBounds_.width, popupBounds_.height,
                          popup_->Style().background);
             popup_->Render(canvas_);

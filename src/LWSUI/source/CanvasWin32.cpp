@@ -2,6 +2,7 @@
 #include <LWSUI/TextEditing.hpp>
 #include <LWS/Bitmap.hpp>
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <map>
@@ -161,6 +162,12 @@ namespace LWSUI
             x += std::max(0.f, (width - inkWidth) / 2) + ink.left;
             y += (height - inkHeight) / 2 + ink.top;
         }
+        // Resize-jitter experiment, documented in ../ResizeJitter.md.
+        // A fractional run origin changes pixel coverage as a control moves during resizing.
+        // Snap after alignment and before span geometry so text and highlights move together.
+        // Glyph advances and the rendering transform remain unchanged.
+        x = float(std::round(double(x) * scale_.x) / scale_.x);
+        y = float(std::round(double(y) * scale_.y) / scale_.y);
         const auto wide = Wide(text);
         Check(layout->SetDrawingEffect(nullptr, {0, UINT32(wide.size())}));
         // Apply spans in order: selection ranges supplied last override search colors.

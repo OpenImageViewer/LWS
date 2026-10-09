@@ -207,10 +207,21 @@ namespace LWSUI
         friend class UIHost;
         void Attach(UIHost* host, Container* parent);
         Size ConstrainSize(Size size) const;
+        Size MeasureCore(Size available, bool content);
         ContextMenuProvider contextMenuProvider_;
         std::string tooltip_;
         Rect bounds_;
         Size desired_;
+        std::optional<Size> measureRequest_;
+        struct AllocationHint
+        {
+            float requestedWidth, arrangedWidth;
+            bool content;
+            uint64_t generation;
+        };
+        std::optional<AllocationHint> allocationHint_;
+        float measuredWidth_ = 0;
+        bool measuredContent_ = false;
         std::optional<float> maxWidth_, maxHeight_;
         bool visible_ = true, enabled_ = true, hovered_ = false;
         std::optional<LLUtils::Color> foreground_;

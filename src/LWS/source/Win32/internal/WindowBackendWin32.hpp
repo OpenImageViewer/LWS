@@ -69,6 +69,7 @@ namespace LWS
         BackendId backend() const override;
         uintptr_t getCurrentMonitorHandle() const override;
 
+        UINT dpi() const { return fDpi; }
         void setMenuChar(bool suppress);
 
       private:

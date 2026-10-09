@@ -14,6 +14,8 @@ namespace LWS
 namespace LWS::Win32
 {
     [[nodiscard]] std::expected<HWND, Result> GetHwnd(const Window& window);
+    // Context-thread only, created windows. Uses the backend DPI cache and legacy fallbacks.
+    [[nodiscard]] std::expected<UINT, Result> GetDpi(const Window& window);
     [[nodiscard]] std::expected<EventConnection, Result> Listen(Window& window, PlatformCallback callback);
     [[nodiscard]] Result SetMenuChar(Window& window, bool suppress);
     /// Context-thread only; requires a created window. False releases only this window's capture.

@@ -33,6 +33,9 @@ namespace LWSUI
         // Opt-in synchronous rendering on size notifications; never runs deferred application work.
         void SetRedrawOnResize(bool enabled) { redrawOnResize_ = enabled; }
         bool RedrawOnResize() const { return redrawOnResize_; }
+        // Windows uses native window DPI, not a ratio distorted by rounded logical dimensions.
+        // Arrangement and painting must use the same scale. Other backends retain paired metrics.
+        std::optional<LWS::ContentScale> DrawingScale() const;
         Size MeasureText(std::string_view text, float width, bool wrap, const FontSpec& font);
         size_t HitTestText(std::string_view text, float x, const FontSpec& font);
         float MeasureCaret(std::string_view text, size_t byteOffset, const FontSpec& font);
@@ -106,6 +109,7 @@ namespace LWSUI
         Theme theme_;
         std::optional<Theme> popupStyle_;
         Canvas canvas_;
+        uint64_t layoutGeneration_ = 0;
         std::unique_ptr<Control> root_, popup_, contextMenu_;
         // Retired popups survive until the next update, so a popup may close itself.
         std::vector<std::unique_ptr<Control>> retired_;

@@ -573,7 +573,12 @@ TEST_CASE("Live resize renders synchronously without deferred work or retirement
         };
         REQUIRE(env.window().RequestPlacement({.clientSize = LWS::LogicalSize{780, 580}}) == LWS::Result::Success);
         REQUIRE(childProbe->paints > beforeChild);
-        REQUIRE(childProbe->painted.width == 390);
+        // Stable DPI rendering uses the exact fractional viewport, not rounded logical size.
+        const auto childScale = childHost.DrawingScale();
+        const auto childMetrics = child.GetClientAreaMetrics();
+        REQUIRE(childScale);
+        REQUIRE(childMetrics.pixels);
+        REQUIRE(childProbe->painted.width == float(childMetrics.pixels->x / childScale->x));
         probe->arranged = {};
     }
     SECTION("minimized zero-sized clients are not presented")

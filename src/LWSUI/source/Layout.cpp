@@ -189,6 +189,8 @@ namespace LWSUI
     void FlowPanel::OnArrange()
     {
         const auto b = Bounds();
+        // Control::Arrange has reconciled measurement with the actual allocated width.
+        // Use that cached row plan instead of making a second independent wrap decision.
         float y = b.y;
         for (const auto& row : rows_)
         {
