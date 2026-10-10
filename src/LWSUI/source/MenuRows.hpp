@@ -49,13 +49,12 @@ namespace LWSUI::internal
         return true;
     }
     template <class Rows>
-    void RevealMenuRow(ScrollView& owner, const Rows& rows, std::optional<size_t> active)
+    void RevealMenuRow(ScrollView& owner, const Rows& rows, std::optional<size_t> active, float spacing = 0)
     {
         if (!active || owner.Bounds().height <= 0)
             return;
-        // Both menu lists stack rows without spacing. Content coordinates remain valid when
-        // wheel/drag input changes the offset before the next layout updates row rectangles.
-        float top = 0;
+        // Measured content coordinates stay valid before a scroll-triggered layout pass.
+        float top = spacing * float(*active);
         for (size_t row = 0; row < *active; ++row)
             top += rows[row]->DesiredSize().height;
         const float bottom = top + rows[*active]->DesiredSize().height;

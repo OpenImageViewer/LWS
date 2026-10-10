@@ -1,4 +1,5 @@
 #include "ColorPanel.hpp"
+#include "MenuRows.hpp"
 #include <LWSUI/Composites.hpp>
 #include <LWSUI/UIHost.hpp>
 #include <LWS/FileDialog.hpp>
@@ -109,17 +110,13 @@ namespace LWSUI
                 if (input.key == Key::Down || input.key == Key::Right || input.key == Key::Up || input.key == Key::Left)
                 {
                     bool forward = input.key == Key::Down || input.key == Key::Right;
-                    selected_ = forward ? (selected_ + 1) % list->Children().size()
-                                        : (selected_ + list->Children().size() - 1) % list->Children().size();
+                    selected_ = *internal::NextMenuRow(list->Children().size(), selected_, forward ? 1 : -1,
+                                                       [](size_t) { return true; });
                     for (size_t i = 0; i < list->Children().size(); ++i)
                         static_cast<MenuOption&>(*list->Children()[i]).SetActive(i == selected_);
                     changed_(selected_);
                     auto& option = *list->Children()[selected_];
-                    float position = option.Bounds().y - Content()->Bounds().y;
-                    if (position < Offset())
-                        SetOffset(position);
-                    else if (position + option.Bounds().height > Offset() + Bounds().height)
-                        SetOffset(position + option.Bounds().height - Bounds().height);
+                    internal::RevealMenuRow(*this, list->Children(), selected_, list->spacing);
                     if (Host())
                         Host()->Focus(&option);
                     return true;
