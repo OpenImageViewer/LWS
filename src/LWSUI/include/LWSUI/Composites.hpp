@@ -1,5 +1,7 @@
 #pragma once
 #include <LWSUI/NumericSpec.hpp>
+#include <LWSUI/Choice.hpp>
+#include <LWSUI/internal/NumericText.hpp>
 #include <LWSUI/Containers.hpp>
 #include <LWSUI/UIHost.hpp>
 #include <LWS/Timer.hpp>
@@ -11,10 +13,6 @@
 #include <stdexcept>
 namespace LWSUI
 {
-    struct Choice
-    {
-        std::string label, value;
-    };
     class RadioGroup : public StackPanel
     {
       public:
@@ -90,14 +88,13 @@ namespace LWSUI
             textConnection_ = text_->OnEdit.Connect(
                 [this](const std::string& text, EditPhase phase)
                 {
-                    T value{};
-                    auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
-                    if (error != std::errc{} || end != text.data() + text.size() || !Valid(value))
+                    const auto parsed = internal::ParseNumericText<T>(text);
+                    if (!parsed || !Valid(*parsed))
                     {
                         text_->SetValidation("Enter a number within the allowed bounds");
                         return;
                     }
-                    value_ = value;
+                    value_ = *parsed;
                     OnEdit.Raise(value_, phase);
                 });
             downConnection_ = down_->OnPress.Connect(
@@ -212,9 +209,7 @@ namespace LWSUI
         }
         void Refresh()
         {
-            char buffer[80];
-            auto [end, ec] = std::to_chars(buffer, buffer + sizeof(buffer), value_);
-            text_->SetText(ec == std::errc{} ? std::string(buffer, end) : "");
+            text_->SetText(internal::NumericText(value_));
         }
         void Start(int direction)
         {
@@ -254,18 +249,7 @@ namespace LWSUI
                 Step(elapsed >= Style().accelerationMs * 2 ? 100 : elapsed >= Style().accelerationMs ? 10 : 1);
             }
         }
-        static int DecimalPlaces(double value)
-        {
-            char buffer[80];
-            auto [end, error] = std::to_chars(buffer, buffer + sizeof(buffer), value);
-            const std::string text = error == std::errc{} ? std::string(buffer, end) : std::string{};
-            auto e = text.find_first_of("eE");
-            const auto dot = text.find('.');
-            int digits = dot == std::string::npos ? 0 : int((e == std::string::npos ? text.size() : e) - dot - 1);
-            if (e != std::string::npos)
-                digits -= std::stoi(text.substr(e + 1));
-            return std::max(0, digits);
-        }
+        static int DecimalPlaces(double value) { return internal::NumericDecimalPlaces(value); }
         void Step(int multiplier)
         {
             T low = spec_.minimum.value_or(std::numeric_limits<T>::lowest()),

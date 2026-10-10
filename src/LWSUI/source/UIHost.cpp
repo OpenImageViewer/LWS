@@ -408,8 +408,15 @@ namespace LWSUI
         CloseContextMenu();
         if (auto* old = focus_.Get())
         {
-            if (!old->Finish(c ? c->focusLossPhase : EditPhase::Commit))
-                return false;
+            const auto phase = c ? c->focusLossPhase : EditPhase::Commit;
+            const auto previous = old->Handle();
+            // Popup focus stays within its owner's logical editing scope.
+            auto* logicalNext = InPopup(c) ? popupOwner_.Get() : c;
+            for (auto* ancestor = old; ancestor; ancestor = ancestor->Parent())
+                if (!ancestor->PrepareFocusLoss(logicalNext, phase)) return false;
+            old = previous.Get();
+            if (!old) return false;
+            if (!old->Finish(phase)) return false;
             for (auto* current = old; current; current = current->Parent())
                 current->Dispatch({InputKind::Blur});
         }
@@ -531,6 +538,13 @@ namespace LWSUI
             {
                 previous->hovered_ = false;
                 previous->Invalidate();
+                for (auto* ancestor = previous; ancestor; ancestor = ancestor->Parent())
+                {
+                    bool remains = false;
+                    for (auto* candidate = c; candidate; candidate = candidate->Parent())
+                        if (candidate == ancestor) remains = true;
+                    if (!remains) ancestor->OnPointerLeave();
+                }
             }
             pointerHover_ = c ? c->Handle() : ControlHandle{};
             if (c)

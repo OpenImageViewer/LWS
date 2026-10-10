@@ -58,30 +58,13 @@ namespace LWSUI
                 });
             SetValue(value);
         }
-        static std::string Text(T value)
-        {
-            char bytes[80];
-            const auto [end, error] = std::to_chars(bytes, bytes + sizeof(bytes), value);
-            return error == std::errc{} ? std::string(bytes, end) : std::string{};
-        }
+        static std::string Text(T value) { return internal::NumericText(value); }
         double Fraction() const
         {
             return std::clamp(
                 (double(value_) - double(*spec_.minimum)) / (double(*spec_.maximum) - double(*spec_.minimum)), 0., 1.);
         }
-        static int DecimalPlaces(double value)
-        {
-            char bytes[80];
-            const auto [end, error] = std::to_chars(bytes, bytes + sizeof(bytes), value);
-            if (error != std::errc{})
-                return 0;
-            const std::string text(bytes, end);
-            const auto exponent = text.find_first_of("eE"), dot = text.find('.');
-            int digits = dot == text.npos ? 0 : int((exponent == text.npos ? text.size() : exponent) - dot - 1);
-            if (exponent != text.npos)
-                digits -= std::stoi(text.substr(exponent + 1));
-            return std::max(0, digits);
-        }
+        static int DecimalPlaces(double value) { return internal::NumericDecimalPlaces(value); }
         double Rounded(double value, double origin) const
         {
             const double factor = std::pow(10., std::max(DecimalPlaces(origin), DecimalPlaces(double(spec_.step))));

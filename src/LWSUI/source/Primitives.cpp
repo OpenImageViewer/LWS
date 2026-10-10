@@ -236,24 +236,39 @@ namespace LWSUI
     }
     Rect ScrollBar::Thumb() const
     {
-        auto bounds = Bounds();
-        float height = std::min(bounds.height, std::max(std::min(Style().scrollbarMinThumb, bounds.height / 2),
-                                                        bounds.height * float(page_)));
-        return {bounds.x + Style().scrollbarInset, bounds.y + float(value_) * (bounds.height - height),
-                std::max(0.f, bounds.width - 2 * Style().scrollbarInset), height};
+        const auto b = Bounds();
+        const bool vertical = orientation_ == Orientation::Vertical;
+        const float extent = vertical ? b.height : b.width;
+        const float length = std::min(extent, std::max(std::min(Style().scrollbarMinThumb, extent / 2), extent * float(page_)));
+        const float position = float(value_) * (extent - length);
+        const float inset = Style().scrollbarInset;
+        return vertical ? Rect{b.x + inset, b.y + position, std::max(0.f, b.width - 2 * inset), length}
+                        : Rect{b.x + position, b.y + inset, length, std::max(0.f, b.height - 2 * inset)};
     }
-    double ScrollBar::Fraction(float, float y) const
+    double ScrollBar::Fraction(float x, float y) const
     {
-        auto bounds = Bounds(), thumb = Thumb();
-        return std::clamp((y - bounds.y - grab_ * thumb.height) / std::max(1.f, bounds.height - thumb.height), 0.f,
-                          1.f);
+        const auto b = Bounds(), thumb = Thumb();
+        const bool vertical = orientation_ == Orientation::Vertical;
+        const float point = vertical ? y : x, origin = vertical ? b.y : b.x;
+        const float length = vertical ? thumb.height : thumb.width, extent = vertical ? b.height : b.width;
+        return std::clamp((point - origin - grab_ * length) / std::max(1.f, extent - length), 0.f, 1.f);
     }
     bool ScrollBar::OnInput(const Input& input)
     {
+        if (input.kind == InputKind::Down && input.button != LWS::MouseButton::Left) return false;
         if (input.kind == InputKind::Down)
         {
-            auto thumb = Thumb();
-            grab_ = thumb.Contains(input.x, input.y) ? (input.y - thumb.y) / std::max(1.f, thumb.height) : .5f;
+            const auto thumb = Thumb();
+            const bool vertical = orientation_ == Orientation::Vertical;
+            grab_ = thumb.Contains(input.x, input.y)
+                ? ((vertical ? input.y - thumb.y : input.x - thumb.x) / std::max(1.f, vertical ? thumb.height : thumb.width)) : .5f;
+        }
+        if (orientation_ == Orientation::Vertical && input.kind == InputKind::KeyDown)
+        {
+            auto translated = input;
+            if (input.key == LWS::KeyCode::Up) translated.key = LWS::KeyCode::Left;
+            if (input.key == LWS::KeyCode::Down) translated.key = LWS::KeyCode::Right;
+            return Slider::OnInput(translated);
         }
         return Slider::OnInput(input);
     }

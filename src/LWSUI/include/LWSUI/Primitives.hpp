@@ -346,6 +346,11 @@ namespace LWSUI
     {
       public:
 
+        void SetOrientation(Orientation value)
+        {
+            if (orientation_ != value) { Finish(EditPhase::Cancel); orientation_ = value; Invalidate(true); }
+        }
+        Orientation GetOrientation() const { return orientation_; }
         void SetPage(double page)
         {
             page_ = std::clamp(page, 0.0, 1.0);
@@ -363,6 +368,7 @@ namespace LWSUI
         using Slider::ConfigureValue;
         using Slider::SetValueDisplay;
         Rect Thumb() const;
+        Orientation orientation_ = Orientation::Vertical;
         double page_ = 1;
         float grab_ = 0.5f;
     };

@@ -184,6 +184,8 @@ namespace LWSUI
         EditPhase focusLossPhase = EditPhase::Commit;
         virtual bool Focusable() const { return false; }
         virtual bool Finish(EditPhase) { return true; }
+        // Composite editors can validate a transaction before focus leaves their subtree.
+        virtual bool PrepareFocusLoss(Control*, EditPhase) { return true; }
         LWSUI::Event<void()> OnHover;
         // Replaces the default provider. An empty result suppresses ancestor menus.
         void SetContextMenuProvider(ContextMenuProvider provider) { contextMenuProvider_ = std::move(provider); }
@@ -196,6 +198,7 @@ namespace LWSUI
         virtual void OnRender(Canvas&) {}
         virtual bool OnInput(const Input&) { return false; }
         virtual bool OnPreviewInput(const Input&) { return false; }
+        virtual void OnPointerLeave() {}
         virtual void OnAttach() {}
         virtual void OnDetach() {}
         void Capture();
