@@ -5,12 +5,14 @@ namespace LWSUI::internal
 {
     // Callers own padding, clipping and highlights. Coordinates stay in logical units.
     inline Rect AlignedTextBounds(Canvas& canvas, std::string_view text, Rect bounds, const FontSpec& font,
-                                  Alignment horizontal, Alignment vertical, bool wrap = false)
+                                  Alignment horizontal, Alignment vertical, bool wrap = false,
+                                  bool constrainHeight = true)
     {
         if (bounds.width <= 0 || bounds.height <= 0)
             return {bounds.x, bounds.y, 0, 0};
-        const float height = std::min(bounds.height, canvas.TextHeight(text, std::max(1.f, bounds.width), font, wrap));
-        const float room = std::max(0.f, bounds.height - height);
+        const float measured = canvas.TextHeight(text, std::max(1.f, bounds.width), font, wrap);
+        const float height = constrainHeight ? std::min(bounds.height, measured) : measured;
+        const float room = bounds.height - height;
         bounds.y += vertical == Alignment::Center ? room / 2 : vertical == Alignment::End ? room : 0;
         if (!wrap && horizontal != Alignment::Start)
         {

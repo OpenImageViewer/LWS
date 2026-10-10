@@ -194,8 +194,10 @@ namespace LWSUI
         }
         const float inset = size + Style().choiceGap;
         const auto text = text_.empty() ? (Value() ? "Enabled" : "Disabled") : text_;
-        const float height = canvas.TextHeight(text, b.width - inset, Font(), false);
-        DrawText(canvas, text, b.x + inset, b.y + (b.height - height) / 2, b.width - inset, height, Foreground());
+        const auto textBounds = internal::AlignedTextBounds(
+            canvas, text, {b.x + inset, b.y, b.width - inset, b.height}, Font(),
+            Alignment::Start, Alignment::Center, /*wrap=*/false, /*constrainHeight=*/false);
+        DrawText(canvas, text, textBounds.x, textBounds.y, textBounds.width, textBounds.height, Foreground());
     }
     void RadioButton::OnRender(Canvas& canvas)
     {
@@ -209,8 +211,10 @@ namespace LWSUI
         if (Value())
             canvas.FillCircle(centerX, centerY, size / 4, color);
         const float inset = Style().checkboxSize + Style().choiceGap / 2;
-        const float height = canvas.TextHeight(text_, std::max(0.f, b.width - inset), Font(), false);
-        DrawText(canvas, text_, b.x + inset, b.y + (b.height - height) / 2, b.width - inset, height,
+        const auto textBounds = internal::AlignedTextBounds(
+            canvas, text_, {b.x + inset, b.y, b.width - inset, b.height}, Font(),
+            Alignment::Start, Alignment::Center, /*wrap=*/false, /*constrainHeight=*/false);
+        DrawText(canvas, text_, textBounds.x, textBounds.y, textBounds.width, textBounds.height,
                  Enabled() ? Foreground() : Style().muted);
     }
     Rect ScrollBar::Thumb() const

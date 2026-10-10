@@ -213,4 +213,17 @@ TEST_CASE("Menu reveal uses measured rows and preserves spacing before relayout"
     REQUIRE_FALSE(internal::NextMenuRow(3, 0, 1, [](size_t) { return false; }));
     REQUIRE_FALSE(internal::NextMenuRow(0, 0, 1, [](size_t) { return true; }));
 }
+TEST_CASE("Caption alignment preserves centered clipping for oversized fonts", "[ui][reuse][text]")
+{
+    Canvas canvas;
+    canvas.Begin(240, 160, {1.25, 1.25});
+    const FontSpec font{40};
+    const Rect area{5, 30, 160, 12};
+    const auto bounds = internal::AlignedTextBounds(canvas, "Caption", area, font, Alignment::Start,
+                                                   Alignment::Center, /*wrap=*/false, /*constrainHeight=*/false);
+    REQUIRE(bounds.height > area.height);
+    REQUIRE(bounds.y < area.y);
+    REQUIRE(bounds.y + bounds.height / 2 == Catch::Approx(area.y + area.height / 2));
+    canvas.End();
+}
 #endif
