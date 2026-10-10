@@ -1,3 +1,4 @@
+#include <LWSUI/internal/ControlTree.hpp>
 #include <LWSUI/UIHost.hpp>
 #include "ContextMenu.hpp"
 #include "MenuHost.hpp"
@@ -373,31 +374,19 @@ namespace LWSUI
     }
     bool UIHost::HasFocusWithin(const Control& control) const
     {
-        for (auto* current = focus_.Get(); current; current = current->Parent())
-            if (current == &control)
-                return true;
-        return false;
+        return internal::IsWithin(focus_.Get(), &control);
     }
     bool UIHost::HasPopupWithin(const Control& control) const
     {
-        for (auto* current = popupOwner_.Get(); current; current = current->Parent())
-            if (current == &control)
-                return true;
-        return false;
+        return internal::IsWithin(popupOwner_.Get(), &control);
     }
     bool UIHost::HasHoverWithin(const Control& control) const
     {
-        for (auto* current = pointerHover_.Get(); current; current = current->Parent())
-            if (current == &control)
-                return true;
-        return false;
+        return internal::IsWithin(pointerHover_.Get(), &control);
     }
     bool UIHost::InPopup(Control* c) const
     {
-        for (; c; c = c->Parent())
-            if (c == popup_.get())
-                return true;
-        return false;
+        return internal::IsWithin(c, popup_.get());
     }
     bool UIHost::Focus(Control* c)
     {
@@ -540,10 +529,8 @@ namespace LWSUI
                 previous->Invalidate();
                 for (auto* ancestor = previous; ancestor; ancestor = ancestor->Parent())
                 {
-                    bool remains = false;
-                    for (auto* candidate = c; candidate; candidate = candidate->Parent())
-                        if (candidate == ancestor) remains = true;
-                    if (!remains) ancestor->OnPointerLeave();
+                    if (!internal::IsWithin(c, ancestor))
+                        ancestor->OnPointerLeave();
                 }
             }
             pointerHover_ = c ? c->Handle() : ControlHandle{};

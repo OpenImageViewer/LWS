@@ -1,3 +1,4 @@
+#include <LWSUI/internal/ControlTree.hpp>
 #include "GridViewImpl.hpp"
 #include <LWSUI/internal/ScopedFlag.hpp>
 #include <LWSUI/UIHost.hpp>
@@ -897,17 +898,12 @@ namespace LWSUI
     }
     bool GridView::PrepareFocusLoss(Control* next, EditPhase phase)
     {
-        bool inside = false;
-        for (auto* c = next; c; c = c->Parent())
-            if (c == this)
-                inside = true;
-        if (!inside && impl_->drag != Impl::Drag::None)
+        if (!internal::IsWithin(next, this) && impl_->drag != Impl::Drag::None)
             impl_->CancelDrag();
         if (!impl_->editor || impl_->focusTransition)
             return true;
-        for (auto* c = next; c; c = c->Parent())
-            if (c == impl_->editor)
-                return true;
+        if (internal::IsWithin(next, impl_->editor))
+            return true;
         return FinishEdit(phase);
     }
     void GridView::OnAttach()

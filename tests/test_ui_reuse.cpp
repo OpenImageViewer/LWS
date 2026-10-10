@@ -3,6 +3,7 @@
     #include <catch2/catch_approx.hpp>
     #include <LWSUI/Composites.hpp>
     #include <LWSUI/internal/ScopedFlag.hpp>
+    #include <LWSUI/internal/ControlTree.hpp>
     #include <LWSUI/internal/TextPresentation.hpp>
     #include <limits>
     #include <stdexcept>
@@ -141,5 +142,22 @@ TEST_CASE("Shared text presentation keeps native alignment and UTF-8 trimming at
         REQUIRE(internal::EllipsizeText(canvas, text, canvas.Measure(dots, font) / 2, font).empty());
         canvas.End();
     }
+}
+TEST_CASE("Shared ancestry membership is inclusive and distinguishes separate trees", "[ui][reuse][tree]")
+{
+    StackPanel root, other;
+    auto& branch = root.Emplace<StackPanel>();
+    auto& leaf = branch.Emplace<Label>("Leaf");
+    REQUIRE(internal::IsWithin(&leaf, &root));
+    REQUIRE(internal::IsWithin(&leaf, &branch));
+    REQUIRE(internal::IsWithin(&leaf, &leaf));
+    REQUIRE_FALSE(internal::IsWithin(&root, &leaf));
+    REQUIRE_FALSE(internal::IsWithin(&leaf, &other));
+    REQUIRE_FALSE(internal::IsWithin(nullptr, &root));
+    REQUIRE_FALSE(internal::IsWithin(&leaf, nullptr));
+    REQUIRE_FALSE(internal::IsWithin(nullptr, nullptr));
+    auto detached = branch.Remove(leaf);
+    REQUIRE_FALSE(internal::IsWithin(detached.get(), &root));
+    REQUIRE(internal::IsWithin(detached.get(), detached.get()));
 }
 #endif

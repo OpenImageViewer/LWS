@@ -1,3 +1,4 @@
+#include <LWSUI/internal/ControlTree.hpp>
 #include "MenuHost.hpp"
 #include <LWSUI/UIHost.hpp>
 #include <algorithm>
@@ -94,10 +95,7 @@ namespace LWSUI
     }
     bool MenuBar::InContent(Control* control) const
     {
-        for (; control; control = control->Parent())
-            if (control == content_)
-                return true;
-        return false;
+        return internal::IsWithin(control, content_);
     }
     void MenuBar::ArrangeContent()
     {
