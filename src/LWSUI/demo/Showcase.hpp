@@ -8,7 +8,7 @@
 
 namespace LWSUI::demo
 {
-    inline constexpr ThemePreset DefaultThemePreset = ThemePreset::Light;
+    using LWSUI::DefaultThemePreset;
     class SplitPreview;
 
     int RunShowcase(int argc, char** argv);

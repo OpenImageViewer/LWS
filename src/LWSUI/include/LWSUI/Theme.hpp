@@ -8,6 +8,7 @@ namespace LWSUI
         Light,
         Warm
     };
+    inline constexpr ThemePreset DefaultThemePreset = ThemePreset::Light;
     inline const char* ThemePresetName(ThemePreset preset)
     {
         switch (preset)
@@ -22,21 +23,21 @@ namespace LWSUI
     }
     struct Theme
     {
-        LLUtils::Color background{uint32_t{0x171c25ff}}, foreground{uint32_t{0xe5eaf2ff}};
-        LLUtils::Color surface{uint32_t{0x111720ff}}, accent{uint32_t{0x66b7ffff}};
-        LLUtils::Color changed{uint32_t{0xfbbf24ff}}, error{uint32_t{0xff8080ff}};
-        LLUtils::Color hoverSurface{uint32_t{0x354761ff}};
+        LLUtils::Color background{uint32_t{0xf4f6f8ff}}, foreground{uint32_t{0x20252bff}};
+        LLUtils::Color surface{uint32_t{0xffffffff}}, accent{uint32_t{0x005fccff}};
+        LLUtils::Color changed{uint32_t{0x20252bff}}, error{uint32_t{0xb42318ff}};
+        LLUtils::Color hoverSurface{uint32_t{0xdce6f0ff}};
         LLUtils::Color closeHoverBackground{uint32_t{0xe81123ff}}, closePressedBackground{uint32_t{0xc50f1fff}};
         LLUtils::Color closeActiveForeground{uint32_t{0xffffffff}};
-        LLUtils::Color line{uint32_t{0x303b4dff}}, muted{uint32_t{0x929fb4ff}};
-        LLUtils::Color selectedRow{uint32_t{0x26394eff}}, hoveredRow{uint32_t{0x202b3aff}};
-        LLUtils::Color selection{uint32_t{0x426389ff}}, selectedOption{uint32_t{0x2c4058ff}};
-        LLUtils::Color popupSurface{uint32_t{0x263344ff}};
+        LLUtils::Color line{uint32_t{0xcbd5dfff}}, muted{uint32_t{0x546170ff}};
+        LLUtils::Color selectedRow{uint32_t{0xdceafaff}}, hoveredRow{uint32_t{0xe8eef5ff}};
+        LLUtils::Color selection{uint32_t{0xb8d8faff}}, selectedOption{uint32_t{0xdceafaff}};
+        LLUtils::Color popupSurface{uint32_t{0xffffffff}};
         LLUtils::Color checkerDark{uint32_t{0x999999ff}}, checkerLight{uint32_t{0xddddddff}};
         LLUtils::Color modalOverlay{uint32_t{0x000000a0}};
         FontSpec font{16}, smallFont{96.f / 7}, headingFont{120.f / 7}, titleFont{184.f / 7}, glyphFont{80.f / 7};
-        LLUtils::Color searchForeground{uint32_t{0x171c25ff}}, searchBackground{uint32_t{0xffd166ff}};
-        LLUtils::Color selectionForeground{uint32_t{0xffffffff}};
+        LLUtils::Color searchForeground{uint32_t{0x292315ff}}, searchBackground{uint32_t{0xffeda3ff}};
+        LLUtils::Color selectionForeground{uint32_t{0x20252bff}};
         // All geometry is in logical pixels, independent of typography.
         float spacing = 0, rowHeight = 240.f / 7, padding = 8;
         float labelPadding = 4, textPadding = 6, borderWidth = 1, focusWidth = 2;
@@ -58,11 +59,32 @@ namespace LWSUI
         // Match the settings form's outer horizontal inset; independent of column padding.
         float resetRightMargin = 160.f / 7;
     };
-    inline Theme MakeTheme(ThemePreset preset)
+    inline Theme MakeTheme(ThemePreset preset = DefaultThemePreset)
     {
         Theme t;
-        if (preset == ThemePreset::Dark)
+        if (preset == ThemePreset::Light)
             return t;
+        if (preset == ThemePreset::Dark)
+        {
+            t.background = LLUtils::Color{uint32_t{0x171c25ff}};
+            t.foreground = LLUtils::Color{uint32_t{0xe5eaf2ff}};
+            t.surface = LLUtils::Color{uint32_t{0x111720ff}};
+            t.accent = LLUtils::Color{uint32_t{0x66b7ffff}};
+            t.changed = LLUtils::Color{uint32_t{0xfbbf24ff}};
+            t.error = LLUtils::Color{uint32_t{0xff8080ff}};
+            t.hoverSurface = LLUtils::Color{uint32_t{0x354761ff}};
+            t.line = LLUtils::Color{uint32_t{0x303b4dff}};
+            t.muted = LLUtils::Color{uint32_t{0x929fb4ff}};
+            t.selectedRow = LLUtils::Color{uint32_t{0x26394eff}};
+            t.hoveredRow = LLUtils::Color{uint32_t{0x202b3aff}};
+            t.selection = LLUtils::Color{uint32_t{0x426389ff}};
+            t.selectedOption = LLUtils::Color{uint32_t{0x2c4058ff}};
+            t.popupSurface = LLUtils::Color{uint32_t{0x263344ff}};
+            t.searchForeground = LLUtils::Color{uint32_t{0x171c25ff}};
+            t.searchBackground = LLUtils::Color{uint32_t{0xffd166ff}};
+            t.selectionForeground = LLUtils::Color{uint32_t{0xffffffff}};
+            return t;
+        }
         const bool warm = preset == ThemePreset::Warm;
         const auto color = [](uint32_t rgb) { return LLUtils::Color{(rgb << 8) | 255}; };
         t.background = color(warm ? 0xf4ede2 : 0xf4f6f8);

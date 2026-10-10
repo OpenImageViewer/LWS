@@ -556,7 +556,7 @@ decision about reserving a guaranteed drag strip for combined-content bars.
 ### Theme presets
 
 `LWSUI::MakeTheme(ThemePreset::Dark/Light/Warm)` returns a complete palette with the same
-font and geometry defaults. Dark is the original default. Apply a palette through the
+font and geometry defaults. `Theme{}` and unconfigured hosts/controls default to Light. Explicit Dark retains the original palette. Apply a palette through the
 existing UIHost theme update path; close transient popups first so they reopen with the
 new style. The connected showcase Theme menus demonstrate live switching.
 Settings-specific sections, JSON profiles, Save/Revert, and the F6 editor remain in
