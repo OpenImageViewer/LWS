@@ -1,5 +1,6 @@
 #pragma once
 #include <LWSUI/Composites.hpp>
+#include <LWSUI/internal/ScopedFlag.hpp>
 #include <charconv>
 #include <cmath>
 namespace LWSUI
@@ -13,16 +14,10 @@ namespace LWSUI
         T Value() const { return value_; }
         void SetValue(T value)
         {
-            if (!std::isfinite(double(value)) || value < *spec_.minimum || value > *spec_.maximum)
+            if (!ValidNumericValue(value, spec_))
                 throw std::invalid_argument("Slider value is outside its bounds");
             owner_.Abort();
-            struct Restore
-            {
-                bool& flag;
-                bool previous;
-                ~Restore() { flag = previous; }
-            } restore{muted_, muted_};
-            muted_ = true;
+            const internal::ScopedFlag restore(muted_, true);
             number_->Finish(EditPhase::Cancel);
             value_ = start_ = value;
             Refresh();

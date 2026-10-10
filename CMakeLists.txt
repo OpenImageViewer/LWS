@@ -270,6 +270,7 @@ if(LWS_BUILD_UI)
     add_library(LWSUI STATIC
         src/LWSUI/source/Control.cpp src/LWSUI/source/UIHost.cpp
         src/LWSUI/source/GridModel.cpp src/LWSUI/source/GridView.cpp src/LWSUI/source/GridEditors.cpp
+        src/LWSUI/source/GridViewRender.cpp src/LWSUI/source/GridViewInput.cpp
         src/LWSUI/source/Primitives.cpp src/LWSUI/source/TextBox.cpp src/LWSUI/source/Slider.cpp src/LWSUI/source/Containers.cpp src/LWSUI/source/Layout.cpp
         src/LWSUI/source/Composites.cpp src/LWSUI/source/Menu.cpp src/LWSUI/source/MenuWindowControls.cpp src/LWSUI/source/MenuContent.cpp)
     # Keep core-only consumers from building unused controls. Linking LWSUI still

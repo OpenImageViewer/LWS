@@ -7,6 +7,7 @@
 #include <LWS/Timer.hpp>
 #include <LWSUI/ColorMath.hpp>
 #include <charconv>
+#include <expected>
 #include <chrono>
 #include <limits>
 #include <cmath>
@@ -73,10 +74,7 @@ namespace LWSUI
 
         explicit NumericEdit(NumericSpec<T> spec = {}) : spec_(spec)
         {
-            if (!std::isfinite(double(spec_.step)) || spec_.step <= 0 ||
-                (spec_.minimum && !std::isfinite(double(*spec_.minimum))) ||
-                (spec_.maximum && !std::isfinite(double(*spec_.maximum))) ||
-                (spec_.minimum && spec_.maximum && *spec_.minimum > *spec_.maximum))
+            if (!ValidNumericSpec(spec_))
                 throw std::invalid_argument("Invalid numeric bounds or step");
             text_ = &Emplace<TextBox>();
             down_ = &Emplace<Button>("▼");
@@ -86,10 +84,10 @@ namespace LWSUI
             up_->fontRole = FontRole::Glyph;
             up_->SetHighlightPattern("");
             textConnection_ = text_->OnEdit.Connect(
-                [this](const std::string& text, EditPhase phase)
+                [this](const std::string&, EditPhase phase)
                 {
-                    const auto parsed = internal::ParseNumericText<T>(text);
-                    if (!parsed || !Valid(*parsed))
+                    const auto parsed = Draft();
+                    if (!parsed)
                     {
                         text_->SetValidation("Enter a number within the allowed bounds");
                         return;
@@ -122,7 +120,7 @@ namespace LWSUI
         }
         void SetValue(T value)
         {
-            if (!Valid(value))
+            if (!ValidNumericValue(value, spec_))
                 throw std::invalid_argument("Numeric value is outside its bounds");
             repeating_ = false;
             if (repeatTimer_)
@@ -131,6 +129,19 @@ namespace LWSUI
             Refresh();
         }
         T Value() const { return value_; }
+        // Inspect the draft without accepting it or publishing edit events.
+        std::expected<T, std::string> Draft() const
+        {
+            const auto parsed = internal::ParseNumericText<T>(text_->Text());
+            if (!parsed)
+                return std::unexpected(std::is_integral_v<T> ? "Enter a valid integer" : "Enter a valid number");
+            if (!ValidNumericValue(*parsed, spec_))
+                return std::unexpected(std::is_integral_v<T> ? "Enter an integer within the allowed bounds"
+                                                           : "Enter a finite number within the allowed bounds");
+            return *parsed;
+        }
+        void SetValidation(std::string message) { text_->SetValidation(std::move(message)); }
+        Control& FocusTarget() const { return *text_; }
         bool Finish(EditPhase phase) override
         {
             Stop(phase);
@@ -202,11 +213,6 @@ namespace LWSUI
         using Container::Emplace;
         using Container::Remove;
 
-        bool Valid(T value) const
-        {
-            return std::isfinite(static_cast<double>(value)) && (!spec_.minimum || value >= *spec_.minimum) &&
-                   (!spec_.maximum || value <= *spec_.maximum);
-        }
         void Refresh()
         {
             text_->SetText(internal::NumericText(value_));

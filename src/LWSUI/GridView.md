@@ -154,6 +154,17 @@ nor windows. Existing numeric editors and grid formatting share numeric-text
 helpers, and choices share a lightweight public type. Mouse, keyboard and menu
 operations use the same validated grid methods.
 
+The private implementation separates state and transactions in `GridView.cpp`,
+layout and drawing in `GridViewRender.cpp`, and input routing in `GridViewInput.cpp`.
+`GridViewImpl.hpp` contains shared state and declarations without introducing a
+public interface. Text alignment and Label ellipsis use shared internal helpers,
+and header measurement and rendering resolve the same font.
+
+Numeric adapters use `NumericEdit::Draft()`, `SetValidation()` and `FocusTarget()`
+instead of relying on child order. Draft inspection parses and checks bounds
+without accepting the value or raising events. Numeric editors, models and sliders
+share numeric validation while retaining the slider's stricter range rules.
+
 ## Demo and verification
 
 Build `LWSUIGridDemo` with `LWSUI_BUILD_DEMO=ON`. On Windows it is a GUI executable

@@ -16,13 +16,12 @@ namespace LWSUI
             return std::unexpected("Cell value has the wrong type");
         if (auto n = std::get_if<int64_t>(&v))
         {
-            if ((c.integer.minimum && *n < *c.integer.minimum) || (c.integer.maximum && *n > *c.integer.maximum))
+            if (!ValidNumericValue(*n, c.integer))
                 return std::unexpected("Enter an integer within the allowed bounds");
         }
         if (auto n = std::get_if<double>(&v))
         {
-            if (!std::isfinite(*n) || (c.decimal.minimum && *n < *c.decimal.minimum) ||
-                (c.decimal.maximum && *n > *c.decimal.maximum))
+            if (!ValidNumericValue(*n, c.decimal))
                 return std::unexpected("Enter a finite number within the allowed bounds");
         }
         if (c.type == GridValueType::Choice &&
@@ -64,14 +63,7 @@ namespace LWSUI
         {
             if (c.id.empty() || !ids.insert(c.id).second)
                 throw std::invalid_argument("Column identities must be unique and nonempty");
-            const auto validSpec = [](const auto& spec)
-            {
-                return std::isfinite(double(spec.step)) && spec.step > 0 &&
-                       (!spec.minimum || std::isfinite(double(*spec.minimum))) &&
-                       (!spec.maximum || std::isfinite(double(*spec.maximum))) &&
-                       (!spec.minimum || !spec.maximum || *spec.minimum <= *spec.maximum);
-            };
-            if (!validSpec(c.integer) || !validSpec(c.decimal))
+            if (!ValidNumericSpec(c.integer) || !ValidNumericSpec(c.decimal))
                 throw std::invalid_argument("Invalid numeric specification");
             if (c.type == GridValueType::Choice)
             {

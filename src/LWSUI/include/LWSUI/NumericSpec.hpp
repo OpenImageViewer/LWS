@@ -19,11 +19,23 @@ namespace LWSUI
         }();
     };
     template <class T>
+    bool ValidNumericSpec(const NumericSpec<T>& spec)
+    {
+        return std::isfinite(double(spec.step)) && spec.step > 0 &&
+               (!spec.minimum || std::isfinite(double(*spec.minimum))) &&
+               (!spec.maximum || std::isfinite(double(*spec.maximum))) &&
+               (!spec.minimum || !spec.maximum || *spec.minimum <= *spec.maximum);
+    }
+    template <class T>
+    bool ValidNumericValue(T value, const NumericSpec<T>& spec)
+    {
+        return std::isfinite(double(value)) && (!spec.minimum || value >= *spec.minimum) &&
+               (!spec.maximum || value <= *spec.maximum);
+    }
+    template <class T>
     const char* SliderRangeError(const NumericSpec<T>& spec)
     {
-        if (!spec.minimum || !spec.maximum || !std::isfinite(double(*spec.minimum)) ||
-            !std::isfinite(double(*spec.maximum)) || *spec.minimum >= *spec.maximum ||
-            !std::isfinite(double(spec.step)) || spec.step <= 0)
+        if (!spec.minimum || !spec.maximum || !ValidNumericSpec(spec) || *spec.minimum >= *spec.maximum)
             return "Slider presentation requires finite min < max and a positive step";
         if constexpr (std::is_integral_v<T>)
         {

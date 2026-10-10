@@ -1,6 +1,7 @@
 #include <LWSUI/Primitives.hpp>
 #include <LWSUI/UIHost.hpp>
 #include <LWSUI/TextEditing.hpp>
+#include <LWSUI/internal/TextPresentation.hpp>
 #include <LWS/TextClipboard.hpp>
 #include <algorithm>
 #include <cmath>
@@ -11,35 +12,13 @@ namespace LWSUI
         auto b = Bounds();
         const float p = Style().labelPadding;
         const float width = std::max(0.f, b.width - 2 * p);
-        std::string text = text_;
-        if (trimming == TextTrimming::Ellipsis && !wrap && c.Measure(text, Font()) > width)
-        {
-            const std::string dots = "\xe2\x80\xa6";
-            std::vector<size_t> offsets{0};
-            for (size_t at = 0; at < text.size();)
-            {
-                at = NextCharacter(text, at);
-                offsets.push_back(at);
-            }
-            size_t low = 0, high = offsets.size();
-            while (low + 1 < high)
-            {
-                const auto middle = (low + high) / 2;
-                if (c.Measure(text.substr(0, offsets[middle]) + dots, Font()) <= width)
-                    low = middle;
-                else
-                    high = middle;
-            }
-            text = c.Measure(dots, Font()) <= width ? text.substr(0, offsets[low]) + dots : "";
-        }
-        const float height = std::min(std::max(0.f, b.height - 2 * p),
-                                      c.TextHeight(text, std::max(1.f, width), Font(), wrap));
-        const float room = std::max(0.f, b.height - 2 * p - height);
-        const float y = b.y + p +
-                        (verticalAlignment == Alignment::Center ? room / 2
-                         : verticalAlignment == Alignment::End  ? room
-                                                                : 0);
-        DrawText(c, text, b.x + p, y, width, height, Foreground(), wrap);
+        const std::string text = trimming == TextTrimming::Ellipsis && !wrap
+                                     ? internal::EllipsizeText(c, text_, width, Font())
+                                     : text_;
+        const auto textBounds = internal::AlignedTextBounds(
+            c, text, {b.x + p, b.y + p, width, std::max(0.f, b.height - 2 * p)}, Font(),
+            Alignment::Start, verticalAlignment, wrap);
+        DrawText(c, text, textBounds.x, textBounds.y, textBounds.width, textBounds.height, Foreground(), wrap);
     }
     Size Label::OnMeasure(Size available)
     {

@@ -1,6 +1,5 @@
 #include "GridInternals.hpp"
 #include <LWSUI/Composites.hpp>
-#include <LWSUI/internal/NumericText.hpp>
 namespace LWSUI::internal
 {
     class BuiltinGridEditor final : public GridCellEditor
@@ -14,7 +13,7 @@ namespace LWSUI::internal
                 auto& edit = Emplace<NumericEdit<int64_t>>(column.integer);
                 edit.SetValue(std::get<int64_t>(value));
                 field_ = &edit;
-                text_ = static_cast<TextBox*>(edit.Children()[0].get());
+                integerField_ = &edit;
                 integer_ = edit.OnEdit.Connect([this](int64_t, EditPhase p) { NumericEdited(p); });
             }
             else if (column.type == GridValueType::Decimal)
@@ -22,7 +21,7 @@ namespace LWSUI::internal
                 auto& edit = Emplace<NumericEdit<double>>(column.decimal);
                 edit.SetValue(std::get<double>(value));
                 field_ = &edit;
-                text_ = static_cast<TextBox*>(edit.Children()[0].get());
+                decimalField_ = &edit;
                 decimal_ = edit.OnEdit.Connect([this](double, EditPhase p) { NumericEdited(p); });
             }
             else if (column.type == GridValueType::Boolean)
@@ -48,22 +47,12 @@ namespace LWSUI::internal
         }
         std::expected<GridValue, std::string> Draft() const override
         {
+            if (integerField_)
+                return integerField_->Draft().transform([](int64_t value) { return GridValue{value}; });
+            if (decimalField_)
+                return decimalField_->Draft().transform([](double value) { return GridValue{value}; });
             GridValue value;
-            if (column_.type == GridValueType::Integer)
-            {
-                auto parsed = ParseNumericText<int64_t>(text_->Text());
-                if (!parsed)
-                    return std::unexpected("Enter a valid integer");
-                value = *parsed;
-            }
-            else if (column_.type == GridValueType::Decimal)
-            {
-                auto parsed = ParseNumericText<double>(text_->Text());
-                if (!parsed)
-                    return std::unexpected("Enter a valid number");
-                value = *parsed;
-            }
-            else if (checkbox_)
+            if (checkbox_)
                 value = checkbox_->Value();
             else if (combo_)
                 value = combo_->Value();
@@ -75,11 +64,18 @@ namespace LWSUI::internal
         }
         void SetValidation(std::string message) override
         {
-            if (text_)
+            if (integerField_)
+                integerField_->SetValidation(message);
+            else if (decimalField_)
+                decimalField_->SetValidation(message);
+            else if (text_)
                 text_->SetValidation(message);
             SetTooltip(std::move(message));
         }
-        Control& FocusTarget() override { return text_ ? static_cast<Control&>(*text_) : *field_; }
+        Control& FocusTarget() override
+        {
+            return integerField_ ? integerField_->FocusTarget() : decimalField_ ? decimalField_->FocusTarget() : *field_;
+        }
 
       protected:
 
@@ -101,6 +97,8 @@ namespace LWSUI::internal
         GridModelColumn column_;
         Control* field_ = nullptr;
         TextBox* text_ = nullptr;
+        NumericEdit<int64_t>* integerField_ = nullptr;
+        NumericEdit<double>* decimalField_ = nullptr;
         CheckBox* checkbox_ = nullptr;
         ComboBox* combo_ = nullptr;
         Event<void(int64_t, EditPhase)>::Connection integer_;

@@ -1205,4 +1205,33 @@ TEST_CASE("Progress sorting and pinned geometry remain stable during dragging", 
     grid.Arrange({10, 20, 500, 400});
     REQUIRE_FALSE(grid.Editing());
 }
+TEST_CASE("Grid auto-sizing measures the resolved header font", "[ui][grid][reuse][layout]")
+{
+    Environment env;
+    auto theme = env.host->Style();
+    theme.font.size = 12;
+    theme.headingFont.size = 28;
+    env.host->SetTheme(theme);
+    auto grid = std::make_unique<GridView>();
+    auto* view = grid.get();
+    grid->SetModel(std::make_shared<MemoryGridModel>(std::vector<GridModelColumn>{{"name"}}));
+    auto columns = grid->Columns();
+    columns[0].header = "A long header measured in its actual heading font";
+    columns[0].maximumWidth = 2000;
+    grid->SetColumns(columns);
+    env.host->SetRoot(std::move(grid));
+    env.host->Update();
+    REQUIRE(view->AutoSizeColumn("name"));
+    const auto expected = env.host->MeasureText(columns[0].header, 100000, false, theme.headingFont).width +
+                          2 * view->Appearance().headerPadding + 18;
+    REQUIRE(view->Columns()[0].width == Catch::Approx(expected));
+    auto appearance = view->Appearance();
+    appearance.headerFont = FontSpec{18};
+    view->SetAppearance(appearance);
+    REQUIRE(view->AutoSizeColumn("name"));
+    const auto overridden = env.host->MeasureText(columns[0].header, 100000, false, *appearance.headerFont).width +
+                            2 * appearance.headerPadding + 18;
+    REQUIRE(view->Columns()[0].width == Catch::Approx(overridden));
+    REQUIRE(overridden < expected);
+}
 #endif
