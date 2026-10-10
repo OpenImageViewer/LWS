@@ -1234,4 +1234,45 @@ TEST_CASE("Grid auto-sizing measures the resolved header font", "[ui][grid][reus
     REQUIRE(view->Columns()[0].width == Catch::Approx(overridden));
     REQUIRE(overridden < expected);
 }
+TEST_CASE("Grid rechecks read-only state after value-changing callbacks", "[ui][grid][edit][readonly]")
+{
+    for (const bool modelReadOnly : {false, true})
+    {
+        Environment env;
+        auto model = Model();
+        auto grid = std::make_unique<GridView>();
+        auto* view = grid.get();
+        Setup(*view, model);
+        env.host->SetRoot(std::move(grid));
+        env.host->Update();
+        REQUIRE(view->BeginEdit({1, "number"}));
+        static_cast<TextBox&>(view->ActiveEditor()->FocusTarget()).SetText("42");
+        int committed = 0, canceled = 0;
+        auto edits = view->OnEdit.Connect([&](const GridEditEvent& event)
+        {
+            committed += event.phase == EditPhase::Commit;
+            canceled += event.phase == EditPhase::Cancel;
+        });
+        auto veto = view->OnCellValueChanging.Connect([&](GridValueChange& change)
+        {
+            if (change.origin != GridOrigin::User)
+                return;
+            if (modelReadOnly)
+                model->SetCellReadOnly(change.cell, true);
+            else
+            {
+                auto options = view->Options();
+                options.readOnly = true;
+                view->SetOptions(options);
+            }
+        });
+        REQUIRE_FALSE(view->FinishEdit(EditPhase::Commit));
+        REQUIRE_FALSE(view->Editing());
+        REQUIRE(model->Value({1, "number"}) == GridValue{int64_t{12}});
+        REQUIRE(committed == 0);
+        REQUIRE(canceled == 1);
+        REQUIRE(view->SetCellValue({1, "number"}, int64_t{42}, true));
+        REQUIRE(model->Value({1, "number"}) == GridValue{int64_t{42}});
+    }
+}
 #endif

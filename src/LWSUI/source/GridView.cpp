@@ -47,6 +47,8 @@ namespace LWSUI
             owner.OnCellValueChanging.Raise(change);
         if (change.cancel)
             return std::unexpected(change.error.empty() ? "Cell change was rejected" : change.error);
+        if (change.origin == GridOrigin::User && !Editable(change.cell))
+            return std::unexpected("Cell is read-only");
         return {};
     }
     GridStatus GridView::Impl::StoreChange(GridValueChange& change)
@@ -86,8 +88,6 @@ namespace LWSUI
         owner.OnEdit.Raise({cell, *value, EditPhase::Preview});
         GridValueChange change{cell, model->Value(cell), *value, GridOrigin::User};
         auto status = RequestChange(change, true);
-        if (status && !Editable(cell))
-            status = std::unexpected("Cell is read-only");
         if (status)
             status = StoreChange(change);
         if (!status)
@@ -176,8 +176,6 @@ namespace LWSUI
         auto status = RequestChange(change, true);
         if (drag != Drag::Value)
             return false;
-        if (status && !Editable(cell))
-            status = std::unexpected("Cell is read-only");
         if (!status)
         {
             owner.OnValidationFailed.Raise({cell, status.error()});
@@ -780,7 +778,15 @@ namespace LWSUI
             return impl_->Error(draft.error());
         GridValueChange change{impl_->editCell, impl_->model->Value(impl_->editCell), *draft};
         if (auto status = impl_->RequestChange(change, true); !status)
+        {
+            if (!impl_->Editable(impl_->editCell))
+            {
+                const GridEditEvent canceled{impl_->editCell, impl_->editStart, EditPhase::Cancel};
+                impl_->RetireEditor();
+                OnEdit.Raise(canceled);
+            }
             return impl_->Error(status.error());
+        }
         impl_->editor->SetValidation({});
         if (!impl_->editor->Finish(EditPhase::Commit))
             return impl_->Error("Editor could not commit its draft");
