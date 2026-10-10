@@ -1,11 +1,13 @@
 #ifdef LWS_TEST_UI
     #include <catch2/catch_test_macros.hpp>
     #include <catch2/catch_approx.hpp>
+    #include <catch2/generators/catch_generators.hpp>
     #include <LWSUI/Containers.hpp>
     #include <LWSUI/UIHost.hpp>
     #include <algorithm>
     #include <array>
     #include <cmath>
+    #include <functional>
     #include <limits>
     #include <vector>
     #ifdef LWS_HAS_WIN32_BACKEND
@@ -121,7 +123,87 @@ TEST_CASE("Allocation hints survive alternating intrinsic and minimum-width prob
         REQUIRE(item.DesiredSize().height == 90);
     }
 }
+TEST_CASE("Explicit layout changes discard detached allocation corrections", "[ui][resize-jitter][layout]")
+{
+    WidthSensitiveItem item;
+    item.Measure({210.4f, 200});
+    item.Arrange({0, 0, 209.6f, 200});
+    REQUIRE(item.Measure({210.4f, 200}).height == 90);
+    item.Invalidate(true);
+    REQUIRE(item.Measure({210.4f, 200}).height == 40);
+
+    LWSUI::FlowPanel flow;
+    flow.gap = flow.rowGap = 10;
+    auto& child = flow.AddItem(std::make_unique<IntrinsicItem>());
+    flow.AddItem(std::make_unique<IntrinsicItem>());
+    flow.Measure({210.4f, 100});
+    flow.Arrange({0, 0, 209.6f, 100});
+    REQUIRE(flow.DesiredSize().height == 90);
+    child.Invalidate(true);
+    REQUIRE(flow.Measure({210.4f, 100}).height == 40);
+}
+
     #ifdef LWS_HAS_WIN32_BACKEND
+namespace
+{
+    class LayoutChangeProbe final : public LWSUI::Control
+    {
+      public:
+
+        std::function<void()> arranged;
+        int paints = 0;
+
+      protected:
+
+        LWSUI::Size OnMeasure(LWSUI::Size available) override { return {available.width, 60}; }
+        void OnArrange() override
+        {
+            if (arranged)
+                arranged();
+        }
+        void OnRender(LWSUI::Canvas&) override { ++paints; }
+    };
+}  // namespace
+TEST_CASE("Layout changes during arrangement discard earlier width corrections",
+          "[ui][resize-jitter][layout][menu]")
+{
+    REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);
+    LWS::PlatformContext platform;
+    REQUIRE(platform.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::Success);
+    LWS::Window window(platform);
+    REQUIRE(window.Create({.clientSize = {640, 480}, .visible = true}) == LWS::Result::Success);
+    LWSUI::UIHost host(window);
+    const bool liveResize = GENERATE(false, true);
+    host.SetRedrawOnResize(liveResize);
+    auto root = std::make_unique<LayoutChangeProbe>();
+    auto* probe = root.get();
+    host.SetRoot(std::move(root));
+    auto menu = std::make_unique<LWSUI::MenuBar>(
+        std::vector<LWSUI::MenuBarItem>{{"File", {}}, {"Edit", {}}});
+    auto* bar = menu.get();
+    bar->orientation = LWSUI::Orientation::Vertical;
+    host.SetMainMenu(std::move(menu), LWSUI::MenuDock::Left);
+    bool changed = false;
+    probe->arranged = [&]
+    {
+        if (!changed)
+        {
+            changed = true;
+            bar->orientation = LWSUI::Orientation::Horizontal;
+            host.SetMainMenuDock(LWSUI::MenuDock::Floating);
+        }
+    };
+    host.Update();
+    REQUIRE(changed);
+    REQUIRE(probe->paints == 1);
+    REQUIRE(bar->Bounds().width == Catch::Approx(bar->NaturalSpan()));
+    const auto settled = bar->Bounds();
+    host.Invalidate(true);
+    host.Update();
+    REQUIRE(bar->Bounds().width == settled.width);
+    REQUIRE(bar->Bounds().height == settled.height);
+    probe->arranged = {};
+}
 TEST_CASE("Windows UI rendering scale stays at DPI across client-size rounding", "[ui][resize-jitter][dpi]")
 {
     REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);

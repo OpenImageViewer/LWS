@@ -147,6 +147,9 @@ namespace LWSUI
     {
         paintDirty_ = true;
         layoutDirty_ |= layout;
+        // Explicit layout changes also invalidate width corrections made earlier in this update.
+        if (layout)
+            ++layoutGeneration_;
         ScheduleUpdate();
     }
     void UIHost::ScheduleUpdate()
@@ -211,8 +214,8 @@ namespace LWSUI
         if (updating_ || !window_.IsCreated() || !window_.IsVisible())
             return;
         updating_ = true;
-        // Allocation hints belong to this update only. Layout modes and content can change
-        // between updates, while reconciliation passes inside an update share the same hint.
+        // Corrections survive reconciliation passes, but expire on explicit layout changes
+        // and between updates so new content and layout policies are measured afresh.
         ++layoutGeneration_;
         try
         {

@@ -126,8 +126,12 @@ namespace LWSUI
             MeasureCore(requested, measuredContent_);
             // Normal width is already allocated by the parent. Its pixel adjustment alone must
             // not restart layout on every intrinsic/allocated probe. Height and intrinsic demand do.
-            if (before.height != desired_.height || (measuredContent_ && before.width != desired_.width))
-                Invalidate(true);
+            if (host_ && (before.height != desired_.height || (measuredContent_ && before.width != desired_.width)))
+            {
+                // This is reconciliation, not a policy change. Preserve hints for the next pass.
+                host_->layoutDirty_ = true;
+                host_->Invalidate();
+            }
         }
         else if (allocationHint_ && measureRequest_ &&
                  (allocationHint_->requestedWidth != measureRequest_->width || allocationHint_->content != measuredContent_))
@@ -169,6 +173,10 @@ namespace LWSUI
     }
     void Control::Invalidate(bool layout)
     {
+        // Detached trees need the same invalidation semantics without a host generation.
+        if (layout)
+            for (auto* control = this; control; control = control->parent_)
+                control->allocationHint_.reset();
         if (host_)
             host_->Invalidate(layout);
     }
