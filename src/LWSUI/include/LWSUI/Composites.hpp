@@ -1,7 +1,7 @@
 #pragma once
 #include <LWSUI/NumericSpec.hpp>
 #include <LWSUI/Choice.hpp>
-#include <LWSUI/internal/NumericText.hpp>
+#include <LWSUI/internal/NumericMath.hpp>
 #include <LWSUI/Containers.hpp>
 #include <LWSUI/UIHost.hpp>
 #include <LWS/Timer.hpp>
@@ -255,37 +255,9 @@ namespace LWSUI
                 Step(elapsed >= Style().accelerationMs * 2 ? 100 : elapsed >= Style().accelerationMs ? 10 : 1);
             }
         }
-        static int DecimalPlaces(double value) { return internal::NumericDecimalPlaces(value); }
         void Step(int multiplier)
         {
-            T low = spec_.minimum.value_or(std::numeric_limits<T>::lowest()),
-              high = spec_.maximum.value_or(std::numeric_limits<T>::max());
-            int stepPrecision = 0;
-            if constexpr (!std::is_integral_v<T>)
-                stepPrecision = DecimalPlaces(spec_.step);
-            // Repeated bounded addition preserves rounding and int64 precision.
-            for (int i = 0; i < multiplier; ++i)
-            {
-                if (direction_ > 0 ? value_ == high : value_ == low)
-                    break;
-                if constexpr (std::is_integral_v<T>)
-                {
-                    if (direction_ > 0)
-                        value_ = uint64_t(high) - uint64_t(value_) < uint64_t(spec_.step) ? high
-                                                                                          : T(value_ + spec_.step);
-                    else
-                        value_ = uint64_t(value_) - uint64_t(low) < uint64_t(spec_.step) ? low : T(value_ - spec_.step);
-                }
-                else
-                {
-                    const int precision = std::max(DecimalPlaces(value_), stepPrecision);
-                    double next = value_ + direction_ * spec_.step;
-                    const double factor = std::pow(10.0, precision);
-                    if (std::isfinite(factor) && std::abs(next) <= std::numeric_limits<double>::max() / factor)
-                        next = std::round(next * factor) / factor;
-                    value_ = T(std::clamp(next, double(low), double(high)));
-                }
-            }
+            value_ = internal::StepNumericValue(value_, spec_, direction_, multiplier);
             Refresh();
             OnEdit.Raise(value_, EditPhase::Preview);
         }

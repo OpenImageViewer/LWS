@@ -59,13 +59,10 @@ namespace LWSUI
             return std::clamp(
                 (double(value_) - double(*spec_.minimum)) / (double(*spec_.maximum) - double(*spec_.minimum)), 0., 1.);
         }
-        static int DecimalPlaces(double value) { return internal::NumericDecimalPlaces(value); }
         double Rounded(double value, double origin) const
         {
-            const double factor = std::pow(10., std::max(DecimalPlaces(origin), DecimalPlaces(double(spec_.step))));
-            if (std::isfinite(factor) && std::abs(value) <= std::numeric_limits<double>::max() / factor)
-                value = std::round(value * factor) / factor;
-            return std::clamp(value, double(*spec_.minimum), double(*spec_.maximum));
+            return std::clamp(internal::RoundNumericValue(value, origin, internal::NumericDecimalPlaces(spec_.step)),
+                              double(*spec_.minimum), double(*spec_.maximum));
         }
         T FromFraction(double fraction) const
         {
@@ -110,18 +107,11 @@ namespace LWSUI
             if (!number_->Finish(EditPhase::Commit))
                 return;
             T next = value_;
-            for (int i = 0; i < count; ++i)
-                if (normalized_)
+            if (normalized_)
+                for (int i = 0; i < count; ++i)
                     next = T(std::clamp(double(next) + direction * owner_.keyboardStep, 0., 1.));
-                else if constexpr (std::is_integral_v<T>)
-                {
-                    if (direction > 0)
-                        next = *spec_.maximum - next < spec_.step ? *spec_.maximum : next + spec_.step;
-                    else
-                        next = next - *spec_.minimum < spec_.step ? *spec_.minimum : next - spec_.step;
-                }
-                else
-                    next = T(Rounded(next + direction * spec_.step, next));
+            else
+                next = internal::StepNumericValue(next, spec_, direction, count);
             value_ = next;
             Refresh();
             OnEdit.Raise(value_, EditPhase::Commit);

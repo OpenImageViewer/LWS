@@ -3,6 +3,7 @@
     #include <catch2/catch_approx.hpp>
     #include <LWSUI/Composites.hpp>
     #include <LWSUI/internal/ScopedFlag.hpp>
+    #include <LWSUI/internal/NumericMath.hpp>
     #include <LWSUI/internal/ControlTree.hpp>
     #include <LWSUI/internal/TextPresentation.hpp>
     #include <limits>
@@ -159,5 +160,24 @@ TEST_CASE("Shared ancestry membership is inclusive and distinguishes separate tr
     auto detached = branch.Remove(leaf);
     REQUIRE_FALSE(internal::IsWithin(detached.get(), &root));
     REQUIRE(internal::IsWithin(detached.get(), detached.get()));
+}
+TEST_CASE("Shared numeric stepping saturates without losing integer or decimal precision", "[ui][reuse][numeric]")
+{
+    const NumericSpec<int64_t> integer{std::numeric_limits<int64_t>::lowest(), std::numeric_limits<int64_t>::max(), 2};
+    REQUIRE(internal::StepNumericValue(integer.maximum.value() - 1, integer, 1, 100) == integer.maximum);
+    REQUIRE(internal::StepNumericValue(integer.minimum.value() + 1, integer, -1, 100) == integer.minimum);
+    REQUIRE(internal::StepNumericValue(int64_t{9007199254740993}, integer, 1, 1) == int64_t{9007199254740995});
+    REQUIRE(internal::StepNumericValue(int64_t{-1}, integer, 1, 1) == 1);
+    REQUIRE(internal::StepNumericValue(int64_t{1}, integer, -1, 1) == -1);
+    REQUIRE(internal::StepNumericValue(int64_t{17}, integer, 1, 0) == 17);
+    const NumericSpec<double> decimal{-1., 1., .1};
+    REQUIRE(internal::StepNumericValue(0., decimal, 1, 3) == .3);
+    REQUIRE(internal::StepNumericValue(.3, decimal, -1, 3) == 0.);
+    REQUIRE(internal::StepNumericValue(.95, decimal, 1, 1) == 1.);
+    REQUIRE(internal::StepNumericValue(-.95, decimal, -1, 1) == -1.);
+    REQUIRE(internal::StepNumericValue(.125, decimal, 1, 1) == .225);
+    const NumericSpec<double> tiny{0., 1., 1e-6};
+    REQUIRE(internal::StepNumericValue(0., tiny, 1, 100) == .0001);
+    REQUIRE(std::isfinite(internal::RoundNumericValue(1e300, 1e300, 324)));
 }
 #endif
