@@ -151,3 +151,16 @@ The application entry point is `../demo.cpp`. `MenuGallery.cpp` retains the menu
 orientation/detachment demo, while `Showcase.cpp` owns the connected galleries,
 window lifetimes, layout, catalog, and snapshots. `SplitPreview.cpp` implements the private container-only splitter; it has no native window ownership. These helpers are private to the
 demo and are not additional LWSUI public APIs.
+
+## Standalone grid demo
+
+`LWSUIGridDemo` is a separate GUI executable without a Windows console window with nine layout presets and a scrollable
+two-column feature panel to the right of the grid, including single-click editing
+and sticky-header options. In single-click mode, checkboxes toggle and progress
+bars support captured dragging with a live preview and a commit on release.
+The Drag value edits checkbox controls these gestures independently of single-click
+editing. Escape cancels a drag. Every preset explains its purpose. The compact demo
+styles leave reusable control defaults unchanged. See [GridView](../GridView.md) for the full
+configuration and event contract. It shares the ordinary LWSUI library and is
+built under `LWSUI_BUILD_DEMO`. Its `--smoke` and `--snapshot` modes cover all presets.
+`--snapshot-narrow` also verifies the minimum-size two-column configuration panel.

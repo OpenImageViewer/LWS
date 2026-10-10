@@ -645,3 +645,17 @@ integer slider bounds and span must fit within 2^53-1, while ordinary `NumericEd
 keeps its wider integer support. Steps must be positive and bounds finite/distinct.
 `TrackBounds()` excludes the value field; `ValueField()` returns the current visible
 field or null. `ScrollBar` retains its ordinary normalized behavior.
+
+### GridView and standalone grid demo
+
+`LWSUI::GridView` provides typed editable tables, full-row and multiple-row selection,
+column movement/resizing/sorting, both-edge pinned columns and virtual scrolling.
+It supports owned or external models and custom cell renderers/editors.
+See [GridView](src/LWSUI/GridView.md) for configuration, events and model contracts.
+
+Build `LWSUIGridDemo` with `LWSUI_BUILD_DEMO=ON`. A layout ComboBox and right-side
+feature checkboxes exercise nine presets, including a single-column list and a
+million-row external model. Single-click mode commits checkbox toggles and custom
+progress-bar value actions immediately through normal validation and events.
+`--smoke` exercises all presets, while `--snapshot`
+also writes `grid-<preset>.ppm`. Run `LWSTests "[grid]"` for the focused tests.

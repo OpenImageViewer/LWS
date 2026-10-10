@@ -4,6 +4,7 @@
     #include <LWSUI/GridView.hpp>
     #include <LWSUI/Composites.hpp>
     #include <LWSUI/UIHost.hpp>
+    #include "demo/GridDemoPresets.hpp"
     #include <LWS/Platform.hpp>
     #ifdef LWS_HAS_WIN32_BACKEND
         #include <LWS/Win32/Platform.hpp>
@@ -741,6 +742,31 @@ TEST_CASE("Choice popup focus stays inside the grid edit transaction", "[ui][gri
     REQUIRE_FALSE(view->Editing());
     REQUIRE(model->Value({1, "choice"}) == GridValue{std::string("second")});
 }
+TEST_CASE("Demo catalog and compact styles retain all preset purposes", "[ui][grid][demo]")
+{
+    const auto presets = demo::grid::Presets();
+    REQUIRE(presets.size() == 9);
+    for (const auto& preset : presets)
+    {
+        REQUIRE_FALSE(preset.description.empty());
+        REQUIRE_FALSE(preset.choice.value.empty());
+    }
+    REQUIRE(presets[5].options.singleClickEdit);
+    REQUIRE_FALSE(presets[0].options.singleClickEdit);
+    REQUIRE(presets[0].options.rowHeight == 28);
+    REQUIRE(presets[1].options.rowHeight == 24);
+    REQUIRE(GridOptions{}.rowHeight == 34);
+    for (auto preset : {ThemePreset::Dark, ThemePreset::Light, ThemePreset::Warm})
+    {
+        const auto base = demo::grid::CompactTheme(preset), configuration = demo::grid::ConfigurationTheme(base);
+        REQUIRE(base.font.size == 14);
+        REQUIRE(configuration.font.size == 12);
+        REQUIRE(configuration.checkboxSize == 14);
+        REQUIRE(configuration.background == base.background);
+        REQUIRE(configuration.foreground == base.foreground);
+    }
+}
+
 TEST_CASE("Clicking a choice-popup option previews without ending grid editing", "[ui][grid][popup]")
 {
     Environment env;
