@@ -81,4 +81,27 @@ namespace LWSUI
 
         std::vector<std::weak_ptr<Listener>> listeners_;
     };
+
+    // Scoped ownership of heterogeneous subscriptions, independent of control state.
+    class ConnectionSet
+    {
+      public:
+
+        ConnectionSet() = default;
+        ConnectionSet(const ConnectionSet&) = delete;
+        ConnectionSet& operator=(const ConnectionSet&) = delete;
+        ConnectionSet(ConnectionSet&&) noexcept = default;
+        ConnectionSet& operator=(ConnectionSet&&) noexcept = default;
+
+        template <class E, class F>
+        void Connect(E& event, F callback)
+        {
+            connections_.push_back(std::make_shared<typename E::Connection>(event.Connect(std::move(callback))));
+        }
+        void Clear() { connections_.clear(); }
+
+      private:
+
+        std::vector<std::shared_ptr<void>> connections_;
+    };
 }  // namespace LWSUI

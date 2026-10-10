@@ -3,9 +3,9 @@
     #include <catch2/catch_approx.hpp>
     #include <LWSUI/Composites.hpp>
     #include <LWSUI/internal/ScopedFlag.hpp>
-    #include "source/MenuRows.hpp"
-    #include <LWSUI/internal/NumericMath.hpp>
     #include <LWSUI/internal/ControlTree.hpp>
+    #include <LWSUI/internal/NumericMath.hpp>
+    #include "source/MenuRows.hpp"
     #include <LWSUI/internal/TextPresentation.hpp>
     #include <limits>
     #include <stdexcept>
@@ -180,6 +180,37 @@ TEST_CASE("Shared numeric stepping saturates without losing integer or decimal p
     const NumericSpec<double> tiny{0., 1., 1e-6};
     REQUIRE(internal::StepNumericValue(0., tiny, 1, 100) == .0001);
     REQUIRE(std::isfinite(internal::RoundNumericValue(1e300, 1e300, 324)));
+}
+TEST_CASE("Connection collections retain heterogeneous subscriptions and disconnect on clear", "[ui][reuse][event]")
+{
+    Event<void(int)> first;
+    Event<void()> second;
+    int total = 0;
+    ConnectionSet connections;
+    connections.Connect(first, [&](int n) { total += n; });
+    connections.Connect(second, [&] { ++total; });
+    first.Raise(2);
+    second.Raise();
+    REQUIRE(total == 3);
+    auto moved = std::move(connections);
+    connections.Clear();
+    first.Raise(2);
+    REQUIRE(total == 5);
+    moved.Clear();
+    first.Raise(2);
+    second.Raise();
+    REQUIRE(total == 5);
+    {
+        ConnectionSet scoped;
+        scoped.Connect(first, [&](int n) { total += n; });
+        first.Raise(3);
+    }
+    first.Raise(3);
+    REQUIRE(total == 8);
+    moved.Connect(first, [&](int) { moved.Clear(); });
+    moved.Connect(first, [&](int) { ++total; });
+    first.Raise(1);
+    REQUIRE(total == 8);
 }
 namespace
 {

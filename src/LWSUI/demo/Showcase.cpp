@@ -25,27 +25,6 @@ namespace LWSUI::demo
             if (result != LWS::Result::Success)
                 throw std::runtime_error(operation);
         }
-        class ConnectionSet
-        {
-          public:
-
-            ConnectionSet() = default;
-            ConnectionSet(const ConnectionSet&) = delete;
-            ConnectionSet& operator=(const ConnectionSet&) = delete;
-            ConnectionSet(ConnectionSet&&) noexcept = default;
-            ConnectionSet& operator=(ConnectionSet&&) noexcept = default;
-
-            template <class E, class F>
-            void Connect(E& event, F callback)
-            {
-                connections_.push_back(std::make_shared<typename E::Connection>(event.Connect(std::move(callback))));
-            }
-            void Clear() { connections_.clear(); }
-
-          private:
-
-            std::vector<std::shared_ptr<void>> connections_;
-        };
         Label& Text(Container& parent, std::string text, bool heading = false)
         {
             auto& label = parent.Emplace<Label>(std::move(text));
