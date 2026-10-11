@@ -275,6 +275,7 @@ namespace LWSUI::demo
                                            : "Expand this window to show the fixed 240 x 160 pane.");
                 status_->Arrange({b.x + 12, b.y + std::max(0.f, b.height - 38), std::max(0.f, b.width - 24), 34});
             }
+
           private:
 
             Surface &gallery_, &preview_, &fixed_;
@@ -326,7 +327,7 @@ namespace LWSUI::demo
         LWS::PlatformContext& platform;
         UIHost& menuHost;
         PreviewState state;
-        Surface main, controls, gallery, preview, fixed;
+        Surface main, controls, gallery, preview, fixed, events;
         ConnectionSet menuConnections;
         std::vector<Sample> samples;
         std::vector<Label*> sections;
@@ -340,7 +341,7 @@ namespace LWSUI::demo
         CheckBox* quickEnabled = nullptr;
         Slider* quickOpacity = nullptr;
         ThemePreset themePreset = DefaultThemePreset;
-        TextBox *name = nullptr, *notes = nullptr;
+        TextBox *name = nullptr, *notes = nullptr, *eventOutput = nullptr;
         CheckBox* enabled = nullptr;
         Slider *opacity = nullptr, *filled = nullptr;
         NumericEdit<int64_t>* count = nullptr;
@@ -362,6 +363,8 @@ namespace LWSUI::demo
                   "Cannot set gallery background");
             Make(main, "LWSUI / Workspace - resizable", {1100, 760}, nullptr, false, 0);
             Make(controls, "LWSUI / Controls Gallery - resizable", {600, 720}, nullptr, false, 1);
+            Make(events, "LWSUI / Events", {560, 420}, nullptr, false, 2);
+            BuildEvents();
             Make(gallery, "Container Gallery", {360, 380}, main.window.get());
             Make(preview, "Live Preview", {500, 580}, main.window.get());
             Make(fixed, "Fixed Sample", {240, 160}, main.window.get(), true);
@@ -383,6 +386,7 @@ namespace LWSUI::demo
                                                       .doubleClickMaximize = true});
             ListenClose(main, true);
             ListenClose(controls, false);
+            ListenClose(events, false);
             ListenCloseMenu();
 #ifdef LWS_HAS_WIN32_BACKEND
             if (const auto monitor = platform.GetPrimaryMonitor())
@@ -399,6 +403,7 @@ namespace LWSUI::demo
 #endif
             Check(main.window->SetVisible(true), "Cannot show main workspace");
             Check(controls.window->SetVisible(true), "Cannot show controls gallery");
+            Check(events.window->SetVisible(true), "Cannot show event viewer");
             main.host->Update();
             Refresh();
         }
@@ -496,7 +501,7 @@ namespace LWSUI::demo
                                         [this](const std::string& message)
                                         {
                                             failed = true;
-                                            std::cerr << "Showcase: " << message << '\n';
+                                            Log("Error: " + message);
                                         });
         }
         void CloseSurface(Surface& surface, bool primary)
@@ -561,6 +566,7 @@ namespace LWSUI::demo
                 {"&Window",
                  {{"&Controls Gallery", "", action("Controls Gallery")},
                   {"&Menu Gallery", "", action("Menu Gallery")},
+                  {"&Events", "", action("Events")},
                   {"Reset &layout", "", action("Reset layout")},
                   {"&Live resize redraw", "", action("Live resize redraw"), true, liveResize}}},
                 {"&Theme",
@@ -570,19 +576,58 @@ namespace LWSUI::demo
                   {"&Warm", "", [this] { owner.SetTheme(ThemePreset::Warm); }, true, themePreset == ThemePreset::Warm}}},
                 {"&Help", {{"&About this showcase", "", action("About")}}}};
         }
+        void BuildEvents()
+        {
+            auto content = std::make_unique<DockPanel>();
+            content->gap = 8;
+            auto toolbar = std::make_unique<FlowPanel>();
+            auto heading = std::make_unique<Label>("Events / latest 200");
+            heading->fontRole = Control::FontRole::Heading;
+            toolbar->AddItem(std::move(heading), true);
+            auto clear = std::make_unique<Button>("Clear log");
+            clear->sizeToContent = true;
+            events.connections.Connect(clear->OnClick,
+                                       [this]
+                                       {
+                                           history.clear();
+                                           eventOutput->SetText("");
+                                           if (activity)
+                                               activity->SetText("No events yet.");
+                                           if (historyLabel)
+                                               historyLabel->SetText("No events yet.");
+                                       });
+            toolbar->AddItem(std::move(clear));
+            content->AddDocked(std::move(toolbar), Dock::Top);
+            auto viewer = std::make_unique<TextBox>("", TextBoxMode::Multiline);
+            eventOutput = viewer.get();
+            eventOutput->SetReadOnly(true);
+            eventOutput->fontRole = Control::FontRole::Small;
+            eventOutput->SetPlaceholder("Events appear here. Select and copy text, or scroll through the history.");
+            content->AddDocked(std::move(viewer), Dock::Fill);
+            auto frame = std::make_unique<Panel>(std::move(content));
+            frame->padding = Insets{12};
+            events.host->SetRoot(std::move(frame));
+        }
         void Log(const std::string& message)
         {
             history.push_back(message);
-            if (history.size() > 18)
+            if (history.size() > 200)
                 history.erase(history.begin());
-            std::string text;
-            for (auto it = history.rbegin(); it != history.rend(); ++it)
-                text += *it + '\n';
+            std::string recent;
+            size_t count = 0;
+            for (auto it = history.rbegin(); it != history.rend() && count < 18; ++it, ++count)
+                recent += *it + '\n';
             if (activity)
-                activity->SetText(text);
+                activity->SetText(recent);
             if (historyLabel)
-                historyLabel->SetText(text);
-            std::cout << "{\"showcase\":" << std::quoted(message) << "}" << std::endl;
+                historyLabel->SetText(recent);
+            if (eventOutput)
+            {
+                std::string output;
+                for (const auto& entry : history)
+                    output += entry + '\n';
+                eventOutput->SetText(std::move(output));
+            }
         }
         void Refresh()
         {
@@ -625,9 +670,11 @@ namespace LWSUI::demo
         }
         void Command(const std::string& name)
         {
-            if (name == "Controls Gallery" || name == "Menu Gallery")
+            if (name == "Controls Gallery" || name == "Menu Gallery" || name == "Events")
             {
-                auto& target = name == "Controls Gallery" ? *controls.window : menuHost.Window();
+                auto& target = name == "Controls Gallery" ? *controls.window
+                               : name == "Events"         ? *events.window
+                                                          : menuHost.Window();
                 Check(target.SetVisible(true), "Cannot reopen gallery");
                 const auto activated = target.RequestActivation();
                 if (activated != LWS::Result::Success && activated != LWS::Result::NotSupported)
@@ -636,7 +683,7 @@ namespace LWSUI::demo
             else if (name == "Live resize redraw")
             {
                 liveResize = !liveResize;
-                for (auto* surface : {&main, &controls, &gallery, &preview, &fixed})
+                for (auto* surface : {&main, &controls, &gallery, &preview, &fixed, &events})
                     surface->host->SetRedrawOnResize(liveResize);
                 menuHost.SetRedrawOnResize(liveResize);
                 main.host->MainMenu()->SetItems(ApplicationMenus());
@@ -1197,7 +1244,8 @@ namespace LWSUI::demo
                                             state.opacity = value;
                                             Refresh();
                                             if (phase != EditPhase::Preview)
-                                                Log(phase == EditPhase::Cancel ? "Opacity restored" : "Opacity changed");
+                                                Log(phase == EditPhase::Cancel ? "Opacity restored"
+                                                                               : "Opacity changed");
                                         });
             auto& reset = quick->Emplace<Button>("Reset values");
             reset.focusLossPhase = EditPhase::Cancel;
@@ -1258,10 +1306,11 @@ namespace LWSUI::demo
         }
         void Snapshot()
         {
-            for (auto* surface : {&main, &controls, &gallery, &preview, &fixed})
+            for (auto* surface : {&main, &controls, &gallery, &preview, &fixed, &events})
                 surface->host->Update();
             Save(Render(*controls.host), "controls.ppm");
             Save(Render(menuHost), "menu-gallery.ppm");
+            Save(Render(*events.host), "events.ppm");
             const bool preferred = splitPreview->PrefersSideBySide();
             splitPreview->SetSideBySide(true);
             preview.host->Update();
@@ -1331,6 +1380,25 @@ namespace LWSUI::demo
         impl_->samples.push_back({"MenuBar", impl_->main.host->MainMenu()});
     }
     Showcase::~Showcase() = default;
+    void ReportShowcaseError(const std::string& message, bool interactive)
+    {
+#ifdef LWS_HAS_WIN32_BACKEND
+        OutputDebugStringA(("LWSUI showcase: " + message + "\n").c_str());
+        if (interactive)
+            MessageBoxW(nullptr, NativeText(message).c_str(), L"LWSUI showcase", MB_OK | MB_ICONERROR);
+#else
+        std::cerr << "LWSUI showcase: " << message << '\n';
+        (void) interactive;
+#endif
+    }
+    void Showcase::Log(std::string message)
+    {
+        impl_->Log(message);
+    }
+    UIHost& Showcase::EventsHost() const
+    {
+        return *impl_->events.host;
+    }
     void Showcase::Command(std::string name)
     {
         impl_->Command(name);
@@ -1388,8 +1456,8 @@ namespace LWSUI::demo
                 result = false;
 #endif
         }
-        std::cout << "Showcase verification: " << Samples().size() << " catalog entries, "
-                  << (result ? "passed" : "FAILED") << std::endl;
+        impl_->Log("Showcase verification: " + std::to_string(Samples().size()) + " catalog entries, " +
+                   (result ? "passed" : "FAILED"));
         return result;
     }
 }  // namespace LWSUI::demo

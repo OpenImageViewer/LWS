@@ -12,6 +12,7 @@ namespace LWSUI::demo
     class SplitPreview;
 
     int RunShowcase(int argc, char** argv);
+    void ReportShowcaseError(const std::string& message, bool interactive);
 
     struct Sample
     {
@@ -28,6 +29,8 @@ namespace LWSUI::demo
         Showcase(const Showcase&) = delete;
         Showcase& operator=(const Showcase&) = delete;
         void Command(std::string name);
+        void Log(std::string message);
+        UIHost& EventsHost() const;
         void SetTheme(ThemePreset preset);
         void Reset();
         void Snapshot();

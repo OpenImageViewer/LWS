@@ -42,6 +42,40 @@ TEST_CASE("Showcase catalog binds every public control to the connected demo", "
     };
     pump();
     REQUIRE(showcase.Verify());
+    auto& events = showcase.EventsHost();
+    REQUIRE(events.Window().IsVisible());
+    std::vector<LWSUI::TextBox*> outputFields;
+    LWSUI::Button* clearOutput = nullptr;
+    const auto inspectEvents = [&](auto&& self, LWSUI::Control& control) -> void
+    {
+        if (auto* field = dynamic_cast<LWSUI::TextBox*>(&control))
+            outputFields.push_back(field);
+        if (auto* button = dynamic_cast<LWSUI::Button*>(&control); button && button->Text() == "Clear log")
+            clearOutput = button;
+        if (auto* container = dynamic_cast<LWSUI::Container*>(&control))
+            for (auto& child : container->Children())
+                self(self, *child);
+    };
+    inspectEvents(inspectEvents, *events.Root());
+    REQUIRE(outputFields.size() == 1);
+    REQUIRE(clearOutput != nullptr);
+    auto& output = *outputFields.front();
+    REQUIRE(output.Mode() == LWSUI::TextBoxMode::Multiline);
+    showcase.Log("Event viewer test");
+    REQUIRE(output.Text().find("Event viewer test") != std::string::npos);
+    const auto retainedOutput = output.Text();
+    REQUIRE(output.Dispatch({.kind = LWSUI::InputKind::Text, .text = "ignored"}));
+    REQUIRE(output.Text() == retainedOutput);
+    for (int i = 0; i < 205; ++i)
+        showcase.Log("Bounded event " + std::to_string(i));
+    REQUIRE(output.Text().find("Bounded event 0\n") == std::string::npos);
+    REQUIRE(output.Text().find("Bounded event 204") != std::string::npos);
+    clearOutput->OnClick.Raise();
+    REQUIRE(output.Text().empty());
+    REQUIRE(events.Window().SetVisible(false) == LWS::Result::Success);
+    showcase.Command("Events");
+    REQUIRE(events.Window().IsVisible());
+
     REQUIRE(showcase.MainWindow().GetWindowStyles() == LWS::WindowStyle::ResizableBorder);
     #ifdef LWS_HAS_WIN32_BACKEND
     REQUIRE((GetWindowLongW(*LWS::Win32::GetHwnd(showcase.MainWindow()), GWL_STYLE) & WS_CAPTION) == 0);
@@ -152,7 +186,8 @@ TEST_CASE("Showcase catalog binds every public control to the connected demo", "
         if (auto* text = dynamic_cast<LWSUI::TextBox*>(&control); text && text->Mode() == LWSUI::TextBoxMode::Multiline)
             notes = text;
         if (auto* container = dynamic_cast<LWSUI::Container*>(&control))
-            for (auto& child : container->Children()) self(self, *child);
+            for (auto& child : container->Children())
+                self(self, *child);
     };
     findNotes(findNotes, *find("TextBox")->Host()->Root());
     REQUIRE(notes != nullptr);

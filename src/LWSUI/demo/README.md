@@ -171,4 +171,16 @@ The Text section also demonstrates [TextBox filtering and fixed masks](../TextIn
 
 Controls Gallery groups examples into bordered cards with a name, description, control, and related feedback. Ordinary input fields have visible frames. The Borderless example deliberately omits its field frame. The Input policies category contains eight filtering and mask examples. Navigation buttons wrap at narrow widths, and card borders follow the selected theme.
 
+## Simple example and events
+
+LWSUISimpleExample starts in Light theme at 420 x 640 logical pixels, with a 320 x 480 minimum. On Windows it uses the GUI subsystem and opens without a console window. The upper area contains two multiline editors, the name field, greeting, and Clear button. A draggable divider separates the bottom Events pane.
+
+The Events pane displays the latest 200 entries in chronological order. It records textbox preview, commit, and cancel events, divider edits, Clear clicks, and window show, resize, and close events. New entries reveal themselves without moving keyboard focus. The read-only viewer supports selection, copy, and scrolling. Clear log empties the event history without resetting the example controls.
+
+Fatal Windows errors appear in a dialog and return a nonzero exit status. The --smoke option checks events, editing, clearing, resizing, and the default theme, then exits. Smoke failures use exit status without a dialog.
+
 Gallery snapshots also include controls-light.ppm, controls-dark.ppm, controls-warm.ppm and catalog-THEME-N.ppm pages for each theme.
+
+## Showcase output
+
+LWSUIDemo uses the Windows GUI subsystem and does not create a console. Its dedicated Events window displays the latest 200 output entries in chronological order, with selection, copy, scrolling, and Clear log. Closing the Events window hides it. Window > Events reopens it with its retained history. The existing Activity and Menu Gallery summaries show the latest 18 entries from the same history. Fatal startup errors use a Windows dialog, while smoke runs return a failure status without showing a dialog.

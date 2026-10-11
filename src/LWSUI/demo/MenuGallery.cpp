@@ -14,9 +14,6 @@
 #endif
 int LWSUI::demo::RunShowcase(int argc, char** argv)
 {
-#ifdef _WIN32
-    SetConsoleOutputCP(CP_UTF8);
-#endif
     bool smoke = false, snapshot = false, narrow = false;
     for (int i = 1; i < argc; ++i)
     {
@@ -27,7 +24,7 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
     }
 #ifdef LWS_HAS_WIN32_BACKEND
     if (LWS::Win32::BootstrapProcess() != LWS::Result::Success)
-        return 1;
+        throw std::runtime_error("Cannot initialize the Windows process");
 #endif
     LWS::PlatformContext platform;
     const LWS::PlatformConfig platformConfig{
@@ -38,7 +35,7 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
 #endif
     };
     if (platform.Init(platformConfig) != LWS::Result::Success)
-        return 1;
+        throw std::runtime_error("Cannot initialize the showcase platform");
     LWS::Window window(platform);
     LWS::WindowConfig config;
     config.title = LWSUI::NativeText("LWSUI / Menu Gallery - fixed size");
@@ -48,7 +45,7 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
     config.backgroundColor = LWSUI::MakeTheme(DefaultThemePreset).background;
     config.styles = LWS::WindowStyle::Caption | LWS::WindowStyle::CloseButton;
     if (window.Create(config) != LWS::Result::Success)
-        return 2;
+        throw std::runtime_error("Cannot create the menu gallery");
     struct MenuDragState
     {
         bool armed = false, dragging = false;
@@ -247,7 +244,7 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
             items.insert(items.begin(), {"⠿", {}, false});
         return items;
     };
-    refresh = [&host, &detached, &menuState, &buildItems]
+    refresh = [&host, &detached, &menuState, &buildItems, &showcase]
     {
         if (auto* bar = host.MainMenu())
             bar->SetItems(buildItems(menuState));
@@ -264,7 +261,7 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
                                                      : LWS::LogicalSize{int32_t(span + clientPadding),
                                                                         int32_t(thickness + clientPadding)}});
                 if (resized != LWS::Result::Success)
-                    std::cerr << "Cannot resize detached menu window" << std::endl;
+                    showcase.Log("Error: Cannot resize detached menu window");
             }
     };
     host.SetMainMenu(std::make_unique<LWSUI::MenuBar>(buildItems(menuState)), menuState.dock);
@@ -309,7 +306,7 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
                         detachedConfig.backgroundColor = LWSUI::MakeTheme(menuState.preset).background;
                         if (candidate->window->Create(detachedConfig) != LWS::Result::Success)
                         {
-                            std::cerr << "Cannot create detached menu window" << std::endl;
+                            showcase.Log("Error: Cannot create detached menu window");
                             return;
                         }
                         auto* detachedWindow = candidate->window.get();
@@ -331,7 +328,7 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
                             });
                         if (!dragListener)
                         {
-                            std::cerr << "Cannot listen for detached menu dragging" << std::endl;
+                            showcase.Log("Error: Cannot listen for detached menu dragging");
                             return;
                         }
                         candidate->dragListener = std::move(*dragListener);
@@ -355,7 +352,7 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
                         if (resized != LWS::Result::Success)
                         {
                             menuState.detached = false;
-                            std::cerr << "Cannot size detached menu window" << std::endl;
+                            showcase.Log("Error: Cannot size detached menu window");
                             return;
                         }
                         auto closeListener = detachedWindow->Listen(
@@ -371,14 +368,14 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
                         if (!closeListener)
                         {
                             menuState.detached = false;
-                            std::cerr << "Cannot listen to detached menu window" << std::endl;
+                            showcase.Log("Error: Cannot listen to detached menu window");
                             return;
                         }
                         candidate->closeListener = std::move(*closeListener);
                         if (detachedWindow->SetVisible(true) != LWS::Result::Success)
                         {
                             menuState.detached = false;
-                            std::cerr << "Cannot show detached menu window" << std::endl;
+                            showcase.Log("Error: Cannot show detached menu window");
                             return;
                         }
                         detached = std::move(candidate);
@@ -401,12 +398,10 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
                 }) != LWS::Result::Success)
         {
             transitionPending = false;
-            std::cerr << "Cannot schedule menu window transition" << std::endl;
+            showcase.Log("Error: Cannot schedule menu window transition");
         }
     };
-    std::cout << "LWSUI controls: menu bar via Alt/F10; right-click text or Enable feature for commands; "
-                 "Shift+F10 also opens a menu. Changes are printed below."
-              << std::endl;
+    showcase.Log("Use Alt/F10 for the menu bar and Shift+F10 for context menus. Output is shown in the Events window.");
     LWS::HighPrecisionTimer smokeExit(platform, [&] { platform.RequestQuit(); });
     if (smoke || snapshot)
     {
@@ -415,7 +410,10 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
         smokeExit.Enable(true);
     }
     if (platform.RunMessageLoop() == LWS::LoopResult::Failed)
+    {
+        ReportShowcaseError("Message loop failed", !(smoke || snapshot));
         return 3;
+    }
     if (snapshot)
         showcase.Snapshot();
     if ((smoke || snapshot) && !showcase.Verify())
