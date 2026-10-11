@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 26)
 
 option(LWS_BUILD_EXAMPLES "Build LWS example executable" ${PROJECT_IS_TOP_LEVEL})
 option(LWS_BUILD_TESTS "Build LWS tests" ${PROJECT_IS_TOP_LEVEL})
+option(LWS_BUILD_SHARED "Build LWSLib as a shared library" OFF)
 
 if(NOT TARGET LLUtils::LLUtils)
   add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/external/LLUtils")
@@ -141,7 +142,7 @@ function(lws_configure_target target)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# LWS library (static) — shared between main exe and tests
+# LWS library used by the main executable and tests
 # ---------------------------------------------------------------------------
 file(GLOB_RECURSE lwsLibSources
     "./src/LWS/source/*.cpp"
@@ -158,7 +159,13 @@ elseif(LWS_PLATFORM_X11)
   list(FILTER lwsLibSources EXCLUDE REGEX ".*/Wayland/.*")
 endif()
 
-add_library(LWSLib STATIC ${lwsLibSources})
+if(LWS_BUILD_SHARED)
+  add_library(LWSLib SHARED ${lwsLibSources})
+  # Export the compiled API on Windows without changing the public headers.
+  set_target_properties(LWSLib PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+else()
+  add_library(LWSLib STATIC ${lwsLibSources})
+endif()
 if(LWS_PLATFORM_WAYLAND)
   target_sources(LWSLib PRIVATE
       "${LWS_XDG_SHELL_HEADER}"

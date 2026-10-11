@@ -25,6 +25,12 @@ ctest --test-dir build --output-on-failure
 
 Embed LWS with `add_subdirectory` and link `LWSLib`.
 
+`LWSLib` is static by default. Set `-DLWS_BUILD_SHARED=ON` to build a shared library
+(`LWSLib.dll` and its import library on Windows). The target name and include paths
+stay the same. Windows builds export the compiled API automatically. `LWSUI` keeps
+its existing static-library configuration. Deploy the shared library alongside the
+application, or place it on the platform's library search path.
+
 ## Quick start
 
 ```cpp
