@@ -242,10 +242,18 @@ if(LWS_BUILD_TESTS)
 
     if(LWS_PLATFORM_WAYLAND)
       target_include_directories(LWSTests PRIVATE "${LWS_WAYLAND_GENERATED_DIR}")
-      target_link_libraries(LWSTests PRIVATE PkgConfig::TextInput)
+      target_link_libraries(LWSTests PRIVATE Wayland::Client PkgConfig::TextInput)
       pkg_check_modules(WaylandServer QUIET IMPORTED_TARGET wayland-server)
       if(TARGET PkgConfig::WaylandServer)
         target_link_libraries(LWSTests PRIVATE PkgConfig::WaylandServer)
+        # Fixtures need their own protocol definitions because the library hides them.
+        target_sources(LWSTests PRIVATE
+            "${LWS_XDG_SHELL_SOURCE}"
+            "${LWS_FRACTIONAL_SCALE_SOURCE}"
+            "${LWS_VIEWPORTER_SOURCE}"
+            "${LWS_POINTER_CONSTRAINTS_SOURCE}"
+            "${LWS_RELATIVE_POINTER_SOURCE}"
+        )
         target_compile_definitions(LWSTests PRIVATE LWS_TEST_WAYLAND_SERVER)
         target_include_directories(LWSTests PRIVATE "${LWS_WAYLAND_GENERATED_DIR}")
         foreach(protocol XDG_SHELL FRACTIONAL_SCALE VIEWPORTER)
