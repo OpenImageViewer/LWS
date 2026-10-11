@@ -181,6 +181,8 @@ Fatal Windows errors appear in a dialog and return a nonzero exit status. The --
 
 Gallery snapshots also include controls-light.ppm, controls-dark.ppm, controls-warm.ppm and catalog-THEME-N.ppm pages for each theme.
 
-## Showcase output
+## Showcase output and network launch
 
 LWSUIDemo uses the Windows GUI subsystem and does not create a console. Its dedicated Events window displays the latest 200 output entries in chronological order, with selection, copy, scrolling, and Clear log. Closing the Events window hides it. Window > Events reopens it with its retained history. The existing Activity and Menu Gallery summaries show the latest 18 entries from the same history. Fatal startup errors use a Windows dialog, while smoke runs return a failure status without showing a dialog.
+
+The GridDemo smoke check exercises native Win32 mouse messages, including checkbox clicks and progress dragging. It can be launched from a local path or a UNC path to check network execution. The UI demos use normal Windows image-loading behavior without a special network-loader flag.

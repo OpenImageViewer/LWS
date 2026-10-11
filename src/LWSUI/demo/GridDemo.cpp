@@ -2,6 +2,7 @@
 #include <LWS/Timer.hpp>
 #ifdef LWS_HAS_WIN32_BACKEND
     #include <LWS/Win32/Platform.hpp>
+    #include <LWS/Win32/WindowExtensions.hpp>
 #endif
 #include <LWSUI/GridView.hpp>
 #include "GridDemoPresets.hpp"
@@ -601,6 +602,29 @@ int main(int argc, char** argv)
                     timer->SetInterval(0);
                     try
                     {
+                        bool pointerDown = false;
+                        const auto pointer = [&](Input input)
+                        {
+#ifdef LWS_HAS_WIN32_BACKEND
+                            const auto hwnd = LWS::Win32::GetHwnd(window);
+                            if (!hwnd)
+                                throw std::runtime_error("Cannot obtain native smoke window");
+                            const auto scale = host.DrawingScale().value_or(LWS::ContentScale{1, 1});
+                            if (input.kind == InputKind::Down)
+                                pointerDown = true;
+                            if (input.kind == InputKind::Up)
+                                pointerDown = false;
+                            const auto position = MAKELPARAM(int(std::lround(input.x * scale.x)),
+                                                             int(std::lround(input.y * scale.y)));
+                            const UINT message = input.kind == InputKind::Down ? WM_LBUTTONDOWN
+                                                 : input.kind == InputKind::Up ? WM_LBUTTONUP
+                                                                               : WM_MOUSEMOVE;
+                            SendMessageW(*hwnd, message, pointerDown ? MK_LBUTTON : 0, position);
+#else
+                            (void) pointerDown;
+                            host.Route(input);
+#endif
+                        };
                         for (const auto& item : presets)
                         {
                             applyPreset(item.choice.value);
@@ -615,8 +639,8 @@ int main(int argc, char** argv)
                                     toggles,
                                     [](const auto& toggle) { return toggle.member == &GridOptions::singleClickEdit; });
                                 const auto box = mode->control->Bounds();
-                                host.Route({.kind = InputKind::Down, .x = box.x + 8, .y = box.y + box.height / 2});
-                                host.Route({.kind = InputKind::Up, .x = box.x + 8, .y = box.y + box.height / 2});
+                                pointer({.kind = InputKind::Down, .x = box.x + 8, .y = box.y + box.height / 2});
+                                pointer({.kind = InputKind::Up, .x = box.x + 8, .y = box.y + box.height / 2});
                                 if (!grid->Options().singleClickEdit)
                                     throw std::runtime_error("Runtime single-click toggle did not apply");
                                 for (const std::string column : {"enabled", "progress"})
@@ -636,16 +660,16 @@ int main(int argc, char** argv)
                                     if (!bounds)
                                         throw std::runtime_error("Click-action cell is not visible");
                                     const float x = bounds->x + bounds->width / 2, y = bounds->y + bounds->height / 2;
-                                    host.Route({.kind = InputKind::Down, .x = x, .y = y});
+                                    pointer({.kind = InputKind::Down, .x = x, .y = y});
                                     if (column == "progress")
                                     {
-                                        host.Route({.kind = InputKind::Move, .x = x - 25, .y = y + 2 * bounds->height});
-                                        host.Route({.kind = InputKind::Move, .x = x + 7, .y = y});
+                                        pointer({.kind = InputKind::Move, .x = x - 25, .y = y + 2 * bounds->height});
+                                        pointer({.kind = InputKind::Move, .x = x + 7, .y = y});
                                         if (grid->Model()->Value(cell) != original || !grid->Editing())
                                             throw std::runtime_error(
                                                 "Progress drag did not retain its preview transaction");
                                     }
-                                    host.Route({.kind = InputKind::Up, .x = column == "progress" ? x + 7 : x, .y = y});
+                                    pointer({.kind = InputKind::Up, .x = column == "progress" ? x + 7 : x, .y = y});
                                     const GridValue expected = column == "enabled"
                                                                    ? GridValue{!std::get<bool>(original)}
                                                                    : GridValue{.55};
