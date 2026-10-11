@@ -100,6 +100,7 @@ namespace LWSUI::internal
 
       private:
 
+        // TODO: Document Level destruction order and deferred cleanup after input dispatch.
         struct Level
         {
             std::unique_ptr<LWS::Window> window;

@@ -69,18 +69,21 @@ namespace LWSUI
         bool stretch = false;
         /// Draw a frame around the bar; set by the host for the floating dock.
         bool floating = false;
-        /// Explicit main-axis span; 0 keeps the natural span or the docked fill.
+        /// Explicit width when horizontal or height when vertical. 0 uses the natural span or docked fill.
+        /// Min/max bounds apply afterward, and available space takes precedence.
         void SetSpan(float span)
         {
             span_ = std::max(0.f, span);
             Invalidate(true);
         }
         float Span() const { return span_; }
+        /// Minimum span along the current orientation. 0 disables the bound. Available space takes precedence.
         void SetMinSpan(float span)
         {
             minSpan_ = std::max(0.f, span);
             Invalidate(true);
         }
+        /// Maximum span along the current orientation. 0 disables the bound. Available space takes precedence.
         void SetMaxSpan(float span)
         {
             maxSpan_ = std::max(0.f, span);

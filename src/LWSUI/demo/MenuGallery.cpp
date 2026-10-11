@@ -137,6 +137,8 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
         LWS::EventConnection dragListener;
         LWS::EventConnection closeListener;
     };
+    constexpr float kDetachedPadding = 8.f;
+    constexpr float kDetachedExtra = 64.f;
     MenuState menuState;
     std::unique_ptr<DetachedMenu> detached;
     auto lifetime = std::make_shared<int>(0);
@@ -254,12 +256,11 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
                 bar->SetItems(buildItems(menuState));
                 const float span = bar->NaturalSpan();
                 const float thickness = bar->Thickness();
-                constexpr float clientPadding = 8.f;
                 const auto resized = detached->window->RequestPlacement(LWS::WindowPlacementRequest{
-                    .clientSize = menuState.vertical ? LWS::LogicalSize{int32_t(thickness + clientPadding),
-                                                                        int32_t(span + clientPadding)}
-                                                     : LWS::LogicalSize{int32_t(span + clientPadding),
-                                                                        int32_t(thickness + clientPadding)}});
+                    .clientSize = menuState.vertical ? LWS::LogicalSize{int32_t(thickness + kDetachedPadding),
+                                                                        int32_t(span + kDetachedPadding)}
+                                                     : LWS::LogicalSize{int32_t(span + kDetachedPadding),
+                                                                        int32_t(thickness + kDetachedPadding)}});
                 if (resized != LWS::Result::Success)
                     showcase.Log("Error: Cannot resize detached menu window");
             }
@@ -298,10 +299,11 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
                         candidate->window = std::make_unique<LWS::Window>(platform);
                         LWS::WindowConfig detachedConfig;
                         detachedConfig.title = LWSUI::NativeText("");
-                        detachedConfig.clientSize = menuState.vertical ? LWS::LogicalSize{int32_t(thickness + 8.f),
-                                                                                          int32_t(span + 64.f)}
-                                                                       : LWS::LogicalSize{int32_t(span + 64.f),
-                                                                                          int32_t(thickness + 8.f)};
+                        detachedConfig.clientSize = menuState.vertical
+                                                        ? LWS::LogicalSize{int32_t(thickness + kDetachedPadding),
+                                                                           int32_t(span + kDetachedExtra)}
+                                                        : LWS::LogicalSize{int32_t(span + kDetachedExtra),
+                                                                           int32_t(thickness + kDetachedPadding)};
                         detachedConfig.styles = LWS::WindowStyle::NoStyle;
                         detachedConfig.backgroundColor = LWSUI::MakeTheme(menuState.preset).background;
                         if (candidate->window->Create(detachedConfig) != LWS::Result::Success)
@@ -342,13 +344,12 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
                         const auto* detachedBar = candidate->host->MainMenu();
                         const float detachedSpan = detachedBar->NaturalSpan();
                         const float detachedThickness = detachedBar->Thickness();
-                        constexpr float clientPadding = 8.f;
                         const auto resized = detachedWindow->RequestPlacement(LWS::WindowPlacementRequest{
                             .clientSize = menuState.vertical
-                                              ? LWS::LogicalSize{int32_t(detachedThickness + clientPadding),
-                                                                 int32_t(detachedSpan + clientPadding)}
-                                              : LWS::LogicalSize{int32_t(detachedSpan + clientPadding),
-                                                                 int32_t(detachedThickness + clientPadding)}});
+                                              ? LWS::LogicalSize{int32_t(detachedThickness + kDetachedPadding),
+                                                                 int32_t(detachedSpan + kDetachedPadding)}
+                                              : LWS::LogicalSize{int32_t(detachedSpan + kDetachedPadding),
+                                                                 int32_t(detachedThickness + kDetachedPadding)}});
                         if (resized != LWS::Result::Success)
                         {
                             menuState.detached = false;
