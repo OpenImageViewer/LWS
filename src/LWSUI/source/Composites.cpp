@@ -206,6 +206,7 @@ namespace LWSUI
         columns = {-1, Style().swatchWidth};
         spacing = Style().swatchGap;
         text_ = &Emplace<TextBox>();
+        text_->SetInputFilter(InputFilters::Hexadecimal(true));
         swatch_ = &Emplace<ColorSwatch>();
         open_ = swatch_->OnClick.Connect([this] { Open(); });
         textConnection_ = text_->OnEdit.Connect(

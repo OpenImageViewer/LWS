@@ -1,5 +1,7 @@
 #pragma once
 #include <LWSUI/Control.hpp>
+#include <LWSUI/TextInput.hpp>
+#include <LWSUI/internal/InputMask.hpp>
 #include <cstdint>
 namespace LWS
 {
@@ -204,7 +206,13 @@ namespace LWSUI
                 Invalidate();
             }
         }
-        const std::string& Text() const { return text_; }
+        const std::string& Text() const { return mask_ ? value_ : text_; }
+        void SetInputFilter(InputFilter filter);
+        std::expected<void, std::string> SetInputMask(std::string_view pattern);
+        std::string UnmaskedText() const;
+        bool MaskComplete() const;
+        const std::string& InputError() const { return inputError_; }
+        LWSUI::Event<void(const std::string&)> OnInputRejected;
         void SetPlaceholder(std::string text)
         {
             placeholder_ = std::move(text);
@@ -246,7 +254,10 @@ namespace LWSUI
         void SetScrollOffset(float offset);
         void StopSelecting();
         void SelectPointer(float x, float y);
-        void Replace(std::string text);
+        bool Replace(std::string text, TextEditOrigin origin = TextEditOrigin::Typing, size_t first = std::string::npos,
+                     size_t last = std::string::npos, bool cut = false);
+        void RefreshValue();
+        bool Reject(std::string message);
         const TextBoxMode mode_;
         unsigned visibleLines_ = 4;
         ScrollBar* scrollbar_ = nullptr;
@@ -259,7 +270,9 @@ namespace LWSUI
         std::optional<float> preferredX_;
         float scrollY_ = 0, contentHeight_ = 0, geometryGutter_ = 0, pointerX_ = 0, pointerY_ = 0;
         bool caretUpstream_ = false;
-        std::string text_, committed_, validation_, placeholder_;
+        std::string text_, committed_, validation_, placeholder_, value_, inputError_;
+        InputFilter filter_;
+        std::optional<internal::InputMask> mask_;
         size_t caret_ = 0, anchor_ = 0;
         uint64_t pasteGeneration_ = 0;
         float scroll_ = 0;
@@ -348,7 +361,12 @@ namespace LWSUI
 
         void SetOrientation(Orientation value)
         {
-            if (orientation_ != value) { Finish(EditPhase::Cancel); orientation_ = value; Invalidate(true); }
+            if (orientation_ != value)
+            {
+                Finish(EditPhase::Cancel);
+                orientation_ = value;
+                Invalidate(true);
+            }
         }
         Orientation GetOrientation() const { return orientation_; }
         void SetPage(double page)

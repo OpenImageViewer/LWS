@@ -317,6 +317,7 @@ namespace LWSUI::internal
                 sliders_[i]->filled = true;
                 sliders_[i]->keyboardStep = 1. / Maximum(i);
                 values_[i] = &Emplace<TextBox>();
+                values_[i]->SetInputFilter(InputFilters::Number(i < 4, false, false));
                 values_[i]->fontRole = FontRole::Small;
                 units_[i] = &Emplace<Label>(i == 4 ? "°" : i > 4 ? "%" : "");
                 units_[i]->fontRole = FontRole::Small;
@@ -344,6 +345,7 @@ namespace LWSUI::internal
             newLabel_ = &Emplace<Label>("New");
             originalLabel_->fontRole = newLabel_->fontRole = FontRole::Small;
             hex_ = &Emplace<TextBox>();
+            hex_->SetInputFilter(InputFilters::Hexadecimal(true));
             hex_->SetPlaceholder("#RRGGBBAA");
             hexEdit_ = hex_->OnEdit.Connect(
                 [this](const std::string& text, EditPhase phase)

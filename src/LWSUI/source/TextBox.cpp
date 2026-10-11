@@ -64,9 +64,15 @@ namespace LWSUI
         if (!Host() || caret_ == anchor_ || (cut && readOnly_))
             return;
         const auto first = std::min(caret_, anchor_);
-        const auto selected = std::string_view(text_).substr(first, std::max(caret_, anchor_) - first);
-        if (LWS::SetClipboardText(Host()->Window(), selected) == LWS::ClipboardResult::Success && cut)
-            Replace({});
+        if (cut)
+            Replace({}, TextEditOrigin::Cut, first, std::max(caret_, anchor_), true);
+        else
+        {
+            auto selected = text_.substr(first, std::max(caret_, anchor_) - first);
+            if (mask_)
+                std::erase(selected, '_');
+            LWS::SetClipboardText(Host()->Window(), selected);
+        }
     }
     void TextBox::Paste()
     {
@@ -80,7 +86,7 @@ namespace LWSUI
                                       if (control && !control->readOnly_ && result == LWS::ClipboardResult::Success &&
                                           control->pasteGeneration_ == generation && control->Host() &&
                                           control->Host()->IsFocused(*control))
-                                          control->Replace(std::move(text));
+                                          control->Replace(std::move(text), TextEditOrigin::Paste);
                                   });
     }
     std::vector<ContextMenuItem> TextBox::TextMenu(const ContextMenuRequest& request)
@@ -117,15 +123,24 @@ namespace LWSUI
     }
     void TextBox::SetText(std::string value)
     {
+        if (mask_)
+        {
+            auto formatted = mask_->Format(value);
+            if (!formatted)
+                return;
+            value = std::move(*formatted);
+        }
         ++pasteGeneration_;
         StopSelecting();
         text_ = committed_ = mode_ == TextBoxMode::Multiline ? MultilineText(value) : std::move(value);
         caretUpstream_ = false;
         preferredX_.reset();
-        caret_ = anchor_ = text_.size();
+        caret_ = anchor_ = mask_ && text_.find('_') != text_.npos ? mask_->Next(text_.find('_')) : text_.size();
         editing_ = false;
         selecting_ = false;
         validation_.clear();
+        inputError_.clear();
+        RefreshValue();
         geometryDirty_ = true;
         UpdateGeometry(true);
         Invalidate();
@@ -200,27 +215,111 @@ namespace LWSUI
         if (caret < scroll_)
             scroll_ = caret;
     }
-    void TextBox::Replace(std::string text)
+    void TextBox::SetInputFilter(InputFilter filter)
+    {
+        ++pasteGeneration_;
+        filter_ = std::move(filter);
+        inputError_.clear();
+        Invalidate();
+    }
+    std::expected<void, std::string> TextBox::SetInputMask(std::string_view pattern)
+    {
+        if (mode_ != TextBoxMode::SingleLine)
+            return std::unexpected("Masks require a single-line TextBox");
+        auto parsed = internal::InputMask::Parse(pattern);
+        if (!parsed)
+            return std::unexpected(parsed.error());
+        auto formatted = pattern.empty() ? std::expected<std::string, std::string>(Text()) : parsed->Format(Text());
+        if (!formatted)
+            return std::unexpected(formatted.error());
+        mask_ = pattern.empty() ? std::nullopt : std::optional(std::move(*parsed));
+        // The assignment below already holds a formatted display, including empty slots.
+        ++pasteGeneration_;
+        StopSelecting();
+        text_ = committed_ = std::move(*formatted);
+        RefreshValue();
+        caret_ = anchor_ = mask_ ? mask_->Next(0) : text_.size();
+        editing_ = false;
+        validation_.clear();
+        inputError_.clear();
+        geometryDirty_ = true;
+        UpdateGeometry(true);
+        Invalidate();
+        return {};
+    }
+    void TextBox::RefreshValue()
+    {
+        value_ = mask_ ? mask_->Value(text_) : std::string{};
+    }
+    std::string TextBox::UnmaskedText() const
+    {
+        return mask_ ? mask_->Value(text_, true) : text_;
+    }
+    bool TextBox::MaskComplete() const
+    {
+        return !mask_ || text_.find('_') == text_.npos;
+    }
+    bool TextBox::Reject(std::string message)
+    {
+        inputError_ = message.empty() ? "Input rejected" : std::move(message);
+        Invalidate();
+        OnInputRejected.Raise(inputError_);
+        return false;
+    }
+    bool TextBox::Replace(std::string text, TextEditOrigin origin, size_t first, size_t last, bool cut)
     {
         if (readOnly_)
-            return;
+            return false;
         ++pasteGeneration_;
+        if (first == std::string::npos)
+            first = std::min(caret_, anchor_);
+        if (last == std::string::npos)
+            last = std::max(caret_, anchor_);
+        if (!mask_)
+            text = mode_ == TextBoxMode::Multiline ? MultilineText(text) : SingleLine(std::move(text));
+        auto proposed = text_;
+        size_t caret = first + text.size();
+        if (mask_)
+        {
+            auto changed = mask_->Replace(proposed, first, last, text);
+            if (!changed)
+                return Reject(changed.error());
+            caret = *changed;
+        }
+        else
+            proposed.replace(first, last - first, text);
+        const auto value = mask_ ? mask_->Value(proposed) : proposed;
+        if (filter_)
+        {
+            auto accepted = filter_(value, origin);
+            if (!accepted)
+                return Reject(accepted.error());
+        }
+        if (cut)
+        {
+            auto selected = text_.substr(first, last - first);
+            if (mask_)
+                std::erase(selected, '_');
+            if (!Host() || LWS::SetClipboardText(Host()->Window(), selected) != LWS::ClipboardResult::Success)
+                return false;
+        }
         if (!editing_)
         {
             committed_ = text_;
             editing_ = true;
         }
-        auto first = std::min(caret_, anchor_), last = std::max(caret_, anchor_);
-        text = mode_ == TextBoxMode::Multiline ? MultilineText(text) : SingleLine(std::move(text));
+        text_ = std::move(proposed);
+        RefreshValue();
         caretUpstream_ = false;
         preferredX_.reset();
-        text_.replace(first, last - first, text);
-        caret_ = anchor_ = first + text.size();
+        caret_ = anchor_ = caret;
         validation_.clear();
+        inputError_.clear();
         geometryDirty_ = true;
         UpdateGeometry(true);
-        OnEdit.Raise(text_, EditPhase::Preview);
+        OnEdit.Raise(Text(), EditPhase::Preview);
         Invalidate();
+        return true;
     }
     bool TextBox::Finish(EditPhase phase)
     {
@@ -228,8 +327,14 @@ namespace LWSUI
         StopSelecting();
         if (scrollbar_)
             scrollbar_->Finish(phase);
+        if (phase == EditPhase::Commit && mask_ && !Text().empty() && !MaskComplete())
+            return Reject("Complete all mask slots");
         if (!editing_)
+        {
+            inputError_.clear();
+            Invalidate();
             return true;
+        }
         if (phase == EditPhase::Commit && !validation_.empty())
             return false;
         if (phase == EditPhase::Cancel)
@@ -239,11 +344,13 @@ namespace LWSUI
             validation_.clear();
         }
         editing_ = false;
-        OnEdit.Raise(text_, phase);
+        inputError_.clear();
+        RefreshValue();
+        OnEdit.Raise(Text(), phase);
         committed_ = text_;
         caretUpstream_ = false;
         preferredX_.reset();
-        caret_ = anchor_ = text_.size();
+        caret_ = anchor_ = mask_ && text_.find('_') != text_.npos ? mask_->Next(text_.find('_')) : text_.size();
         UpdateGeometry(true);
         Invalidate();
         return true;
@@ -295,7 +402,7 @@ namespace LWSUI
             if (focused)
                 c.Fill(b.x + p + caretX_ - scroll_, b.y + p, Style().borderWidth, b.height - 2 * p, Style().accent);
         }
-        if (!borderless_ && !validation_.empty())
+        if (!validation_.empty() || !inputError_.empty())
             c.Fill(b.x, b.y + b.height - Style().focusWidth, b.width, Style().focusWidth, Style().error);
     }
     bool TextBox::OnInput(const Input& e)
@@ -362,9 +469,30 @@ namespace LWSUI
             Paste();
         else if (e.key == K::Backspace || e.key == K::Delete)
         {
-            if (caret_ == anchor_)
-                anchor_ = e.key == K::Backspace ? PreviousCharacter(text_, caret_) : NextCharacter(text_, caret_);
-            Replace({});
+            size_t first = std::min(caret_, anchor_), last = std::max(caret_, anchor_);
+            if (first == last)
+            {
+                if (mask_)
+                {
+                    if (e.key == K::Backspace)
+                    {
+                        while (first && !mask_->slots[first - 1])
+                            --first;
+                        if (first)
+                            --first;
+                    }
+                    else
+                    {
+                        first = mask_->Next(first);
+                        last = std::min(text_.size(), first + 1);
+                    }
+                }
+                else if (e.key == K::Backspace)
+                    first = PreviousCharacter(text_, caret_);
+                else
+                    last = NextCharacter(text_, caret_);
+            }
+            Replace({}, TextEditOrigin::Delete, first, last);
         }
         else if (mode_ == TextBoxMode::Multiline && !lines_.empty() &&
                  (e.key == K::Up || e.key == K::Down || e.key == K::PageUp || e.key == K::PageDown))

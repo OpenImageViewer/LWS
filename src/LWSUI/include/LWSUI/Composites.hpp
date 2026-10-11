@@ -77,6 +77,7 @@ namespace LWSUI
             if (!ValidNumericSpec(spec_))
                 throw std::invalid_argument("Invalid numeric bounds or step");
             text_ = &Emplace<TextBox>();
+            text_->SetInputFilter(InputFilters::Number(std::is_integral_v<T>, std::is_signed_v<T>));
             down_ = &Emplace<Button>("▼");
             down_->fontRole = FontRole::Glyph;
             down_->SetHighlightPattern("");

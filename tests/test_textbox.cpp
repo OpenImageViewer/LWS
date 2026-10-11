@@ -22,7 +22,7 @@ namespace
         std::unique_ptr<UIHost> host;
         TextBox* text;
         Button* next;
-        explicit TextEnvironment(std::string value, Size size = {260, 100})
+        explicit TextEnvironment(std::string value, Size size = {260, 100}, TextBoxMode mode = TextBoxMode::Multiline)
         {
     #ifdef LWS_HAS_WIN32_BACKEND
             REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);
@@ -34,7 +34,7 @@ namespace
             REQUIRE(window->Create({.clientSize = {400, 300}}) == LWS::Result::Success);
             host = std::make_unique<UIHost>(*window);
             auto stack = std::make_unique<StackPanel>();
-            text = &stack->Emplace<TextBox>(std::move(value), TextBoxMode::Multiline);
+            text = &stack->Emplace<TextBox>(std::move(value), mode);
             next = &stack->Emplace<Button>("Next");
             host->SetRoot(std::move(stack));
             host->Root()->Measure({400, 300});
@@ -268,7 +268,7 @@ TEST_CASE("Multiline selection auto-scroll stops on release and detach", "[ui][t
         REQUIRE_FALSE(handle);
     }
 }
-    TEST_CASE("A detached multiline editor releases its original platform timer", "[ui][text][multiline][lifetime]")
+TEST_CASE("A detached multiline editor releases its original platform timer", "[ui][text][multiline][lifetime]")
 {
     std::unique_ptr<Control> retained;
     {
@@ -299,7 +299,7 @@ TEST_CASE("Multiline selection auto-scroll stops on release and detach", "[ui][t
     REQUIRE(replacement.host->Route({.kind = InputKind::Up, .x = 18, .y = 140}));
 }
 
-#ifdef LWS_HAS_WIN32_BACKEND
+    #ifdef LWS_HAS_WIN32_BACKEND
 TEST_CASE("Multiline clipboard paste normalizes paragraphs and copy retains selection",
           "[ui][text][multiline][clipboard]")
 {
@@ -324,4 +324,251 @@ TEST_CASE("Multiline clipboard paste normalizes paragraphs and copy retains sele
     REQUIRE(copied == "first\nsecond\nthird");
 }
     #endif
+
+TEST_CASE("TextBox filters reject whole edits without changing the draft or selection", "[ui][text][filter]")
+{
+    TextBox text("12");
+    text.SetText("12");
+    text.SetInputFilter(InputFilters::Number(true));
+    unsigned previews = 0;
+    auto edited = text.OnEdit.Connect([&](const auto&, EditPhase phase) { previews += phase == EditPhase::Preview; });
+    auto key = [&](K k, bool ctrl = false, bool shift = false)
+    { REQUIRE(text.Dispatch({.kind = InputKind::KeyDown, .key = k, .control = ctrl, .shift = shift})); };
+    key(K::A, true);
+    text.SetValidation("existing validation");
+    REQUIRE(text.Dispatch({.kind = InputKind::Text, .text = "3x"}));
+    REQUIRE(text.Text() == "12");
+    REQUIRE(text.Validation() == "existing validation");
+    REQUIRE_FALSE(text.InputError().empty());
+    REQUIRE(previews == 0);
+    REQUIRE(text.Dispatch({.kind = InputKind::Text, .text = "34"}));
+    REQUIRE(text.Text() == "34");
+    REQUIRE(text.InputError().empty());
+    REQUIRE(previews == 1);
+    REQUIRE(text.Finish(EditPhase::Cancel));
+    REQUIRE(text.Text() == "12");
+    text.SetInputFilter([](auto, auto) -> std::expected<void, std::string> { return std::unexpected("No edits"); });
+    key(K::Backspace);
+    REQUIRE(text.Text() == "12");
+    text.SetInputFilter({});
+    REQUIRE(text.Dispatch({.kind = InputKind::Text, .text = "X"}));
+    REQUIRE(text.Text() == "12X");
+    REQUIRE(text.Finish(EditPhase::Commit));
+    text.SetInputFilter(InputFilters::Number(true));
+    REQUIRE(text.Dispatch({.kind = InputKind::Text, .text = "!"}));
+    REQUIRE(text.Finish(EditPhase::Commit));
+    REQUIRE(text.InputError().empty());
+    text.SetText("programmatic value");
+    REQUIRE(text.Text() == "programmatic value");
+}
+
+TEST_CASE("Numeric filters accept partial drafts and allow deletion repairs", "[ui][text][filter]")
+{
+    auto number = InputFilters::Number();
+    for (auto draft : {"", "-", ".", "-.", "1.", "1e", "1e-", "1e+", "-1.2E-3"})
+        REQUIRE(number(draft, TextEditOrigin::Typing));
+    for (auto invalid : {"x", "1..", "1e2e3", "--1", "1e.2", "1e--", "1 2"})
+        REQUIRE_FALSE(number(invalid, TextEditOrigin::Paste));
+    REQUIRE(number("e-", TextEditOrigin::Delete));
+    REQUIRE_FALSE(InputFilters::Number(true, false)("-1", TextEditOrigin::Typing));
+    REQUIRE_FALSE(InputFilters::Number(false, false, false)("1e2", TextEditOrigin::Typing));
+    REQUIRE(InputFilters::Hexadecimal(true)("#a0FF", TextEditOrigin::Typing));
+    REQUIRE_FALSE(InputFilters::Hexadecimal(true)("#001122334", TextEditOrigin::Paste));
+    NumericEdit<int> numeric;
+    auto& field = static_cast<TextBox&>(numeric.FocusTarget());
+    REQUIRE(field.Dispatch({.kind = InputKind::KeyDown, .key = K::A, .control = true}));
+    REQUIRE(field.Dispatch({.kind = InputKind::Text, .text = "bad"}));
+    REQUIRE(field.Text() == "0");
+    REQUIRE(numeric.Draft() == 0);
+}
+
+TEST_CASE("Fixed masks insert literals and clear slots without shifting fields", "[ui][text][mask]")
+{
+    TextBox text;
+    REQUIRE(text.SetInputMask("AA-0000"));
+    auto type = [&](std::string value) { REQUIRE(text.Dispatch({.kind = InputKind::Text, .text = std::move(value)})); };
+    auto key = [&](K k, bool ctrl = false)
+    { REQUIRE(text.Dispatch({.kind = InputKind::KeyDown, .key = k, .control = ctrl})); };
+    REQUIRE(text.Text().empty());
+    type("aB12");
+    REQUIRE(text.Text() == "aB-12");
+    REQUIRE(text.UnmaskedText() == "aB12");
+    REQUIRE_FALSE(text.MaskComplete());
+    REQUIRE_FALSE(text.Finish(EditPhase::Commit));
+    type("34");
+    REQUIRE(text.Text() == "aB-1234");
+    REQUIRE(text.MaskComplete());
+    REQUIRE(text.Finish(EditPhase::Commit));
+    key(K::Home);
+    key(K::Right);
+    key(K::Delete);
+    REQUIRE(text.Text() == "a-1234");
+    type("Z");
+    REQUIRE(text.Text() == "aZ-1234");
+    key(K::Backspace);
+    type("Q");
+    REQUIRE(text.Text() == "aQ-1234");
+    key(K::A, true);
+    type("12-invalid");
+    REQUIRE(text.Text() == "aQ-1234");
+    type("xy\n9876");
+    REQUIRE(text.Text() == "aQ-1234");
+    type("xy-9876");
+    REQUIRE(text.Text() == "xy-9876");
+    REQUIRE(text.Finish(EditPhase::Cancel));
+    REQUIRE(text.Text() == "aB-1234");
+    text.SetText("xy0001");
+    REQUIRE(text.Text() == "xy-0001");
+    text.SetText("wrong");
+    REQUIRE(text.Text() == "xy-0001");
+    REQUIRE_FALSE(text.SetInputMask("00:00"));
+    REQUIRE(text.Text() == "xy-0001");
+    REQUIRE(text.SetInputMask(""));
+    REQUIRE(text.Text() == "xy-0001");
+    TextBox phone;
+    REQUIRE(phone.SetInputMask("(000) 000-0000"));
+    phone.SetText("(123) 456-7890");
+    REQUIRE(phone.Text() == "(123) 456-7890");
+    phone.SetText("");
+    REQUIRE(phone.Text().empty());
+    REQUIRE(phone.Dispatch({.kind = InputKind::Text, .text = "1234567890"}));
+    REQUIRE(phone.UnmaskedText() == "1234567890");
+    REQUIRE_FALSE(phone.SetInputMask("000\\"));
+    REQUIRE_FALSE(phone.SetInputMask("___"));
+    TextBox multiline({}, TextBoxMode::Multiline);
+    REQUIRE_FALSE(multiline.SetInputMask("00"));
+}
+
+TEST_CASE("Rejected TextBox input paints the error underline", "[ui][text][filter][render]")
+{
+    TextEnvironment env("12", {260, 100}, TextBoxMode::SingleLine);
+    env.text->SetInputFilter(InputFilters::Number(true));
+    env.Type("invalid");
+    for (bool borderless : {false, true})
+    {
+        env.text->SetBorderless(borderless);
+        Canvas canvas;
+        canvas.Begin(400, 300, {1, 1});
+        env.text->Render(canvas);
+        const auto bitmap = canvas.End();
+        const auto b = env.text->Bounds();
+        const size_t offset = size_t(b.y + b.height - 1) * bitmap.rowPitch + size_t(b.x + 20) * 4;
+        REQUIRE(std::to_integer<unsigned>(bitmap.pixels[offset + 2]) >
+                std::to_integer<unsigned>(bitmap.pixels[offset + 1]) * 2);
+    }
+}
+
+    #ifdef LWS_HAS_WIN32_BACKEND
+TEST_CASE("Filtered mask clipboard edits are atomic and omit slot placeholders", "[ui][text][mask][clipboard]")
+{
+    TextEnvironment env("", {260, 100}, TextBoxMode::SingleLine);
+    REQUIRE(env.text->SetInputMask("00:00"));
+    auto result = LWS::SetClipboardText(*env.window, "12:34");
+    if (result == LWS::ClipboardResult::AccessDenied)
+        SKIP("Windows clipboard access is unavailable");
+    REQUIRE(result == LWS::ClipboardResult::Success);
+    REQUIRE(env.Key(K::V, true));
+    REQUIRE(env.text->Text() == "12:34");
+    REQUIRE(env.Key(K::A, true));
+    REQUIRE(LWS::SetClipboardText(*env.window, "12-34") == LWS::ClipboardResult::Success);
+    REQUIRE(env.Key(K::V, true));
+    REQUIRE(env.text->Text() == "12:34");
+    env.text->SetInputFilter(
+        [](auto, auto origin) -> std::expected<void, std::string>
+        {
+            if (origin == TextEditOrigin::Cut)
+                return std::unexpected("Cut disabled");
+            return {};
+        });
+    REQUIRE(env.Key(K::X, true));
+    REQUIRE(env.text->Text() == "12:34");
+    std::string copied;
+    LWS::RequestClipboardText(*env.window, [&](auto, auto value) { copied = std::move(value); });
+    if (copied.empty())
+        SKIP("Windows clipboard read access is unavailable");
+    REQUIRE(copied == "12-34");
+    env.text->SetInputFilter({});
+    REQUIRE(env.Key(K::Home));
+    REQUIRE(env.Key(K::Delete));
+    REQUIRE(env.Key(K::A, true));
+    // Clipboard observers can briefly lock the clipboard immediately after publication.
+    for (unsigned attempt = 0; attempt < 20; ++attempt)
+    {
+        REQUIRE(env.Key(K::C, true));
+        LWS::RequestClipboardText(*env.window,
+                                  [&](auto status, auto value)
+                                  {
+                                      if (status == LWS::ClipboardResult::Success)
+                                          copied = std::move(value);
+                                  });
+        if (copied == "2:34")
+            break;
+        env.Pump(5);
+    }
+    REQUIRE(copied == "2:34");
+    for (unsigned attempt = 0; attempt < 20 && !env.text->Text().empty(); ++attempt)
+    {
+        REQUIRE(env.Key(K::X, true));
+        env.Pump(5);
+    }
+    REQUIRE(env.text->Text().empty());
+}
+    #endif
+
+TEST_CASE("Hexadecimal form flags choose accepted notations and preserve draft editing", "[ui][text][filter][hex]")
+{
+    REQUIRE_THROWS_AS(InputFilters::Hexadecimal(HexadecimalFormFlags{HexadecimalForm::None}), std::invalid_argument);
+    REQUIRE_THROWS_AS(InputFilters::Hexadecimal(HexadecimalFormFlags{static_cast<HexadecimalForm>(8)}),
+                      std::invalid_argument);
+    for (unsigned bits = 1; bits <= 7; ++bits)
+    {
+        const HexadecimalFormFlags forms{static_cast<HexadecimalForm>(bits)};
+        const auto filter = InputFilters::Hexadecimal(forms);
+        REQUIRE(filter("", TextEditOrigin::Typing));
+        REQUIRE(bool(filter("aF09", TextEditOrigin::Paste)) == forms.test(HexadecimalForm::Bare));
+        REQUIRE(bool(filter("#aF09", TextEditOrigin::Paste)) == forms.test(HexadecimalForm::HashPrefix));
+        REQUIRE(bool(filter("0xaF09", TextEditOrigin::Paste)) == forms.test(HexadecimalForm::ZeroXPrefix));
+        REQUIRE(bool(filter("0XaF09", TextEditOrigin::Paste)) == forms.test(HexadecimalForm::ZeroXPrefix));
+        REQUIRE(bool(filter("#", TextEditOrigin::Typing)) == forms.test(HexadecimalForm::HashPrefix));
+        REQUIRE(bool(filter("0x", TextEditOrigin::Typing)) == forms.test(HexadecimalForm::ZeroXPrefix));
+        REQUIRE(bool(filter("0", TextEditOrigin::Typing)) ==
+                (forms.test(HexadecimalForm::Bare) || forms.test(HexadecimalForm::ZeroXPrefix)));
+        for (auto invalid : {"#0xFF", "0x#FF", "0x0xFF", "F#F", "FF FF", "FF\n", "0xGG", "#-1", "\xc3\xa9"})
+            REQUIRE_FALSE(filter(invalid, TextEditOrigin::Paste));
+        REQUIRE_FALSE(internal::CheckHexadecimal("", forms, true));
+        REQUIRE_FALSE(internal::CheckHexadecimal("#", forms, true));
+        REQUIRE_FALSE(internal::CheckHexadecimal("0x", forms, true));
+        REQUIRE(bool(internal::CheckHexadecimal("0", forms, true)) == forms.test(HexadecimalForm::Bare));
+    }
+    const HexadecimalFormFlags prefixes{HexadecimalForm::HashPrefix | HexadecimalForm::ZeroXPrefix};
+    TextBox text("#aB");
+    text.SetText("#aB");
+    text.SetInputFilter(InputFilters::Hexadecimal(prefixes));
+    auto validator = text.OnEdit.Connect(
+        [&](const auto& value, EditPhase)
+        {
+            const auto result = internal::CheckHexadecimal(value, prefixes, true);
+            text.SetValidation(result ? "" : result.error());
+        });
+    REQUIRE(text.Dispatch({.kind = InputKind::KeyDown, .key = K::A, .control = true}));
+    REQUIRE(text.Dispatch({.kind = InputKind::Text, .text = "0xGG"}));
+    REQUIRE(text.Text() == "#aB");
+    REQUIRE_FALSE(text.InputError().empty());
+    REQUIRE(text.Dispatch({.kind = InputKind::Text, .text = "0"}));
+    REQUIRE_FALSE(text.Finish(EditPhase::Commit));
+    REQUIRE(text.Dispatch({.kind = InputKind::Text, .text = "x"}));
+    REQUIRE_FALSE(text.Finish(EditPhase::Commit));
+    REQUIRE(text.Dispatch({.kind = InputKind::Text, .text = "aF"}));
+    REQUIRE(text.Text() == "0xaF");
+    REQUIRE(text.Finish(EditPhase::Commit));
+    const auto color = InputFilters::Hexadecimal(true);
+    REQUIRE(color("", TextEditOrigin::Typing));
+    REQUIRE(color("#", TextEditOrigin::Typing));
+    REQUIRE(color("#aAbBcC12", TextEditOrigin::Paste));
+    REQUIRE_FALSE(color("0xaAbBcC", TextEditOrigin::Paste));
+    REQUIRE_FALSE(color("aAbBcC", TextEditOrigin::Paste));
+    REQUIRE_FALSE(color("#aAbBcC123", TextEditOrigin::Paste));
+    REQUIRE_FALSE(InputFilters::Hexadecimal()("#FF", TextEditOrigin::Paste));
+}
+
 #endif
