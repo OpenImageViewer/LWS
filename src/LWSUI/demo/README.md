@@ -164,3 +164,11 @@ styles leave reusable control defaults unchanged. See [GridView](../GridView.md)
 configuration and event contract. It shares the ordinary LWSUI library and is
 built under `LWSUI_BUILD_DEMO`. Its `--smoke` and `--snapshot` modes cover all presets.
 `--snapshot-narrow` also verifies the minimum-size two-column configuration panel.
+
+The Text section also demonstrates [TextBox filtering and fixed masks](../TextInput.md) for numbers, hexadecimal input, dates, times, phone numbers, and product IDs. Invalid edits preserve the current value and show rejection feedback. Date and time examples apply semantic validation separately from mask syntax.
+
+## Distinguishing examples
+
+Controls Gallery groups examples into bordered cards with a name, description, control, and related feedback. Ordinary input fields have visible frames. The Borderless example deliberately omits its field frame. The Input policies category contains eight filtering and mask examples. Navigation buttons wrap at narrow widths, and card borders follow the selected theme.
+
+Gallery snapshots also include controls-light.ppm, controls-dark.ppm, controls-warm.ppm and catalog-THEME-N.ppm pages for each theme.

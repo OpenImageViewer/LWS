@@ -25,6 +25,8 @@ amount.SetInputFilter(InputFilters::Number());
 
 InputFilters::Number supplies integer or decimal draft syntax, with optional signed values and exponents. InputFilters::Hexadecimal supplies plain hex or color syntax. NumericEdit installs Number automatically, which also covers editable Slider values and numeric GridView editors. ColorPicker and the color panel share the color filter. Color panel channels use integer or fixed-decimal filters matching their existing parsers. Search and file paths remain unrestricted.
 
+The Controls Gallery in LWSUIDemo contains integer, decimal, hexadecimal, hex color, date, time, phone, and product ID examples with instructions and rejection feedback.
+
 ## Hexadecimal forms
 
 The general hexadecimal filter accepts HexadecimalFormFlags, an LLUtils::BitFlags<HexadecimalForm> value. Combine Bare, HashPrefix, and ZeroXPrefix to choose accepted forms. ZeroXPrefix accepts both 0x and 0X. The filter preserves entered case. None is an uninitialized configuration sentinel, rather than an input form. Explicit None or unknown bits throw std::invalid_argument when constructing the filter. Initialize stored flag values explicitly.
@@ -34,4 +36,4 @@ HexadecimalFormFlags forms{HexadecimalForm::HashPrefix | HexadecimalForm::ZeroXP
 field.SetInputFilter(InputFilters::Hexadecimal(forms));
 ```
 
-This configuration accepts #FF and 0xFF as complete values. Draft filtering also permits empty text, prefix-only text, and an initial 0 while typing 0x. Use semantic validation to require a complete value. The no-argument overload still accepts bare digits. The existing boolean color overload retains its required # prefix and eight-digit maximum.
+This configuration accepts #FF and 0xFF as complete values. Draft filtering also permits empty text, prefix-only text, and an initial 0 while typing 0x. Use semantic validation to require a complete value. The gallery demonstrates completion validation with the shared internal checker. The no-argument overload still accepts bare digits. The existing boolean color overload retains its required # prefix and eight-digit maximum.

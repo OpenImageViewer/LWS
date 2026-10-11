@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -692,25 +693,148 @@ namespace LWSUI::demo
             Text(parent, std::move(description));
             return label;
         }
+        StackPanel& ExampleCard(StackPanel& parent, std::string title, std::string description)
+        {
+            auto content = std::make_unique<StackPanel>();
+            auto& body = *content;
+            body.spacing = 6;
+            Text(body, std::move(title), true);
+            if (!description.empty())
+                Text(body, std::move(description)).fontRole = Control::FontRole::Small;
+            auto& panel = parent.Emplace<Panel>(std::move(content));
+            panel.padding = Insets{12};
+            panel.border = Insets{1};
+            panel.paintBackground = false;
+            return body;
+        }
         template <class T>
-        T& SampleControl(Container& parent, std::string_view type, std::unique_ptr<T> control)
+        T& PlaceControl(Container& parent, std::unique_ptr<T> control, bool framed = false)
         {
             T* pointer = control.get();
-            parent.Add(std::move(control));
-            samples.push_back({type, pointer});
+            if (framed)
+            {
+                auto& frame = parent.Emplace<Panel>(std::move(control));
+                frame.border = Insets{1};
+                frame.padding = Insets{1};
+            }
+            else
+                parent.Add(std::move(control));
             return *pointer;
+        }
+        template <class T>
+        T& SampleControl(Container& parent, std::string_view type, std::unique_ptr<T> control, bool framed = false)
+        {
+            auto& sample = PlaceControl(parent, std::move(control), framed);
+            samples.push_back({type, &sample});
+            return sample;
+        }
+        void BuildInputExamples(StackPanel& list)
+        {
+            Section(list, "02 / Input policies",
+                    "TextBox filters reject invalid edits. Fixed masks insert separators and keep empty slots "
+                    "visible.");
+            using Validator = std::function<std::string(const TextBox&)>;
+            const auto example = [this, &list](std::string instructions, InputFilter filter, std::string_view mask = {},
+                                               Validator validate = {}, std::string initial = {})
+            {
+                const auto colon = instructions.find(':');
+                auto& card = ExampleCard(list, instructions.substr(0, colon) + " / TextBox",
+                                         instructions.substr(colon + 2));
+                auto& field = PlaceControl(card, std::make_unique<TextBox>(), true);
+                field.SetInputFilter(std::move(filter));
+                field.SetText(std::move(initial));
+                if (!mask.empty() && !field.SetInputMask(mask))
+                    throw std::logic_error("Invalid gallery mask");
+                auto& feedback = Text(card, "Invalid edits keep the current value and show a red underline.");
+                feedback.fontRole = Control::FontRole::Small;
+                controls.connections.Connect(field.OnInputRejected,
+                                             [&feedback](const std::string& error) { feedback.SetText(error); });
+                controls.connections.Connect(field.OnEdit,
+                                             [&field, &feedback, validate](const std::string&, EditPhase)
+                                             {
+                                                 if (validate)
+                                                     field.SetValidation(validate(field));
+                                                 feedback.SetText(field.Validation().empty() ? "Input accepted"
+                                                                                             : field.Validation());
+                                             });
+            };
+            example(
+                "Integer: optional minus and digits. Empty text and minus are editable drafts. "
+                "Commit requires a complete integer.",
+                InputFilters::Number(true), {}, [](const TextBox& field)
+                { return internal::ParseNumericText<int64_t>(field.Text()) ? "" : "Enter a complete integer"; }, "42");
+            example(
+                "Decimal: a decimal point and exponent are allowed, for example -1.25e-3. "
+                "Commit requires a finite number.",
+                InputFilters::Number(), {},
+                [](const TextBox& field)
+                {
+                    const auto number = internal::ParseNumericText<double>(field.Text());
+                    return number && std::isfinite(*number) ? "" : "Enter a complete finite number";
+                },
+                "1.25");
+            const HexadecimalFormFlags hexForms{HexadecimalForm::Bare | HexadecimalForm::HashPrefix |
+                                                HexadecimalForm::ZeroXPrefix};
+            example(
+                "Hexadecimal: accepts FF, #FF, 0xFF, and 0XFF. Prefix flags select the allowed forms. Letter case is "
+                "preserved.",
+                InputFilters::Hexadecimal(hexForms), {},
+                [hexForms](const TextBox& field)
+                {
+                    if (field.Text().empty())
+                        return std::string{};
+                    const auto complete = internal::CheckHexadecimal(field.Text(), hexForms, true);
+                    return complete ? std::string{} : complete.error();
+                },
+                "a0FF");
+            example(
+                "Hex color: start with # and enter six RGB or eight RGBA hexadecimal digits.",
+                InputFilters::Hexadecimal(true), {}, [](const TextBox& field)
+                { return field.Text().size() == 7 || field.Text().size() == 9 ? "" : "Use #RRGGBB or #RRGGBBAA"; },
+                "#336699");
+            example("Date: YYYY-MM-DD. Separators appear automatically. Calendar validity is checked "
+                    "separately from the digit mask.",
+                    {}, "0000-00-00",
+                    [](const TextBox& field)
+                    {
+                        const auto& value = field.Text();
+                        if (value.empty() || !field.MaskComplete())
+                            return std::string{};
+                        const std::chrono::year_month_day day{
+                            std::chrono::year(std::stoi(value.substr(0, 4))),
+                            std::chrono::month(unsigned(std::stoi(value.substr(5, 2)))),
+                            std::chrono::day(unsigned(std::stoi(value.substr(8, 2))))};
+                        return std::string(day.ok() ? "" : "Enter a valid calendar date");
+                    });
+            example("Time: HH:MM in 24-hour time. The mask inserts the colon. Validation checks hours "
+                    "and minutes.",
+                    {}, "00:00",
+                    [](const TextBox& field)
+                    {
+                        const auto& value = field.Text();
+                        const bool valid = value.empty() || !field.MaskComplete() ||
+                                           (std::stoi(value.substr(0, 2)) < 24 && std::stoi(value.substr(3, 2)) < 60);
+                        return std::string(valid ? "" : "Use hours 00-23 and minutes 00-59");
+                    });
+            example("Phone: ten digits formatted as (000) 000-0000. Type digits or paste a formatted number.", {},
+                    "(000) 000-0000");
+            example("Product ID: two ASCII letters and four digits, formatted as AA-0000. Letter case is retained. "
+                    "Typing overwrites slots. Backspace and Delete clear slots without moving later fields.",
+                    {}, "AA-0000");
         }
         void BuildControls()
         {
             auto list = std::make_unique<StackPanel>();
             list->spacing = 12;
             Text(*list, "Every control has a named example. Changes below update the Workspace preview.");
-            auto& index = list->Emplace<StackPanel>();
-            index.orientation = Orientation::Horizontal;
-            const std::array<const char*, 4> names{"Text", "Choices", "Values", "Files / color"};
+            auto& index = list->Emplace<FlowPanel>();
+            const std::array<const char*, 5> names{"Text", "Input policies", "Choices", "Values", "Files / color"};
             for (size_t i = 0; i < names.size(); ++i)
             {
-                auto& button = index.Emplace<Button>(names[i]);
+                auto entry = std::make_unique<Button>(names[i]);
+                entry->sizeToContent = true;
+                auto& button = *entry;
+                index.AddItem(std::move(entry));
                 controls.connections.Connect(button.OnClick,
                                              [this, i]
                                              {
@@ -723,11 +847,14 @@ namespace LWSUI::demo
             Section(*list, "01 / Text and actions",
                     "Label wraps with the window. TextBox supports selection, clipboard, validation, and Escape to "
                     "cancel.");
-            auto& label = SampleControl(*list, "Label",
-                                        std::make_unique<Label>("Label: resize this gallery to see a long explanation "
-                                                                "wrap without creating another native window."));
+            auto& label = SampleControl(
+                ExampleCard(*list, "Label", "Display-only text wraps with the available width."), "Label",
+                std::make_unique<Label>("Label: resize this gallery to see a long explanation "
+                                        "wrap without creating another native window."));
             label.wrap = true;
-            name = &SampleControl(*list, "TextBox", std::make_unique<TextBox>(state.title));
+            name = &SampleControl(ExampleCard(*list, "TextBox / Single line",
+                                              "Edit the preview title. Enter commits and Escape cancels."),
+                                  "TextBox", std::make_unique<TextBox>(state.title), true);
             name->SetPlaceholder("Enter a preview title");
             controls.connections.Connect(name->OnEdit,
                                          [this](const std::string& value, EditPhase phase)
@@ -740,8 +867,9 @@ namespace LWSUI::demo
                                              if (phase != EditPhase::Preview)
                                                  Log("Title edit finished");
                                          });
-            Text(*list, "Multiline notes: Enter adds a line; Ctrl+Enter commits; Escape restores the draft.");
-            notes = &list->Emplace<TextBox>(state.notes, TextBoxMode::Multiline);
+            auto& notesCard = ExampleCard(*list, "TextBox / Multiline",
+                                          "Enter adds a line. Ctrl+Enter commits. Escape restores the draft.");
+            notes = &PlaceControl(notesCard, std::make_unique<TextBox>(state.notes, TextBoxMode::Multiline), true);
             notes->SetVisibleLines(4);
             notes->SetPlaceholder("Add notes about this scene...");
             controls.connections.Connect(notes->OnEdit,
@@ -751,14 +879,20 @@ namespace LWSUI::demo
                                              if (phase != EditPhase::Preview)
                                                  Log(phase == EditPhase::Cancel ? "Notes restored" : "Notes committed");
                                          });
-            auto& readonly = list->Emplace<TextBox>("Read-only TextBox: select and copy this explanation.");
+            auto& readonly = PlaceControl(ExampleCard(*list, "TextBox / Read-only",
+                                                      "Select and copy text without editing it."),
+                                          std::make_unique<TextBox>("Select and copy this explanation."), true);
             readonly.SetReadOnly(true);
-            auto& borderless = list->Emplace<TextBox>("Borderless TextBox: this line is editable.");
+            auto& borderless = ExampleCard(*list, "TextBox / Borderless",
+                                           "Editable text without the usual field surface or frame.")
+                                   .Emplace<TextBox>("This line is editable.");
             borderless.SetBorderless(true);
-            auto& empty = list->Emplace<TextBox>();
+            auto& empty = PlaceControl(ExampleCard(*list, "TextBox / Placeholder",
+                                                   "An empty field displays a format hint."),
+                                       std::make_unique<TextBox>(), true);
             empty.SetPlaceholder("An empty TextBox with placeholder text");
-            auto& actions = list->Emplace<StackPanel>();
-            actions.orientation = Orientation::Horizontal;
+            auto& actions = ExampleCard(*list, "Button / Normal, flat, and disabled",
+                                        "Reset changes shared values. The flat button selects the Tiles scene.");
             auto& reset = SampleControl(actions, "Button", std::make_unique<Button>("Reset values"));
             reset.focusLossPhase = EditPhase::Cancel;
             controls.connections.Connect(reset.OnClick, [this] { Command("Reset values"); });
@@ -766,10 +900,13 @@ namespace LWSUI::demo
             flat.flat = true;
             controls.connections.Connect(flat.OnClick, [this] { Command("Tiles"); });
             actions.Emplace<Button>("Disabled").SetEnabled(false);
-            Section(*list, "02 / Choices",
+            BuildInputExamples(*list);
+            Section(*list, "03 / Choices",
                     "CheckBox toggles the preview. Standalone RadioButtons are paired by this app; RadioGroup manages "
                     "a set itself.");
-            enabled = &SampleControl(*list, "CheckBox", std::make_unique<CheckBox>("Enable preview colors"));
+            enabled = &SampleControl(ExampleCard(*list, "CheckBox",
+                                                 "Toggle preview colors. Right-click for a context menu."),
+                                     "CheckBox", std::make_unique<CheckBox>("Enable preview colors"));
             enabled->SetValue(true);
             controls.connections.Connect(enabled->OnChange,
                                          [this](bool value)
@@ -788,8 +925,9 @@ namespace LWSUI::demo
                                                              Log("Context menu: enabled");
                                                          }}};
                 });
-            auto& radios = list->Emplace<StackPanel>();
-            radios.orientation = Orientation::Horizontal;
+            auto& radios = ExampleCard(*list, "RadioButton / Standalone pair",
+                                       "The application keeps these two choices exclusive.");
+
             auto& circles = SampleControl(radios, "RadioButton", std::make_unique<RadioButton>("Circles"));
             auto& tiles = radios.Emplace<RadioButton>("Tiles");
             circles.SetValue(true);
@@ -811,11 +949,12 @@ namespace LWSUI::demo
                                                  Command("Tiles");
                                              }
                                          });
-            quality = &SampleControl(*list, "RadioGroup",
-                                     std::make_unique<RadioGroup>(std::vector<Choice>{{"Fast", "Fast"},
-                                                                                      {"Balanced", "Balanced"},
-                                                                                      {"High", "High quality"}}));
-            quality->orientation = Orientation::Horizontal;
+            quality = &SampleControl(
+                ExampleCard(*list, "RadioGroup", "The group manages an exclusive selection of quality levels."),
+                "RadioGroup",
+                std::make_unique<RadioGroup>(
+                    std::vector<Choice>{{"Fast", "Fast"}, {"Balanced", "Balanced"}, {"High", "High quality"}}));
+            quality->orientation = Orientation::Vertical;
             quality->SetValue(state.quality);
             controls.connections.Connect(quality->OnChange,
                                          [this](const std::string& value)
@@ -824,18 +963,19 @@ namespace LWSUI::demo
                                              Refresh();
                                              Log("Quality: " + value);
                                          });
-            Text(*list, "ComboBox: select the scene, or open its popup with the keyboard.");
-            scene = &SampleControl(*list, "ComboBox",
-                                   std::make_unique<ComboBox>(
-                                       std::vector<Choice>{{"Circles", "Circles"}, {"Tiles", "Tiles"}}));
+            scene = &SampleControl(
+                ExampleCard(*list, "ComboBox", "Choose a scene from the popup, using the mouse or keyboard."),
+                "ComboBox",
+                std::make_unique<ComboBox>(std::vector<Choice>{{"Circles", "Circles"}, {"Tiles", "Tiles"}}));
             scene->SetValue(state.scene);
             controls.connections.Connect(scene->OnChange, [this](const std::string& value) { Command(value); });
-            Section(*list, "03 / Numbers, sliders, and scrolling",
+            Section(*list, "04 / Numbers, sliders, and scrolling",
                     "NumericEdit: type a value or hold the rocker. Sliders preview while dragging; Escape restores the "
                     "previous value.");
-            Text(*list, "NumericEdit<int64_t>: shape count, 1 to 12.");
-            count = &SampleControl(*list, "NumericEdit<int64_t>",
-                                   std::make_unique<NumericEdit<int64_t>>(NumericSpec<int64_t>{1, 12, 1}));
+            count = &SampleControl(ExampleCard(*list, "NumericEdit / Integer",
+                                               "Shape count from 1 to 12. Type a value or hold a rocker button."),
+                                   "NumericEdit<int64_t>",
+                                   std::make_unique<NumericEdit<int64_t>>(NumericSpec<int64_t>{1, 12, 1}), true);
             count->SetValue(state.count);
             controls.connections.Connect(count->OnEdit,
                                          [this](int64_t value, EditPhase)
@@ -843,9 +983,9 @@ namespace LWSUI::demo
                                              state.count = value;
                                              Refresh();
                                          });
-            Text(*list, "NumericEdit<double>: shape scale, 0.5 to 2.0.");
-            scale = &SampleControl(*list, "NumericEdit<double>",
-                                   std::make_unique<NumericEdit<double>>(NumericSpec<double>{.5, 2, .1}));
+            scale = &SampleControl(
+                ExampleCard(*list, "NumericEdit / Decimal", "Shape scale from 0.5 to 2.0 in 0.1 steps."),
+                "NumericEdit<double>", std::make_unique<NumericEdit<double>>(NumericSpec<double>{.5, 2, .1}), true);
             scale->SetValue(state.scale);
             controls.connections.Connect(scale->OnEdit,
                                          [this](double value, EditPhase)
@@ -853,11 +993,14 @@ namespace LWSUI::demo
                                              state.scale = value;
                                              Refresh();
                                          });
-            Text(*list, "Slider: editable and read-only values share preview opacity.");
-            opacity = &SampleControl(*list, "Slider", std::make_unique<Slider>());
+            auto& sliderCard = ExampleCard(*list, "Slider / Outline and filled",
+                                           "Both sliders change preview opacity. Escape cancels a drag.");
+            Text(sliderCard, "Outline track with editable value").fontRole = Control::FontRole::Small;
+            opacity = &SampleControl(sliderCard, "Slider", std::make_unique<Slider>());
             opacity->SetValue(state.opacity);
             opacity->SetValueDisplay(SliderValueMode::Editable);
-            filled = &list->Emplace<Slider>();
+            Text(sliderCard, "Filled track with read-only value").fontRole = Control::FontRole::Small;
+            filled = &sliderCard.Emplace<Slider>();
             filled->filled = true;
             filled->SetValueDisplay(SliderValueMode::ReadOnly);
             filled->SetValue(state.opacity);
@@ -873,7 +1016,8 @@ namespace LWSUI::demo
                                              state.opacity = value;
                                              Refresh();
                                          });
-            Text(*list, "Standalone ScrollBar: move its thumb to inspect different lines in a fixed-height viewport.");
+            auto& scrollCard = ExampleCard(*list, "ScrollBar / Standalone",
+                                           "Move the thumb to inspect lines in a fixed-height viewport.");
             auto scrollGrid = std::make_unique<Grid>();
             scrollGrid->columns = {-1, 22};
             auto& viewportText = scrollGrid->Emplace<Label>(
@@ -890,11 +1034,13 @@ namespace LWSUI::demo
                                                  text += "Sample line " + std::to_string(i) + "\n";
                                              viewportText.SetText(text);
                                          });
-            list->Emplace<Viewport>(std::move(scrollGrid), 110);
-            Section(*list, "04 / Color and files",
+            scrollCard.Emplace<Viewport>(std::move(scrollGrid), 110);
+            Section(*list, "05 / Color and files",
                     "ColorSwatch is a standalone button. ColorPicker previews RGB/HSL edits and restores the color on "
                     "Cancel.");
-            auto& sample = SampleControl(*list, "ColorSwatch", std::make_unique<ColorSwatch>());
+            auto& sample = SampleControl(ExampleCard(*list, "ColorSwatch",
+                                                     "Click the standalone color button to select amber."),
+                                         "ColorSwatch", std::make_unique<ColorSwatch>());
             sample.SetValue(state.color);
             catalogSwatch = &sample;
             controls.connections.Connect(sample.OnClick,
@@ -905,7 +1051,10 @@ namespace LWSUI::demo
                                              Refresh();
                                              Log("Swatch: amber");
                                          });
-            color = &SampleControl(*list, "ColorPicker", std::make_unique<ColorPicker>());
+            color = &SampleControl(ExampleCard(*list, "ColorPicker",
+                                               "Edit a hex color or open the RGB/HSL popup. Cancel restores the "
+                                               "previous color."),
+                                   "ColorPicker", std::make_unique<ColorPicker>(), true);
             color->SetValue(state.color);
             controls.connections.Connect(color->OnEdit,
                                          [this](LLUtils::Color value, EditPhase)
@@ -913,9 +1062,10 @@ namespace LWSUI::demo
                                              state.color = value;
                                              Refresh();
                                          });
-            Text(*list, "FilePicker: edit an existing file path, click Browse, or press F4. The selected file is never "
-                        "modified.");
-            file = &SampleControl(*list, "FilePicker", std::make_unique<FilePicker>());
+            file = &SampleControl(ExampleCard(*list, "FilePicker",
+                                              "Edit an existing file path, click Browse, or press F4. The selected "
+                                              "file is never modified."),
+                                  "FilePicker", std::make_unique<FilePicker>(), true);
             controls.connections.Connect(file->OnEdit,
                                          [this](const std::string& value, EditPhase)
                                          {
@@ -1163,6 +1313,16 @@ namespace LWSUI::demo
             };
             pages(*controls.host, *catalogScroll, "catalog-");
             pages(*gallery.host, *containerScroll, "containers-");
+            const auto originalTheme = themePreset;
+            for (const auto palette : {ThemePreset::Light, ThemePreset::Dark, ThemePreset::Warm})
+            {
+                owner.SetTheme(palette);
+                controls.host->Update();
+                const std::string suffix = ThemePresetName(palette);
+                Save(Render(*controls.host), "controls-" + suffix + ".ppm");
+                pages(*controls.host, *catalogScroll, "catalog-" + suffix + "-");
+            }
+            owner.SetTheme(originalTheme);
         }
     };
     Showcase::Showcase(LWS::PlatformContext& platform, UIHost& host)

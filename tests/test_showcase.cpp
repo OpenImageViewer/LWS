@@ -29,6 +29,9 @@ TEST_CASE("Showcase catalog binds every public control to the connected demo", "
             LWS::Result::Success);
     LWSUI::UIHost menuHost(window);
     LWSUI::demo::Showcase showcase(platform, menuHost);
+    // The interactive splitter needs room even when the desktop work area is small.
+    REQUIRE(showcase.MainWindow().RequestPlacement({.clientSize = LWS::LogicalSize{1100, 760}}) ==
+            LWS::Result::Success);
     const auto pump = [&]
     {
         for (int i = 0; i < 25; ++i)

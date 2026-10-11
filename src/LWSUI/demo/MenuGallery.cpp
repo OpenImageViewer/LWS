@@ -116,13 +116,15 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
     LWSUI::UIHost host(window, LWSUI::MakeTheme(DefaultThemePreset));
     uiHost = &host;
     LWSUI::demo::Showcase showcase(platform, host);
-    if (narrow)
+    if (snapshot)
     {
-        if (showcase.MainWindow().RequestPlacement({.clientSize = LWS::LogicalSize{800, 580}}) != LWS::Result::Success)
+        const LWS::LogicalSize workspaceSize = narrow ? LWS::LogicalSize{800, 580} : LWS::LogicalSize{1100, 760};
+        const LWS::LogicalSize gallerySize = narrow ? LWS::LogicalSize{420, 600} : LWS::LogicalSize{600, 720};
+        if (showcase.MainWindow().RequestPlacement({.clientSize = workspaceSize}) != LWS::Result::Success)
             return 3;
         for (auto sample : showcase.Samples())
-            if (sample.type == "TextBox" && sample.control->Host()->Window().RequestPlacement(
-                                                {.clientSize = LWS::LogicalSize{420, 600}}) != LWS::Result::Success)
+            if (sample.type == "TextBox" &&
+                sample.control->Host()->Window().RequestPlacement({.clientSize = gallerySize}) != LWS::Result::Success)
                 return 3;
     }
     struct MenuState
