@@ -1,5 +1,6 @@
 #include "Showcase.hpp"
 #include "SplitPreview.hpp"
+#include "SnappingMenu.hpp"
 #include <LWSUI/Composites.hpp>
 #include <algorithm>
 #include <array>
@@ -372,13 +373,16 @@ namespace LWSUI::demo
             BuildControls();
             BuildPreview();
             BuildMenuGallery();
+            if (platform.GetBackendId() == LWS::BackendId::Win32)
+                Check(menuHost.Window().SetSnappingRole(LWS::WindowSnappingRole::Follower),
+                      "Cannot set menu gallery snapping role");
             auto layout = std::make_unique<Workspace>(gallery, preview, fixed,
                                                       [this](auto command) { Command(command); });
             workspace = layout.get();
             samples.push_back({"Container", workspace});
             main.host->SetRoot(std::move(layout));
-            main.host->SetMainMenu(std::make_unique<MenuBar>(ApplicationMenus()));
-            controls.host->SetMainMenu(std::make_unique<MenuBar>(ApplicationMenus()));
+            main.host->SetMainMenu(std::make_unique<MenuBar>(ApplicationMenus(*main.host)));
+            controls.host->SetMainMenu(std::make_unique<MenuBar>(ApplicationMenus(*controls.host)));
             main.host->MainMenu()->SetWindowControls({.minimize = true,
                                                       .maximize = true,
                                                       .draggable = true,
@@ -437,6 +441,9 @@ namespace LWSUI::demo
             config.backgroundColor = MakeTheme(DefaultThemePreset).background;
             if (!parent)
             {
+                if (platform.GetBackendId() == LWS::BackendId::Win32)
+                    config.snappingRole = &surface == &main ? LWS::WindowSnappingRole::Leader
+                                                            : LWS::WindowSnappingRole::Follower;
                 config.styles = LWS::WindowStyle::Caption | LWS::WindowStyle::CloseButton |
                                 LWS::WindowStyle::ResizableBorder | LWS::WindowStyle::MaximizeButton;
                 config.clientSizeLimits.minimum = offset == 0 ? LWS::LogicalSize{720, 520} : LWS::LogicalSize{400, 340};
@@ -497,6 +504,25 @@ namespace LWSUI::demo
                 surface.listeners.push_back(std::move(*keys));
             }
             surface.host = std::make_unique<UIHost>(*surface.window, MakeTheme(DefaultThemePreset));
+            auto snapping = surface.window->Listen(
+                [this, &surface](const LWS::AnyEvent& event)
+                {
+                    if (std::holds_alternative<LWS::EventSnappingStateChanged>(event))
+                        Deferred(
+                            [this, &surface]
+                            {
+                                if (!surface.window->IsCreated())
+                                    return;
+                                if (&surface == &events)
+                                    RefreshEventsMenu();
+                                else if (surface.host->MainMenu())
+                                    surface.host->MainMenu()->SetItems(ApplicationMenus(*surface.host));
+                            });
+                    return LWS::EventResponse::Unhandled;
+                });
+            if (!snapping)
+                throw std::runtime_error("Cannot observe snapping state");
+            surface.listeners.push_back(std::move(*snapping));
             surface.connections.Connect(surface.host->OnError,
                                         [this](const std::string& message)
                                         {
@@ -554,7 +580,7 @@ namespace LWSUI::demo
                 throw std::runtime_error("Cannot listen for gallery close");
             menuListeners.push_back(std::move(*listener));
         }
-        std::vector<MenuBarItem> ApplicationMenus()
+        std::vector<MenuBarItem> ApplicationMenus(UIHost& host)
         {
             const auto action = [this](std::string name) { return [this, name] { Command(name); }; };
             return {
@@ -568,7 +594,13 @@ namespace LWSUI::demo
                   {"&Menu Gallery", "", action("Menu Gallery")},
                   {"&Events", "", action("Events")},
                   {"Reset &layout", "", action("Reset layout")},
-                  {"&Live resize redraw", "", action("Live resize redraw"), true, liveResize}}},
+                  {"&Live resize redraw", "", action("Live resize redraw"), true, liveResize},
+                  SnappingMenu(host.Window(),
+                               [this, &host]
+                               {
+                                   host.MainMenu()->SetItems(ApplicationMenus(host));
+                                   Log("Window snapping changed");
+                               })}},
                 {"&Theme",
                  {{"&Dark", "", [this] { owner.SetTheme(ThemePreset::Dark); }, true, themePreset == ThemePreset::Dark},
                   {"&Light", "", [this] { owner.SetTheme(ThemePreset::Light); }, true,
@@ -607,6 +639,21 @@ namespace LWSUI::demo
             auto frame = std::make_unique<Panel>(std::move(content));
             frame->padding = Insets{12};
             events.host->SetRoot(std::move(frame));
+            RefreshEventsMenu();
+        }
+        void RefreshEventsMenu()
+        {
+            std::vector<MenuBarItem> items{{"&Window",
+                                            {SnappingMenu(*events.window,
+                                                          [this]
+                                                          {
+                                                              RefreshEventsMenu();
+                                                              Log("Events window snapping changed");
+                                                          })}}};
+            if (events.host->MainMenu())
+                events.host->MainMenu()->SetItems(std::move(items));
+            else
+                events.host->SetMainMenu(std::make_unique<MenuBar>(std::move(items)));
         }
         void Log(const std::string& message)
         {
@@ -686,8 +733,8 @@ namespace LWSUI::demo
                 for (auto* surface : {&main, &controls, &gallery, &preview, &fixed, &events})
                     surface->host->SetRedrawOnResize(liveResize);
                 menuHost.SetRedrawOnResize(liveResize);
-                main.host->MainMenu()->SetItems(ApplicationMenus());
-                controls.host->MainMenu()->SetItems(ApplicationMenus());
+                main.host->MainMenu()->SetItems(ApplicationMenus(*main.host));
+                controls.host->MainMenu()->SetItems(ApplicationMenus(*controls.host));
             }
             else if (name == "Reset layout")
             {
@@ -1414,8 +1461,8 @@ namespace LWSUI::demo
         impl_->menuHost.SetTheme(theme);
         for (auto* surface : {&impl_->main, &impl_->controls, &impl_->gallery, &impl_->preview, &impl_->fixed})
             surface->host->SetTheme(theme);
-        impl_->main.host->MainMenu()->SetItems(impl_->ApplicationMenus());
-        impl_->controls.host->MainMenu()->SetItems(impl_->ApplicationMenus());
+        impl_->main.host->MainMenu()->SetItems(impl_->ApplicationMenus(*impl_->main.host));
+        impl_->controls.host->MainMenu()->SetItems(impl_->ApplicationMenus(*impl_->controls.host));
         for (auto* surface : {&impl_->main, &impl_->controls, &impl_->gallery, &impl_->preview, &impl_->fixed})
             Check(surface->window->SetBackgroundColor(theme.background), "Cannot change window background");
         Check(impl_->menuHost.Window().SetBackgroundColor(theme.background), "Cannot change menu background");

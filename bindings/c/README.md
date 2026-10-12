@@ -12,7 +12,7 @@ Run from PowerShell:
 ```
 
 This regenerates the wrappers, configures CMake, builds the static library and
-runs two tests. It requires CMake and Visual Studio 18 with the ClangCL toolset.
+runs three tests. It requires CMake and Visual Studio 18 with the ClangCL toolset.
 ClangCL is used because this project's CMake targets require C++26, which CMake
 does not currently advertise for the installed MSVC compiler. The generated
 wrapper also passes a separate MSVC C++ syntax check with `/Zc:__cplusplus`.
@@ -40,6 +40,23 @@ To generate files without building:
 
 The generator accepts `-SwigPath` and `-OutputDirectory`. Files use CRLF.
 
+## Hello World GUI in C
+
+`hello_world.c` is an interactive Windows example based on LWSUISimpleExample.
+It displays a greeting, a name field, and a Say hello button in a resizable window.
+Closing the window ends the message loop and releases its host and controls.
+The example accepts no parameters and contains no automated test code.
+
+Build it with `Build-And-Test.ps1`, then run:
+
+```powershell
+& ./build/c-bindings-clang/Debug/lws_c_hello_world.exe
+```
+
+Run that command from the repository root. The automated GUI smoke test is a
+separate source file, `hello_world_smoke.c`, and executable,
+`lws_c_hello_world_smoke`. It checks visibility, layout, a routed button click,
+the greeting text, and the normal close-request path. CTest runs it automatically.
 ## Files and C usage
 
 Include `lws_c_support.h` for the generated API and the ownership helpers.
@@ -47,7 +64,7 @@ Include `lws_c_support.h` for the generated API and the ownership helpers.
 and `lws_c_support.cpp` as C++. Compile callers as C. For static linkage, define
 `STATIC_LINKED`, as the provided CMake target does.
 
-`smoke.c` is a working C usage example. It verifies geometry and enum arguments,
+`smoke.c` is the separate C binding smoke test. It verifies geometry and enum arguments,
 button text and state, narrow and wide strings, event callbacks and disconnection,
 control ownership transfer, move-only posted tasks, successful and failed listener
 results, and a hidden native window's creation and teardown. `event_dispatch_test.cpp`
@@ -97,7 +114,7 @@ SWIG still omits nested classes, unsupported operators and templates without
 explicit instantiation, as recorded in `generation.log`.
 
 Some advanced standard-library types remain opaque. The supplied support API
-covers tasks, zero-argument UI events, button ownership and window listener results.
+covers tasks, zero-argument UI events, control ownership, close requests, and window listener results.
 Other opaque containers and result types need typed adapters before a C client
 can construct, inspect or dispose of them. This is a verified C binding for the
 covered operations, rather than complete conversion of every C++ API to idiomatic C.

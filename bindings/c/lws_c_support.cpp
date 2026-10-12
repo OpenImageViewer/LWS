@@ -1,6 +1,7 @@
 #include "lws_c_support.h"
 #include <LWS/Window.hpp>
-#include <LWSUI/Primitives.hpp>
+#include <LWS/Win32/WindowExtensions.hpp>
+#include <LWSUI/Containers.hpp>
 #include <cstdlib>
 #include <memory>
 #include <utility>
@@ -79,4 +80,46 @@ enum Result lws_c_listen_result_error(SWIGTYPE_p_std__expectedT_LWS__EventConnec
 void lws_c_listen_result_delete(SWIGTYPE_p_std__expectedT_LWS__EventConnection_LWS__Result_t* result)
 {
     delete reinterpret_cast<ListenResult*>(result);
+}
+
+SWIGTYPE_p_std__unique_ptrT_LWSUI__Control_t* lws_c_label_take(LWSUI_Label* label)
+{
+    return reinterpret_cast<SWIGTYPE_p_std__unique_ptrT_LWSUI__Control_t*>(new Owner(reinterpret_cast<LWSUI::Label*>(label)));
+}
+SWIGTYPE_p_std__unique_ptrT_LWSUI__Control_t* lws_c_text_box_take(LWSUI_TextBox* textBox)
+{
+    return reinterpret_cast<SWIGTYPE_p_std__unique_ptrT_LWSUI__Control_t*>(new Owner(reinterpret_cast<LWSUI::TextBox*>(textBox)));
+}
+SWIGTYPE_p_std__unique_ptrT_LWSUI__Control_t* lws_c_stack_panel_take(LWSUI_StackPanel* panel)
+{
+    return reinterpret_cast<SWIGTYPE_p_std__unique_ptrT_LWSUI__Control_t*>(new Owner(reinterpret_cast<LWSUI::StackPanel*>(panel)));
+}
+SWIGTYPE_p_std__unique_ptrT_LWSUI__Control_t* lws_c_panel_take(LWSUI_Panel* panel)
+{
+    return reinterpret_cast<SWIGTYPE_p_std__unique_ptrT_LWSUI__Control_t*>(new Owner(reinterpret_cast<LWSUI::Panel*>(panel)));
+}
+void lws_c_window_config_set_styles(LWS_WindowConfig* config, unsigned int styles)
+{
+    reinterpret_cast<LWS::WindowConfig*>(config)->styles = LWS::WindowStyleFlags(static_cast<LWS::WindowStyle>(styles));
+}
+SWIGTYPE_p_std__move_only_functionT_LWS__EventResponse_fLWS__AnyEvent_const_RF_t* lws_c_window_close_callback_new(lws_c_callback callback, void* user)
+{
+    if (!callback) return nullptr;
+    auto* value = new LWS::EventCallback([callback, user](const LWS::AnyEvent& event) {
+        if (std::holds_alternative<LWS::EventCloseRequested>(event)) {
+            callback(user);
+            return LWS::EventResponse::Handled;
+        }
+        if (std::holds_alternative<LWS::EventWindowDestroyed>(event)) callback(user);
+        return LWS::EventResponse::Unhandled;
+    });
+    return reinterpret_cast<SWIGTYPE_p_std__move_only_functionT_LWS__EventResponse_fLWS__AnyEvent_const_RF_t*>(value);
+}
+
+enum Result lws_c_window_request_close(LWS_Window* window)
+{
+    if (!window) return Result_InvalidArgument;
+    const auto handle = LWS::Win32::GetHwnd(*reinterpret_cast<LWS::Window*>(window));
+    if (!handle) return static_cast<enum Result>(handle.error());
+    return PostMessageW(*handle, WM_CLOSE, 0, 0) ? Result_Success : Result_Failure;
 }

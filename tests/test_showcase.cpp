@@ -76,6 +76,14 @@ TEST_CASE("Showcase catalog binds every public control to the connected demo", "
     showcase.Command("Events");
     REQUIRE(events.Window().IsVisible());
 
+    #ifdef LWS_HAS_WIN32_BACKEND
+    REQUIRE(showcase.MainWindow().GetSnappingState().role == LWS::WindowSnappingRole::Leader);
+    REQUIRE(events.Window().GetSnappingState().role == LWS::WindowSnappingRole::Follower);
+    REQUIRE(menuHost.Window().GetSnappingState().role == LWS::WindowSnappingRole::Follower);
+    for (const auto& sample : showcase.Samples())
+        if (sample.type == "TextBox")
+            REQUIRE(sample.control->Host()->Window().GetSnappingState().role == LWS::WindowSnappingRole::Follower);
+    #endif
     REQUIRE(showcase.MainWindow().GetWindowStyles() == LWS::WindowStyle::ResizableBorder);
     #ifdef LWS_HAS_WIN32_BACKEND
     REQUIRE((GetWindowLongW(*LWS::Win32::GetHwnd(showcase.MainWindow()), GWL_STYLE) & WS_CAPTION) == 0);

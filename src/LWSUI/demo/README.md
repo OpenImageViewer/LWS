@@ -5,6 +5,38 @@ platform context and event loop on Windows and Wayland. Every window starts in
 Light theme; the Theme menus also offer Dark and Warm. All sizes below are logical
 pixels; monitor scaling changes physical pixel sizes.
 
+## Dedicated snapping demo
+
+On Windows, build and run `LWSUISnappingDemo` to open two leaders and two smaller
+followers in a separate four-window demo:
+
+```powershell
+cmake --build build --target LWSUISnappingDemo
+.\build\LWSUISnappingDemo.exe
+```
+
+All four windows start separated with window and screen-edge snapping enabled.
+Leaders start resizable, followers start fixed-size, and Always on top starts off.
+Each window has checkboxes for Snap to windows, Snap to screen edges, Always on
+top, and Resizable. A role choice offers Independent, Leader, and Follower.
+Role changes retain the window's size category. Attachment status and follower
+counts update through state-change notifications.
+
+Drag either role against the other to attach opposite edges. Move a leader to
+carry its followers, or drag a follower away to detach or attach it to the other
+leader. Disabling Snap to windows also excludes that window as a geometric target,
+even if Snap to screen edges remains enabled. Matching roles can align but cannot
+attach. Independent windows can align without participating in attachments.
+
+Detach and Release followers retain roles and modes. Reset demo in either original
+leader window restores all four windows' properties and positions. Close any
+window to exit. Property panels scroll when reduced window sizes need more space.
+
+`LWSUISnappingDemo --smoke` exercises controls, both attachment directions,
+follower transfer, disabled targets, release, reset, reduced viewports, and shutdown
+with a live attachment. `LWSUISnappingDemoSmoke` is registered with CTest when tests
+are enabled. The demo is built under `LWSUI_BUILD_DEMO` on Win32 only.
+
 ## Windows and native panes
 
 | Surface | Behavior |
@@ -26,6 +58,35 @@ split. Closing a companion hides it; the Workspace's Window menu reopens it with
 its state intact. Closing the Workspace or choosing Exit ends the application.
 Windows initial positions are offset within the work area; Wayland placement is
 controlled by the compositor.
+
+## Window snapping
+
+Each desktop window has an independent snapping mode, initially Disabled.
+Use Window > Snapping in the Workspace, Controls Gallery, and Events windows.
+Use View > Snapping in the Menu Gallery. When the menu is detached, that submenu
+offers separate settings for the Menu Gallery and the detached menu window.
+Choose Disabled, Screen edges, Other windows, or Screen edges and other windows,
+then drag the window to try the selected mode. The checkmark shows its current setting.
+
+The Attachment role submenu selects Independent, Leader, or Follower.
+Workspace starts as Leader, and companion and detached menu windows start as
+Followers. Enable Other windows or Screen edges and other windows on both
+participants, then drag either window against the other to attach them. Window
+snapping pairs opposite edges only, such as left to right or top to bottom.
+Disabling Snap to windows, including selecting Screen edges alone, also excludes
+that window as a geometric snap target in this LWS context.
+
+Moving the leader carries all its followers. Dragging a follower directly pulls
+it free without moving the leader or siblings. The follower can snap back to its
+former leader or to another leader during the same drag, attaching on release. Matching roles still align without attaching.
+
+The menu shows Attached/Unattached status or a follower count. Detach and Release
+followers keep the selected roles and snapping modes. These menus refresh from
+state-change events. Changing roles, disabling window snapping, resizing, hiding,
+minimizing, maximizing, fullscreen, or closing a window also releases its attachments.
+
+Snapping works on Windows and is disabled in the Wayland menus. The native child
+panes move with the Workspace and use its snapping setting.
 
 ## Captionless Workspace
 

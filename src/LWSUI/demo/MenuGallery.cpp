@@ -1,3 +1,4 @@
+#include "SnappingMenu.hpp"
 #include <LWSUI/UIHost.hpp>
 #include "Showcase.hpp"
 #include <LWSUI/Composites.hpp>
@@ -136,6 +137,7 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
         std::unique_ptr<LWSUI::UIHost> host;
         LWS::EventConnection dragListener;
         LWS::EventConnection closeListener;
+        LWS::EventConnection snappingListener;
     };
     constexpr float kDetachedPadding = 8.f;
     constexpr float kDetachedExtra = 64.f;
@@ -179,7 +181,7 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
                                      : LWSUI::MenuDock::Top);
         applyPlacement(dock, vertical);
     };
-    const auto buildItems = [&](const MenuState& state)
+    const auto buildItems = [&](const MenuState& state, LWS::Window* detachedWindow = nullptr)
     {
         const auto theme = [&state, &showcase](LWSUI::ThemePreset preset, const char* label)
         {
@@ -242,6 +244,18 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
                                               .action = [&orientBar, &state] { orientBar(!state.vertical); },
                                               .checked = state.vertical}}}}},
             {"&Help", {LWSUI::MenuItem{.label = "&About", .action = command("help/about")}}}};
+        auto snapping = SnappingMenu(window, [&refresh] { refresh(); });
+        if (detachedWindow)
+        {
+            snapping.label = "&Menu Gallery";
+            auto detachedSnapping = SnappingMenu(*detachedWindow, [&refresh] { refresh(); });
+            detachedSnapping.label = "&Detached menu window";
+            items[2].items.push_back({.label = "&Snapping",
+                                      .enabled = snapping.enabled,
+                                      .submenu = {std::move(snapping), std::move(detachedSnapping)}});
+        }
+        else
+            items[2].items.push_back(std::move(snapping));
         if (state.detached || state.dock == LWSUI::MenuDock::Floating)
             items.insert(items.begin(), {"⠿", {}, false});
         return items;
@@ -253,7 +267,7 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
         if (detached)
             if (auto* bar = detached->host->MainMenu())
             {
-                bar->SetItems(buildItems(menuState));
+                bar->SetItems(buildItems(menuState, detached->window.get()));
                 const float span = bar->NaturalSpan();
                 const float thickness = bar->Thickness();
                 const auto resized = detached->window->RequestPlacement(LWS::WindowPlacementRequest{
@@ -265,6 +279,29 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
                     showcase.Log("Error: Cannot resize detached menu window");
             }
     };
+    const auto weakSnappingLifetime = std::weak_ptr(lifetime);
+    const auto observeSnapping = [&](LWS::Window& observed)
+    {
+        return observed.Listen(
+            [&, weakSnappingLifetime](const LWS::AnyEvent& event)
+            {
+                if (std::holds_alternative<LWS::EventSnappingStateChanged>(event) && !weakSnappingLifetime.expired())
+                {
+                    const auto result = platform.PostTask(
+                        [&, weakSnappingLifetime]
+                        {
+                            if (!weakSnappingLifetime.expired())
+                                refresh();
+                        });
+                    if (result != LWS::Result::Success)
+                        showcase.Log("Error: Cannot refresh snapping state");
+                }
+                return LWS::EventResponse::Unhandled;
+            });
+    };
+    auto snappingListener = observeSnapping(window);
+    if (!snappingListener)
+        return 3;
     host.SetMainMenu(std::make_unique<LWSUI::MenuBar>(buildItems(menuState)), menuState.dock);
     host.MainMenu()->orientation = LWSUI::Orientation::Vertical;
     showcase.OnThemeChanged = [&](LWSUI::ThemePreset preset)
@@ -305,12 +342,21 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
                                                         : LWS::LogicalSize{int32_t(span + kDetachedExtra),
                                                                            int32_t(thickness + kDetachedPadding)};
                         detachedConfig.styles = LWS::WindowStyle::NoStyle;
+                        if (platform.GetBackendId() == LWS::BackendId::Win32)
+                            detachedConfig.snappingRole = LWS::WindowSnappingRole::Follower;
                         detachedConfig.backgroundColor = LWSUI::MakeTheme(menuState.preset).background;
                         if (candidate->window->Create(detachedConfig) != LWS::Result::Success)
                         {
                             showcase.Log("Error: Cannot create detached menu window");
                             return;
                         }
+                        auto snapping = observeSnapping(*candidate->window);
+                        if (!snapping)
+                        {
+                            showcase.Log("Error: Cannot observe detached menu snapping");
+                            return;
+                        }
+                        candidate->snappingListener = std::move(*snapping);
                         auto* detachedWindow = candidate->window.get();
                         auto* candidateMenu = candidate.get();
                         auto dragListener = detachedWindow->Listen(
@@ -337,7 +383,7 @@ int LWSUI::demo::RunShowcase(int argc, char** argv)
                         candidate->host = std::make_unique<LWSUI::UIHost>(*candidate->window,
                                                                           LWSUI::MakeTheme(menuState.preset));
                         menuState.detached = true;
-                        auto bar = std::make_unique<LWSUI::MenuBar>(buildItems(menuState));
+                        auto bar = std::make_unique<LWSUI::MenuBar>(buildItems(menuState, detachedWindow));
                         bar->orientation = menuState.vertical ? LWSUI::Orientation::Vertical
                                                               : LWSUI::Orientation::Horizontal;
                         candidate->host->SetMainMenu(std::move(bar), LWSUI::MenuDock::Floating);

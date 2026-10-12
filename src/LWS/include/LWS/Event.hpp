@@ -103,11 +103,16 @@ namespace LWS
     {
     };
 
-    using AnyEvent = std::variant<EventClientAreaSizeChanged, EventMove, EventCloseRequested, EventWindowDestroyed,
-                                  EventFocusGained, EventFocusLost, EventShowStateChanged, EventKeyDown, EventKeyUp,
-                                  EventMouseMove, EventMouseButton, EventMouseWheel, EventPaint, EventDragDropFile,
-                                  EventWindowDestroying, EventTextInput, EventMouseLeave, EventMouseCaptureLost,
-                                  EventPopupDismissed>;
+    /// Role or attachment state changed. Query Window::GetSnappingState() for current state.
+    struct EventSnappingStateChanged
+    {
+    };
+
+    using AnyEvent =
+        std::variant<EventClientAreaSizeChanged, EventMove, EventCloseRequested, EventWindowDestroyed, EventFocusGained,
+                     EventFocusLost, EventShowStateChanged, EventKeyDown, EventKeyUp, EventMouseMove, EventMouseButton,
+                     EventMouseWheel, EventPaint, EventDragDropFile, EventWindowDestroying, EventTextInput,
+                     EventMouseLeave, EventMouseCaptureLost, EventPopupDismissed, EventSnappingStateChanged>;
 
     enum class EventResponse
     {
