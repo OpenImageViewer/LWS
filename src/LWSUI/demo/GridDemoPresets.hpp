@@ -7,7 +7,7 @@ namespace LWSUI::demo::grid
         Choice choice;
         std::string description;
         GridOptions options;
-        bool pinnedColumns = false, list = false, externalModel = false;
+        bool pinnedColumns = false, list = false, externalModel = false, randomModel = false, wideModel = false;
         std::string headerStyle = "default";
     };
     inline Preset MakePreset(Choice choice, std::string description, std::function<void(Preset&)> configure = {})
@@ -67,7 +67,27 @@ namespace LWSUI::demo::grid
             MakePreset({"Large external model", "large"},
                        "Explore a million-row external dataset with virtual scrolling, without creating a control for "
                        "every row.",
-                       [](Preset& p) { p.externalModel = true; })};
+                       [](Preset& p) { p.externalModel = true; }),
+            MakePreset({"Random 100 million rows", "random100m"},
+                       "100,000,000 virtual random rows. Drag the scrollbar inward for finer control. "
+                       "Horizontal row mode estimates its scroll unit using row height.",
+                       [](Preset& p)
+                       {
+                           p.randomModel = true;
+                           p.options.dynamicResolution = true;
+                           p.options.lineNumbers = true;
+                           p.options.readOnly = true;
+                           p.options.multipleSelection = false;
+                           p.options.editing = p.options.sorting = p.options.selectAll = p.options.resizing = false;
+                       }),
+            MakePreset({"Wide columns", "wide"}, "1,000 virtual rows and 1,000 columns. Drag the bottom scrollbar upward for finer horizontal scrolling.",
+                       [](Preset& p)
+                       {
+                           p.wideModel = true;
+                           p.options.dynamicResolution = p.options.lineNumbers = p.options.readOnly = true;
+                           p.options.multipleSelection = false;
+                           p.options.editing = p.options.sorting = p.options.selectAll = p.options.resizing = false;
+                       })};
     }
     inline Theme CompactTheme(ThemePreset preset)
     {

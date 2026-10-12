@@ -6,11 +6,13 @@
 #endif
 #include <LWSUI/GridView.hpp>
 #include "GridDemoPresets.hpp"
+#include "ScrollFeedback.hpp"
 #include <LWSUI/Composites.hpp>
 #include <LWSUI/UIHost.hpp>
 #include <fstream>
 #include <cmath>
 #include <iostream>
+#include <sstream>
 #include <deque>
 #include <unordered_map>
 using namespace LWSUI;
@@ -57,12 +59,50 @@ namespace
                 std::string("DEMO"),
                 bool(i % 4 != 0)};
     }
+    std::vector<GridValue> RandomValues(GridRowId row)
+    {
+        auto values = Values(row);
+        uint64_t seed = row ^ 0x9e3779b97f4a7c15ULL;
+        const auto next = [&]()
+        {
+            seed += 0x9e3779b97f4a7c15ULL;
+            auto value = seed;
+            value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+            value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+            return value ^ (value >> 31);
+        };
+        values[0] = "Random " + std::to_string(next() % 1000000000);
+        values[1] = std::string(next() % 3 == 0 ? "design" : next() % 2 == 0 ? "engineering" : "support");
+        values[2] = int64_t(next() % 1000001);
+        values[3] = double(next() % 4000001) / 4;
+        values[4] = double(next() % 101) / 100;
+        values[5] = "R" + std::to_string(next() % 10000);
+        values[6] = bool(next() & 1);
+        return values;
+    }
+    class SpeedProgress final : public Control
+    {
+      public:
+        void SetSpeed(double value) { speed_ = value; Invalidate(); }
+      protected:
+        Size OnMeasure(Size available) override { return {std::min(100.f, available.width), 16}; }
+        Size OnMeasureContent(Size available) override { return OnMeasure(available); }
+        void OnRender(Canvas& canvas) override
+        {
+            const auto b = Bounds();
+            canvas.Fill(b.x, b.y, b.width, b.height, Style().surface);
+            canvas.Fill(b.x, b.y, b.width * float(std::clamp(speed_ / 100., 0., 1.)), b.height, Style().accent);
+        }
+      private:
+        double speed_ = 100;
+    };
     class LargeModel final : public GridModel
     {
       public:
 
+        explicit LargeModel(bool random = false) : random_(random) {}
         std::span<const GridModelColumn> Columns() const override { return columns_; }
-        size_t RowCount() const override { return 1000000; }
+        size_t RowCount() const override { return random_ ? 100000000 : 1000000; }
         GridRowId RowId(size_t i) const override
         {
             if (i >= RowCount())
@@ -83,11 +123,12 @@ namespace
                 throw std::out_of_range("Column identity");
             const auto col = size_t(it - columns_.begin());
             auto changed = overrides_.find(cell.row);
-            return changed != overrides_.end() ? changed->second[col] : Values(cell.row)[col];
+            return changed != overrides_.end() ? changed->second[col] : (random_ ? RandomValues(cell.row) : Values(cell.row))[col];
         }
-        bool Editable(const GridCell& cell) const override { return IndexOf(cell.row).has_value(); }
+        bool Editable(const GridCell& cell) const override { return !random_ && IndexOf(cell.row).has_value(); }
         GridStatus SetValue(const GridCell& cell, const GridValue& value) override
         {
+            if (random_) return std::unexpected("Read-only random model");
             auto it = std::ranges::find(columns_, cell.column, &GridModelColumn::id);
             if (it == columns_.end() || !IndexOf(cell.row))
                 return std::unexpected("Unknown cell");
@@ -104,8 +145,34 @@ namespace
 
       private:
 
+        bool random_ = false;
         std::vector<GridModelColumn> columns_ = Definitions();
         std::unordered_map<GridRowId, std::vector<GridValue>> overrides_;
+    };
+    class WideModel final : public GridModel
+    {
+      public:
+        WideModel()
+        {
+            for (size_t i = 0; i < 1000; ++i) columns_.push_back({"c" + std::to_string(i + 1), GridValueType::Integer});
+        }
+        std::span<const GridModelColumn> Columns() const override { return columns_; }
+        size_t RowCount() const override { return 1000; }
+        GridRowId RowId(size_t index) const override { return index + 1; }
+        std::optional<size_t> IndexOf(GridRowId id) const override { return id && id <= RowCount() ? std::optional<size_t>(id - 1) : std::nullopt; }
+        GridValue Value(const GridCell& cell) const override
+        {
+            ++reads;
+            const auto column = std::ranges::find(columns_, cell.column, &GridModelColumn::id);
+            if (!IndexOf(cell.row) || column == columns_.end()) throw std::out_of_range("Unknown wide cell");
+            const uint64_t seed = cell.row * 6364136223846793005ULL + uint64_t(column - columns_.begin()) * 1442695040888963407ULL;
+            return int64_t((seed ^ (seed >> 32)) % 1000000);
+        }
+        bool Editable(const GridCell&) const override { return false; }
+        GridStatus SetValue(const GridCell&, const GridValue&) override { return std::unexpected("Read-only wide model"); }
+        mutable size_t reads = 0;
+      private:
+        std::vector<GridModelColumn> columns_;
     };
     class UppercaseEditor final : public GridCellEditor
     {
@@ -259,6 +326,8 @@ int main(int argc, char** argv)
             return {};
         };
         auto large = std::make_shared<LargeModel>();
+        auto random = std::make_shared<LargeModel>(true);
+        auto wide = std::make_shared<WideModel>();
         const auto presets = demo::grid::Presets();
         std::vector<Choice> presetChoices;
         for (const auto& item : presets)
@@ -284,12 +353,20 @@ int main(int argc, char** argv)
         auto* reset = resetControl.get();
         reset->focusLossPhase = EditPhase::Cancel;
         toolbar->AddItem(std::move(resetControl), false, 130);
+        toolbar->AddItem(std::make_unique<Label>("Scroll speed"), false, 90);
+        auto speedControl = std::make_unique<SpeedProgress>();
+        auto& speedProgress = *speedControl;
+        toolbar->AddItem(std::move(speedControl), false, 100);
+        auto speedText = std::make_unique<demo::SpeedReadout>();
+        auto& speedValue = *speedText;
+        toolbar->AddItem(std::move(speedText), false, 70);
         top->Add(std::move(toolbar));
         auto& description = top->Emplace<Label>();
         description.wrap = true;
         auto& instructions = top->Emplace<Label>(
             "Drag headers to move columns. Drag boundaries to resize. Double-click/F2 edits. Ctrl/Shift selects rows. "
-            "Drag progress bars to adjust them. Shift+wheel scrolls horizontally.");
+            "Drag progress bars to adjust them. Shift+wheel scrolls horizontally. "
+            "With dynamic resolution enabled, drag the scrollbar inward to reduce speed.");
         instructions.wrap = true;
         instructions.fontRole = Control::FontRole::Small;
         root->AddDocked(std::move(top), Dock::Top);
@@ -333,7 +410,10 @@ int main(int argc, char** argv)
                                     {"Drag value edits", &GridOptions::dragEditing},
                                     {"Ctrl+A selects all", &GridOptions::selectAll},
                                     {"Tab navigates cells", &GridOptions::tabNavigation},
-                                    {"Context menus", &GridOptions::contextMenus}};
+                                    {"Context menus", &GridOptions::contextMenus},
+                                    {"Dynamic resolution", &GridOptions::dynamicResolution},
+                                    {"Line numbers", &GridOptions::lineNumbers},
+                                    {"Show guide", &GridOptions::resolutionGuide}};
         for (auto& toggle : toggles)
         {
             toggle.control = &featureChecks->Emplace<CheckBox>(toggle.label);
@@ -346,13 +426,19 @@ int main(int argc, char** argv)
         auto& costVisible = featureChecks->Emplace<CheckBox>("Show cost column");
         featureStack->Add(std::move(featureChecks));
         auto fields = std::make_unique<Grid>();
-        fields->columns = {90, -1};
+        fields->columns = {120, -1};
         fields->spacing = 4;
         fields->Emplace<Label>("Row height");
         auto& rowHeight = fields->Emplace<NumericEdit<int64_t>>(NumericSpec<int64_t>{24, 80, 2});
         fields->Emplace<Label>("Header style");
         auto& headerStyle = fields->Emplace<ComboBox>(
             std::vector<Choice>{{"Theme default", "default"}, {"Blue header", "blue"}, {"Amber header", "amber"}});
+        fields->Emplace<Label>("Fine resolution");
+        auto& resolution = fields->Emplace<ComboBox>(std::vector<Choice>{{"One row", "row"}, {"One pixel", "pixel"}});
+        fields->Emplace<Label>("Line label");
+        auto& lineLabel = fields->Emplace<TextBox>("Line");
+        fields->Emplace<Label>("Inward distance %");
+        auto& distance = fields->Emplace<NumericEdit<int64_t>>(NumericSpec<int64_t>{1, 100, 1});
         featureStack->Add(std::move(fields));
         auto& metrics = featureStack->Emplace<Label>();
         metrics.wrap = true;
@@ -404,6 +490,10 @@ int main(int argc, char** argv)
                     toggle.member == &GridOptions::f2Edit || toggle.member == &GridOptions::typingEdit ||
                     toggle.member == &GridOptions::dragEditing)
                     enabled = options.editing && !options.readOnly;
+                if ((grid->Model() == random || grid->Model() == wide) && (toggle.member == &GridOptions::sorting ||
+                    toggle.member == &GridOptions::selectAll || toggle.member == &GridOptions::resizing ||
+                    toggle.member == &GridOptions::editing || toggle.member == &GridOptions::multipleSelection || toggle.member == &GridOptions::readOnly)) enabled = false;
+                if (toggle.member == &GridOptions::resolutionGuide) enabled = options.dynamicResolution;
                 toggle.control->SetEnabled(enabled);
             }
             const auto column = [&](const std::string& id) -> const GridColumn*
@@ -411,11 +501,18 @@ int main(int argc, char** argv)
                 auto it = std::ranges::find(grid->Columns(), id, &GridColumn::id);
                 return it == grid->Columns().end() ? nullptr : &*it;
             };
+            leftPin.SetEnabled(column("name") != nullptr);
             leftPin.SetValue(column("name") && column("name")->pin == GridPin::Left);
             rightPin.SetValue(column("enabled") && column("enabled")->pin == GridPin::Right);
             rightPin.SetEnabled(column("enabled") != nullptr);
             costVisible.SetValue(column("cost") && column("cost")->visible);
             costVisible.SetEnabled(column("cost") != nullptr);
+            lineLabel.SetText(options.lineNumberLabel);
+            lineLabel.SetEnabled(options.lineNumbers);
+            distance.SetValue(int64_t(std::lround(options.inwardDistance * 100)));
+            distance.SetEnabled(options.dynamicResolution);
+            resolution.SetValue(options.centerResolution == ScrollResolution::Row ? "row" : "pixel");
+            resolution.SetEnabled(options.dynamicResolution);
             rowHeight.SetValue(int64_t(options.rowHeight));
             headerStyle.SetEnabled(options.headerVisible);
             metrics.SetText(std::to_string(grid->Model()->RowCount()) + " rows. Visible: " +
@@ -428,9 +525,20 @@ int main(int argc, char** argv)
             if (item == presets.end())
                 throw std::invalid_argument("Unknown grid preset");
             grid->FinishEdit(EditPhase::Cancel);
-            grid->SetModel(item->externalModel ? std::static_pointer_cast<GridModel>(large)
+            grid->SetModel(item->wideModel ? std::static_pointer_cast<GridModel>(wide) : item->randomModel ? std::static_pointer_cast<GridModel>(random) : item->externalModel ? std::static_pointer_cast<GridModel>(large)
                                                : std::static_pointer_cast<GridModel>(model));
             auto columns = Columns();
+            if (item->wideModel)
+            {
+                columns.clear();
+                for (const auto& definition : wide->Columns())
+                {
+                    GridColumn column{definition.id, "Column " + definition.id.substr(1)};
+                    column.width = 160;
+                    column.editable = column.sortable = column.resizable = false;
+                    columns.push_back(std::move(column));
+                }
+            }
             if (item->pinnedColumns)
             {
                 columns.front().pin = GridPin::Left;
@@ -442,7 +550,9 @@ int main(int argc, char** argv)
                 columns.front().widthMode = GridWidthMode::Proportional;
             }
             grid->SetColumns(std::move(columns));
-            grid->SetOptions(item->options);
+            auto options = item->options;
+            options.resolutionGuide = true;
+            grid->SetOptions(options);
             GridAppearance appearance;
             appearance.headerPadding = 6;
             appearance.cellPadding = 4;
@@ -460,6 +570,30 @@ int main(int argc, char** argv)
             sync();
             record("Layout: " + name);
         };
+        auto resolutionConnection = resolution.OnChange.Connect([&](const std::string& mode)
+        {
+            auto options = grid->Options();
+            options.centerResolution = mode == "pixel" ? ScrollResolution::Pixel : ScrollResolution::Row;
+            grid->SetOptions(options);
+        });
+        auto labelConnection = lineLabel.OnEdit.Connect([&](const std::string& label, EditPhase phase)
+        {
+            if (phase == EditPhase::Preview) return;
+            auto options = grid->Options();
+            options.lineNumberLabel = label;
+            grid->SetOptions(options);
+        });
+        auto distanceConnection = distance.OnEdit.Connect([&](int64_t percent, EditPhase)
+        {
+            auto options = grid->Options();
+            options.inwardDistance = double(percent) / 100;
+            grid->SetOptions(options);
+        });
+        auto speedConnection = grid->OnScrollSpeed.Connect([&](double speed)
+        {
+            speedProgress.SetSpeed(speed);
+            speedValue.SetSpeed(speed);
+        });
         std::vector<Event<void(bool)>::Connection> checks;
         for (const auto& toggle : toggles)
             checks.push_back(toggle.control->OnChange.Connect(
@@ -682,6 +816,66 @@ int main(int argc, char** argv)
                                 grid->ClearSelection();
                                 host.Update();
                             }
+                            if (item.wideModel)
+                            {
+                                const auto reads = wide->reads;
+                                grid->SetPreciseScrollOffset(160000, 0);
+                                host.Update();
+                                if (!grid->CellBounds({1, "c1000"}) || wide->reads - reads > 2000)
+                                    throw std::runtime_error("Wide grid did not reach the final column with bounded reads");
+                                auto* horizontal = static_cast<ScrollBar*>(grid->Children()[1].get());
+                                const auto bar = horizontal->Bounds(), area = grid->Bounds();
+                                const float x = bar.x + bar.width - 5, y = bar.y + bar.height / 2;
+                                pointer({.kind = InputKind::Down, .x = x, .y = y});
+                                pointer({.kind = InputKind::Move, .x = x, .y = area.y});
+                                if (!horizontal->ResolutionDragging() || horizontal->ScrollSpeed() >= 100)
+                                    throw std::runtime_error("Wide horizontal resolution did not engage");
+                                if (snapshot)
+                                    for (const std::string palette : {"dark", "light", "warm"})
+                                    {
+                                        applyTheme(palette);
+                                        Snapshot(host, "grid-wide-horizontal-" + palette + (narrow ? "-narrow.ppm" : ".ppm"));
+                                    }
+                                pointer({.kind = InputKind::Up, .x = x, .y = area.y});
+                            }
+                            if (item.randomModel)
+                            {
+                                if (random->RowCount() != 100000000 || random->Value({99999990, "count"}) != random->Value({99999990, "count"}))
+                                    throw std::runtime_error("Random virtual model is not stable");
+                                grid->SetPreciseScrollOffset(0, 99999980. * grid->Options().rowHeight);
+                                host.Update();
+                                if (grid->FirstVisibleRow() != 99999980 || random->reads > 10000)
+                                    throw std::runtime_error("Random virtual grid lost precision or read too many cells");
+                                auto* bar = static_cast<ScrollBar*>(grid->Children().front().get());
+                                const auto b = bar->Bounds(), area = grid->Bounds();
+                                const float x = b.x + b.width / 2, y = b.y + b.height - 5;
+                                pointer({.kind = InputKind::Down, .x = x, .y = y});
+                                pointer({.kind = InputKind::Move, .x = area.x + area.width / 2, .y = y});
+                                if (snapshot)
+                                    for (const std::string palette : {"dark", "light", "warm"})
+                                    {
+                                        applyTheme(palette);
+                                        Snapshot(host, "grid-resolution-vertical-" + palette + (narrow ? "-narrow.ppm" : ".ppm"));
+                                    }
+                                pointer({.kind = InputKind::Up, .x = area.x + area.width / 2, .y = y});
+                                auto fineOptions = grid->Options();
+                                fineOptions.centerResolution = ScrollResolution::Pixel;
+                                grid->SetOptions(fineOptions);
+                                sync();
+                                host.Update();
+                                auto* horizontal = static_cast<ScrollBar*>(grid->Children()[1].get());
+                                const auto h = horizontal->Bounds();
+                                const float hx = h.x + 8, hy = h.y + h.height / 2;
+                                pointer({.kind = InputKind::Down, .x = hx, .y = hy});
+                                pointer({.kind = InputKind::Move, .x = hx, .y = area.y + area.height / 2});
+                                if (snapshot)
+                                    for (const std::string palette : {"dark", "light", "warm"})
+                                    {
+                                        applyTheme(palette);
+                                        Snapshot(host, "grid-resolution-horizontal-" + palette + (narrow ? "-narrow.ppm" : ".ppm"));
+                                    }
+                                pointer({.kind = InputKind::Up, .x = hx, .y = area.y + area.height / 2});
+                            }
                             if (snapshot)
                                 Snapshot(host, "grid-" + item.choice.value + (narrow ? "-narrow.ppm" : ".ppm"));
                         }
@@ -702,7 +896,7 @@ int main(int argc, char** argv)
                                 Snapshot(host, "grid-theme-" + palette + (narrow ? "-narrow.ppm" : ".ppm"));
                             }
                         }
-                        std::cout << "Grid demo smoke: 9 presets, 1000000 external rows, " << large->reads
+                        std::cout << "Grid demo smoke: 11 presets, 1000000 external rows, 100000000 random rows, " << large->reads
                                   << " external cell reads\n";
                     }
                     catch (const std::exception& e)

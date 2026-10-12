@@ -215,14 +215,17 @@ demo and are not additional LWSUI public APIs.
 
 ## Standalone grid demo
 
-`LWSUIGridDemo` is a separate GUI executable without a Windows console window with nine layout presets and a scrollable
+`LWSUIGridDemo` is a separate GUI executable without a Windows console window with eleven layout presets and a scrollable
 two-column feature panel to the right of the grid, including single-click editing
 and sticky-header options. In single-click mode, checkboxes toggle and progress
 bars support captured dragging with a live preview and a commit on release.
 The Drag value edits checkbox controls these gestures independently of single-click
 editing. Escape cancels a drag. Every preset explains its purpose. The compact demo
 styles leave reusable control defaults unchanged. See [GridView](../GridView.md) for the full
-configuration and event contract. It shares the ordinary LWSUI library and is
+configuration and event contract. Dynamic resolution is opt-in, with Row/Pixel
+precision, a drag guide overlay, and a Scroll speed progress indicator. The Random
+100 million rows preset generates stable values on demand. Horizontal row mode
+uses row height as an estimate, with a TODO to find a better horizontal unit. It shares the ordinary LWSUI library and is
 built under `LWSUI_BUILD_DEMO`. Its `--smoke` and `--snapshot` modes cover all presets.
 `--snapshot-narrow` also verifies the minimum-size two-column configuration panel.
 
@@ -247,3 +250,52 @@ Gallery snapshots also include controls-light.ppm, controls-dark.ppm, controls-w
 LWSUIDemo uses the Windows GUI subsystem and does not create a console. Its dedicated Events window displays the latest 200 output entries in chronological order, with selection, copy, scrolling, and Clear log. Closing the Events window hides it. Window > Events reopens it with its retained history. The existing Activity and Menu Gallery summaries show the latest 18 entries from the same history. Fatal startup errors use a Windows dialog, while smoke runs return a failure status without showing a dialog.
 
 The GridDemo smoke check exercises native Win32 mouse messages, including checkbox clicks and progress dragging. It can be launched from a local path or a UNC path to check network execution. The UI demos use normal Windows image-loading behavior without a special network-loader flag.
+
+## Two-axis scrolling with regular controls
+
+Build and run `LWSUIScrollDemo` to explore a 64-by-64 collection of real control
+cards in a two-axis ScrollView. Cards contain buttons, checkboxes and editable
+text fields, retaining state as they leave and return to the viewport.
+The Grid side slider selects 16 through 256 cards per axis, from 256 to 65,536
+cards. Its label previews the dimensions and total. Releasing the slider rebuilds
+the cards and resets their values and scroll position.
+Dynamic resolution and its guide initially enable, with Pixel precision selected.
+Use the feature checkboxes, inward-distance percentage and precision selector
+in the toolbar. The Scroll speed progress bar reports the active gesture.
+Wheel scrolls vertically and Shift+wheel horizontally.
+
+`ScrollViewOptions` exposes `horizontalScroll`, `dynamicResolution`,
+`resolutionGuide`, `inwardDistance`, and `resolution`. Horizontal scrolling and
+dynamic resolution default to disabled. The default inward fraction is `0.5`.
+`SetContentMinimumSize` gives ordinary containers a minimum content extent.
+`SetScrollOffset` and `ScrollOffset` manage both axes, while existing `SetOffset`
+and `Offset` remain vertical APIs. `OnScroll` reports offsets and `OnScrollSpeed`
+reports display speed. Row precision uses `Style().scrollStep` as an estimated
+line unit, with fine sensitivity capped at normal sensitivity for small ranges.
+
+`--smoke` exercises child interaction and state preservation, and both scrollbar
+gestures. `--snapshot` writes both orientations in Dark, Light and Warm themes.
+`--snapshot-narrow` checks the minimum-size layout. CTest runs
+`LWSUIScrollDemoSmoke` alongside the grid demo smoke check.
+
+The ScrollView example initially contains 4,096 real cards on a 16,640-by-7,680
+logical canvas. At the maximum setting, 65,536 cards span 66,560 by 30,720.
+Changing the population creates all cards, so large settings take longer to build. Each card owns a label and an interactive button, checkbox or text field.
+All cards remain allocated, so values and focus survive scrolling. This is a
+larger real-control example, not a virtual data grid.
+
+Offset-only scrolling reuses measured content extents. Descendant layout
+invalidation, viewport changes, scrollbar policy changes and explicit measurement
+refresh the cache. The fixed-size speed readout only invalidates painting, so
+changing percentages does not force measurement of the entire window.
+
+The fixed card layout also caches each card's arrangement. Scrolling updates
+only cards intersecting the viewport and the focused card. Drawing and pointer
+hit testing use the same fixed row/column geometry, while all real controls
+remain owned and keep their state. A focus change to an off-screen card refreshes
+its coordinates before painting. Theme and layout measurement refresh the card
+cache, including previously unseen cards when they enter the viewport.
+
+The sample card container skips descendant preview traversal because its primitive
+controls have no preview handlers. Normal pointer and keyboard dispatch remains
+active, including capture and editing.
