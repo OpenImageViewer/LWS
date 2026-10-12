@@ -9,6 +9,8 @@
     #include <mutex>
     #include <algorithm>
     #include <cmath>
+    #include <cstring>
+    #include <limits>
     #include <optional>
     #include <stdexcept>
     #include <utility>
@@ -1220,9 +1222,13 @@ namespace LWS
 
     bool WindowBackendWin32::drawBitmap(HDC dc) const
     {
-        if (!fPresentedBitmap || !dc)
+        if ((!fPresentedBitmap && !fPresentedPixels) || !dc)
             return false;
-        auto bitmap = fPresentedBitmap->GetBuffer();
+        const auto bitmap = fPresentedPixels
+                                ? BitmapBuffer{{fPresentedPixels.get(), fPresentedPixelSize},
+                                               BitmapPixelFormat::Bgra8Premultiplied, BitmapRowOrder::TopDown,
+                                               fPresentedWidth, fPresentedHeight, fPresentedWidth * 4U}
+                                : fPresentedBitmap->GetBuffer();
         BITMAPINFO info{};
         info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         info.bmiHeader.biWidth = static_cast<LONG>(bitmap.width);
@@ -1241,13 +1247,39 @@ namespace LWS
     {
         if (!fHwnd)
             return Result::InvalidState;
-        if (!internal::validateBitmapBuffer(bitmap) || bitmap.width > LONG_MAX / 4 || bitmap.height > LONG_MAX)
+        const auto layout = internal::validateBitmapBuffer(bitmap);
+        if (!layout || bitmap.width > LONG_MAX / 4 || bitmap.height > LONG_MAX)
             return Result::Failure;
         try
         {
-            // Retain an owned immutable copy for later WM_PAINT. Reusable storage is
-            // deferred until allocation profiling justifies separate conversion/size logic.
-            fPresentedBitmap = std::make_unique<Bitmap>(bitmap);
+            // Keep an owned snapshot for WM_PAINT. The common UI format can reuse
+            // its storage, while other formats retain Bitmap's conversion behavior.
+            if (bitmap.format == BitmapPixelFormat::Bgra8Premultiplied)
+            {
+                if (static_cast<size_t>(bitmap.width) > std::numeric_limits<size_t>::max() / 4U / bitmap.height)
+                    return Result::Failure;
+                const size_t rowSize = static_cast<size_t>(bitmap.width) * 4U;
+                const size_t bytes = rowSize * bitmap.height;
+                if (bytes != fPresentedPixelSize)
+                    fPresentedPixels = std::make_unique_for_overwrite<std::byte[]>(bytes);
+                for (uint32_t y = 0; y < bitmap.height; ++y)
+                {
+                    const uint32_t sourceY = bitmap.rowOrder == BitmapRowOrder::TopDown ? y : bitmap.height - y - 1;
+                    std::memcpy(fPresentedPixels.get() + static_cast<size_t>(y) * rowSize,
+                                bitmap.pixels.data() + static_cast<size_t>(sourceY) * layout->rowPitch, rowSize);
+                }
+                fPresentedPixelSize = bytes;
+                fPresentedWidth = bitmap.width;
+                fPresentedHeight = bitmap.height;
+                fPresentedBitmap.reset();
+            }
+            else
+            {
+                auto converted = std::make_unique<Bitmap>(bitmap);
+                fPresentedBitmap = std::move(converted);
+                fPresentedPixels.reset();
+                fPresentedPixelSize = 0;
+            }
         }
         catch (const std::invalid_argument&)
         {
@@ -1711,6 +1743,8 @@ namespace LWS
                 fSnappingPosition.reset();
                 fSnappingSize.reset();
                 fPresentedBitmap.reset();
+                fPresentedPixels.reset();
+                fPresentedPixelSize = 0;
                 fPendingHighSurrogate = 0;
                 if (fDragAndDrop != nullptr)
                 {

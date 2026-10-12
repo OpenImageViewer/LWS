@@ -142,6 +142,10 @@ namespace LWS
 
         bool drawBitmap(HDC dc) const;
         std::unique_ptr<Bitmap> fPresentedBitmap;
+        // Owned packed premultiplied pixels, reused between equal-sized frames.
+        std::unique_ptr<std::byte[]> fPresentedPixels;
+        size_t fPresentedPixelSize = 0;
+        uint32_t fPresentedWidth = 0, fPresentedHeight = 0;
         wchar_t fPendingHighSurrogate = 0;
         HWND fHwnd = nullptr;
         // Coordinate conversion runs for every input event, so refresh this cache only when the window DPI changes.
