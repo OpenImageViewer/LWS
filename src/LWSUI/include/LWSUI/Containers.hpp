@@ -33,6 +33,13 @@ namespace LWSUI
 
         std::vector<float> rowHeights_;
     };
+    // Row resolution estimates a line using Theme::scrollStep. Horizontal scrolling is opt-in.
+    struct ScrollViewOptions
+    {
+        bool horizontalScroll = false, dynamicResolution = false, resolutionGuide = false;
+        double inwardDistance = .5;
+        ScrollResolution resolution = ScrollResolution::Row;
+    };
     class ScrollView : public Container
     {
       public:
@@ -41,7 +48,16 @@ namespace LWSUI
         void SetContent(std::unique_ptr<Control> content);
         Control* Content() const { return content_; }
         void SetOffset(float offset);
-        float Offset() const { return offset_; }
+        float Offset() const { return offset_.height; }
+        void SetScrollOffset(float x, float y);
+        Size ScrollOffset() const { return offset_; }
+        void SetOptions(ScrollViewOptions);
+        const ScrollViewOptions& Options() const { return options_; }
+        // Minimum logical content extent, independent of the viewport dimensions.
+        void SetContentMinimumSize(Size);
+        Size ContentMinimumSize() const { return minimumContent_; }
+        Event<void(Size)> OnScroll;
+        Event<void(double)> OnScrollSpeed;
         bool overlayScrollBar = false;
         Control* HitTest(float x, float y) override;
 
@@ -61,9 +77,17 @@ namespace LWSUI
         using Container::Remove;
 
         Control* content_ = nullptr;
-        ScrollBar* bar_;
-        float offset_ = 0, extent_ = 0;
-        LWSUI::Event<void(double, EditPhase)>::Connection connection_;
+        ScrollBar *bar_, *horizontal_;
+        Size offset_{}, extent_{}, minimumContent_{};
+        Rect viewport_{};
+        ScrollViewOptions options_{};
+        void LayoutContent(Size available);
+        std::optional<Size> measuredAvailable_;
+        uint64_t measuredRevision_ = 0;
+        float measuredGutter_ = 0;
+        bool measuredOverlay_ = false;
+        Event<void(double, EditPhase)>::Connection connection_, horizontalConnection_;
+        Event<void(double)>::Connection verticalSpeed_, horizontalSpeed_;
     };
     struct Insets
     {

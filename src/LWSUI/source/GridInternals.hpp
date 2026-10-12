@@ -80,19 +80,24 @@ namespace LWSUI::internal
     };
     struct GridLayout
     {
-        Rect viewport, body, header, center, left, right;
+        Rect viewport, body, header, center, left, right, lineNumbers;
         std::vector<GridColumnGeometry> columns;
-        float horizontalExtent = 0, verticalExtent = 0, scrollPageHeight = 0, rowOffset = 0;
-        float VerticalLimit() const { return std::max(0.f, verticalExtent - scrollPageHeight); }
+        float horizontalExtent = 0, scrollPageHeight = 0;
+        double verticalExtent = 0, rowOffset = 0;
+        double VerticalLimit() const { return std::max(0., verticalExtent - scrollPageHeight); }
         float RowY(size_t row, float height) const { return body.y + float(double(row) * height - rowOffset); }
         bool horizontalBar = false, verticalBar = false;
         void Build(Rect bounds, const std::vector<GridColumn>& definitions, const GridOptions& options, size_t rowCount,
-                   float bar, float offsetX, float offsetY)
+                   float bar, double offsetX, double offsetY, float numberWidth = 0)
         {
             columns.clear();
+            const float numberX = bounds.x;
+            numberWidth = std::clamp(numberWidth, 0.f, std::max(0.f, bounds.width - bar));
+            bounds.x += numberWidth;
+            bounds.width -= numberWidth;
             const float headerHeight = options.headerVisible ? options.headerHeight : 0;
             const float fixedHeader = options.stickyHeaders ? std::min(bounds.height, headerHeight) : 0;
-            verticalExtent = float(double(rowCount) * options.rowHeight) + (options.stickyHeaders ? 0 : headerHeight);
+            verticalExtent = double(rowCount) * options.rowHeight + (options.stickyHeaders ? 0 : headerHeight);
             std::vector<float> widths(definitions.size());
             float fixed = 0, weights = 0;
             for (size_t i = 0; i < definitions.size(); ++i)
@@ -140,10 +145,11 @@ namespace LWSUI::internal
             const float width = std::max(0.f, bounds.width - (verticalBar ? bar : 0));
             viewport = {bounds.x, bounds.y, width, std::max(0.f, bounds.height - (horizontalBar ? bar : 0))};
             scrollPageHeight = std::max(0.f, viewport.height - fixedHeader);
-            header = {bounds.x, bounds.y - (options.stickyHeaders ? 0 : offsetY), width, headerHeight};
+            header = {bounds.x, bounds.y - float(options.stickyHeaders ? 0 : offsetY), width, headerHeight};
             const float remainingHeader = std::clamp(header.y + header.height - viewport.y, 0.f, viewport.height);
             body = {bounds.x, bounds.y + remainingHeader, width, viewport.height - remainingHeader};
-            rowOffset = options.stickyHeaders ? offsetY : std::max(0.f, offsetY - headerHeight);
+            lineNumbers = {numberX, body.y, numberWidth, body.height};
+            rowOffset = options.stickyHeaders ? offsetY : std::max(0., offsetY - headerHeight);
             float leftWidth = 0, rightWidth = 0, middleWidth = 0;
             for (size_t i = 0; i < definitions.size(); ++i)
                 if (definitions[i].pin == GridPin::Left)
@@ -161,7 +167,7 @@ namespace LWSUI::internal
             horizontalExtent = center.width > 0 ? std::max(0.f, middleWidth - center.width) : 0;
             horizontalBar = horizontalExtent > 0;
             float xLeft = body.x, xRight = body.x + width - rightWidth,
-                  xMiddle = center.x - std::min(offsetX, horizontalExtent);
+                  xMiddle = center.x - float(std::min(offsetX, double(horizontalExtent)));
             for (size_t i = 0; i < definitions.size(); ++i)
             {
                 const auto& c = definitions[i];
@@ -169,7 +175,7 @@ namespace LWSUI::internal
                     continue;
                 float& x = c.pin == GridPin::Left ? xLeft : c.pin == GridPin::Right ? xRight : xMiddle;
                 const auto region = c.pin == GridPin::Left ? left : c.pin == GridPin::Right ? right : center;
-                const Rect boundsCell{x, body.y - rowOffset, widths[i], body.height};
+                const Rect boundsCell{x, body.y - float(rowOffset), widths[i], body.height};
                 x += widths[i];
                 columns.push_back({i, boundsCell, region});
             }

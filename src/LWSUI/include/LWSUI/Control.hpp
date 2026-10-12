@@ -201,6 +201,8 @@ namespace LWSUI
         virtual void OnPointerLeave() {}
         virtual void OnAttach() {}
         virtual void OnDetach() {}
+        // Changes when this subtree explicitly invalidates intrinsic layout.
+        uint64_t LayoutRevision() const { return layoutRevision_; }
         void Capture();
         void ReleaseCapture();
 
@@ -215,6 +217,7 @@ namespace LWSUI
         std::string tooltip_;
         Rect bounds_;
         Size desired_;
+        uint64_t layoutRevision_ = 0;
         std::optional<Size> measureRequest_;
         struct AllocationHint
         {

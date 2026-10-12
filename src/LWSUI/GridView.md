@@ -171,7 +171,7 @@ Build `LWSUIGridDemo` with `LWSUI_BUILD_DEMO=ON`. On Windows it is a GUI executa
 without a console window. Interactive fatal errors use a dialog, while automated
 runs retain redirected diagnostics and exit codes. Its ComboBox offers Comfortable,
 Compact, Striped, Styled Headers, Read-only, Mixed Editors, Sticky Columns,
-Single-column List and Large External Model presets. The right-side scrollable
+Single-column List, Large External Model, Random 100 million rows and Wide columns presets. The right-side scrollable
 panel changes configuration immediately through two columns of compact checkboxes.
 Every preset has a purpose description supplied by the same private preset catalog
 that supplies its choices and configuration. The demo uses a 1180 x 740 client
@@ -187,7 +187,7 @@ rejected by model validation. Edited sample data survives presentation changes.
 The external model generates one million rows synchronously without allocating
 one control or stored record per row.
 
-`--smoke` exercises all nine presets, verifies immediate checkbox actions and progress dragging across row boundaries,
+`--smoke` exercises all eleven presets, verifies immediate checkbox actions and progress dragging across row boundaries,
 and exits. `--snapshot` also writes
 `grid-<preset>.ppm` for every preset in the working directory, plus Light/Warm
 palette snapshots and a scrolled-header example. `--snapshot-narrow` captures the minimum-size layout using
@@ -201,3 +201,77 @@ Research references are [Dear ImGui tables](https://github.com/ocornut/imgui/blo
 [Avalonia DataGrid](https://github.com/AvaloniaUI/Avalonia/blob/master/src/Avalonia.Controls.DataGrid/DataGrid.cs),
 [Qt QTableView](https://github.com/qt/qtbase/blob/dev/src/widgets/itemviews/qtableview.h),
 and [wxWidgets grid](https://github.com/wxWidgets/wxWidgets/blob/master/include/wx/generic/grid.h).
+
+## Dynamic-resolution scrolling
+
+`GridOptions::dynamicResolution` is opt-in and defaults to false. During a scrollbar
+drag, move the pointer inward into the grid to reduce sensitivity
+exponentially. Moving sideways alone changes speed without changing the scroll
+position. Track clicks retain their initial jump and engage dynamic resolution
+for subsequent dragging. Returning toward the scrollbar restores normal sensitivity without a
+jump. The same behavior applies to horizontal scrollbars when moving upward.
+
+`centerResolution` selects `ScrollResolution::Row` or `ScrollResolution::Pixel`.
+At the configured inward distance, each logical pointer pixel scrolls one row-height or one content
+pixel respectively. Beyond that distance, the fine sensitivity stays constant.
+Horizontal row mode uses row height as an estimated horizontal scroll unit.
+TODO: Find a better horizontal unit based on column widths or another meaningful
+measure. Fine sensitivity never exceeds normal sensitivity for small ranges.
+
+Standalone `ScrollBar` users enable `SetDynamicResolution(true)` and supply the
+containing bounds, maximum content offset, line size, and mode through
+`ConfigureResolution`. `ScrollSpeed` and `OnScrollSpeed` expose display feedback.
+Release, cancellation, capture loss, detach, and configuration changes reset it.
+
+`resolutionGuide` optionally renders a noninteractive drag guide, endpoint reference,
+pointer marker, and one current-speed label. It defaults to false and is enabled in the demo.
+The demo toolbar displays a read-only progress bar labeled **Scroll speed**.
+Normal speed is 100%, row precision is 1%, and pixel precision is
+`1 / rowHeight` percent. These are a display scale rather than a physical ratio
+of fine sensitivity to normal sensitivity. The indicator resets after dragging.
+
+`SetPreciseScrollOffset`, `PreciseScrollOffset`, and `OnPreciseScroll` use
+`GridScrollOffset` with double coordinates. Existing float scroll methods and
+`OnScroll` remain available, but lose precision for very large offsets.
+
+The **Random 100 million rows** preset generates repeatable pseudorandom values
+on demand without allocating the dataset. It opts into dynamic resolution and
+disables editing, sorting, multi-row selection, select-all, and resizing/auto-size
+operations to keep interaction bounded. The original million-row preset remains.
+
+## Line numbers
+
+Set `GridOptions::lineNumbers = true` to show a read-only **Line** column pinned
+at the left edge. The option defaults to false and is enabled in the Random
+100 million rows preset. Numbers are one-based positions in the current display
+order, so sorting renumbers positions rather than displaying model row IDs.
+The column sizes itself for the row count and stays visible during horizontal
+scrolling. It respects row height, striping, header visibility, and sticky headers.
+It is a presentation column, separate from model data and `Columns()`. It cannot
+be edited, sorted, resized, reordered, hidden through column menus, or copied.
+Rendering generates only visible numbers and does not read model cell values.
+
+## Configurable headers and inward distance
+
+`lineNumberLabel` sets the read-only line-number column header. It defaults to
+`"Line"` and can be empty. Column measurement accounts for the configured label.
+The demo enables its label field when the Line numbers checkbox is checked.
+
+`inwardDistance` is the fraction of the containing control's full perpendicular
+size traversed inward from the scrollbar's inner edge. It defaults to `0.5`,
+approximately the center. A vertical scrollbar uses control width, a horizontal
+scrollbar uses control height. Valid values are finite, greater than zero, and
+at most one. At 100% the pointer can reach past the opposite edge by the scrollbar
+gutter width because measurement starts at the inner edge. Capture keeps the
+active drag working outside the control. Changing distance cancels the gesture.
+Standalone ScrollBar users configure it through `SetInwardDistance`.
+
+The demo provides Dynamic resolution and Show guide checkboxes, a 1%-100%
+distance field, and Row/Pixel precision selection. Distance and precision are
+available when dynamic resolution is enabled. Guide rendering is shared with
+ScrollView through `ScrollBar::RenderResolutionGuide`.
+
+The Wide columns preset uses 1,000 virtual rows and 1,000 fixed-width columns
+with stable generated values. It enables dynamic resolution and line numbers.
+Editing, sorting, select-all, multi-row selection and auto-sizing are disabled.
+Its horizontal scrollbar demonstrates a substantial sensitivity reduction.

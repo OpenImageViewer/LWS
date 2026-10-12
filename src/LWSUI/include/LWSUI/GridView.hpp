@@ -60,6 +60,10 @@ namespace LWSUI
         User,
         Programmatic
     };
+    struct GridScrollOffset
+    {
+        double width = 0, height = 0;
+    };
     struct GridOptions
     {
         bool selection = true, fullRowSelect = true, multipleSelection = false;
@@ -68,8 +72,16 @@ namespace LWSUI
         bool horizontalLines = true, verticalLines = true, copy = true, copyHeaders = false;
         bool singleClickEdit = false, doubleClickEdit = true, f2Edit = true, typingEdit = true;
         bool selectAll = true, tabNavigation = true, contextMenus = true, dragEditing = true;
+        bool dynamicResolution = false, resolutionGuide = false;
+        ScrollResolution centerResolution = ScrollResolution::Row;
         float rowHeight = 34, headerHeight = 36;
         std::string emptyText = "No rows";
+        // Read-only, pinned column showing one-based positions in the current display order.
+        bool lineNumbers = false;
+        // Header text for the presentation-only line-number column, empty is allowed.
+        std::string lineNumberLabel = "Line";
+        // Inward fraction of the full perpendicular control dimension, in (0, 1].
+        double inwardDistance = .5;
     };
     struct GridAppearance
     {
@@ -202,6 +214,11 @@ namespace LWSUI
         bool CopySelection();
         void SetScrollOffset(float x, float y);
         Size ScrollOffset() const;
+        // Double precision preserves individual rows and pixels in very large virtual models.
+        void SetPreciseScrollOffset(double x, double y);
+        GridScrollOffset PreciseScrollOffset() const;
+        Event<void(GridScrollOffset)> OnPreciseScroll;
+        Event<void(double)> OnScrollSpeed;
         std::optional<Rect> CellBounds(const GridCell&) const;
         std::optional<GridCell> CellAt(float x, float y) const;
         size_t FirstVisibleRow() const;

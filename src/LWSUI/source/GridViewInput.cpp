@@ -86,7 +86,7 @@ namespace LWSUI
             return Finish(EditPhase::Cancel);
         if (input.kind == InputKind::Wheel)
         {
-            SetScrollOffset(impl_->offset.width - (input.shift ? input.wheel * Style().scrollStep : 0),
+            SetPreciseScrollOffset(impl_->offset.width - (input.shift ? input.wheel * Style().scrollStep : 0),
                             impl_->offset.height - (!input.shift ? input.wheel * Style().scrollStep : 0));
             return true;
         }

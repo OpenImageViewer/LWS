@@ -176,7 +176,10 @@ namespace LWSUI
         // Detached trees need the same invalidation semantics without a host generation.
         if (layout)
             for (auto* control = this; control; control = control->parent_)
+            {
                 control->allocationHint_.reset();
+                ++control->layoutRevision_;
+            }
         if (host_)
             host_->Invalidate(layout);
     }

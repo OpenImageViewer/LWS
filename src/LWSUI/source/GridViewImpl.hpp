@@ -14,7 +14,7 @@ namespace LWSUI
         internal::GridSelection selection;
         GridColumnId sortColumn;
         GridSortDirection direction = GridSortDirection::None;
-        Size offset;
+        GridScrollOffset offset;
         ScrollBar *vertical = nullptr, *horizontal = nullptr;
         GridCellEditor* editor = nullptr;
         GridCell editCell;
@@ -24,6 +24,7 @@ namespace LWSUI
         Event<void(const GridModelChange&)>::Connection modelConnection;
         Event<void(double, EditPhase)>::Connection verticalConnection, horizontalConnection;
         Event<void(EditPhase)>::Connection editConnection;
+        Event<void(double)>::Connection verticalSpeed, horizontalSpeed;
         bool finishing = false, applying = false, focusTransition = false;
         enum class Drag
         {

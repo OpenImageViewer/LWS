@@ -3,6 +3,7 @@
 #include <LWSUI/UIHost.hpp>
 #include <cmath>
 #include <stdexcept>
+#include <sstream>
 namespace LWSUI
 {
     FontSpec GridView::Impl::HeaderFont() const { return appearance.headerFont.value_or(owner.Style().headingFont); }
@@ -36,14 +37,14 @@ namespace LWSUI
         auto index = projection.Index(*model, cell.row);
         if (!index)
             return;
-        float y = offset.height;
-        const float top = float(double(*index) * options.rowHeight) +
+        double y = offset.height;
+        const double top = double(*index) * options.rowHeight +
                           (options.headerVisible && !options.stickyHeaders ? options.headerHeight : 0);
         if (top < y)
             y = top;
         if (top + options.rowHeight > y + layout.scrollPageHeight)
             y = top + options.rowHeight - layout.scrollPageHeight;
-        float x = offset.width, position = 0;
+        double x = offset.width, position = 0;
         for (const auto& c : columns)
         {
             if (!c.visible || c.pin != GridPin::None)
@@ -61,14 +62,16 @@ namespace LWSUI
             }
             position += width;
         }
-        owner.SetScrollOffset(x, y);
+        owner.SetPreciseScrollOffset(x, y);
     }
-    void GridView::SetScrollOffset(float x, float y)
+    void GridView::SetScrollOffset(float x, float y) { SetPreciseScrollOffset(x, y); }
+    GridScrollOffset GridView::PreciseScrollOffset() const { return impl_->offset; }
+    void GridView::SetPreciseScrollOffset(double x, double y)
     {
         if (!std::isfinite(x) || !std::isfinite(y))
             throw std::invalid_argument("Scroll offsets must be finite");
-        x = std::clamp(x, 0.f, impl_->layout.horizontalExtent);
-        y = std::clamp(y, 0.f, impl_->layout.VerticalLimit());
+        x = std::clamp(x, 0., double(impl_->layout.horizontalExtent));
+        y = std::clamp(y, 0., impl_->layout.VerticalLimit());
         if (x == impl_->offset.width && y == impl_->offset.height)
             return;
         if (!FinishEdit(EditPhase::Commit))
@@ -76,11 +79,12 @@ namespace LWSUI
         impl_->offset = {x, y};
         OnArrange();
         Invalidate();
-        OnScroll.Raise(impl_->offset);
+        OnScroll.Raise({float(x), float(y)});
+        OnPreciseScroll.Raise(impl_->offset);
     }
     Size GridView::ScrollOffset() const
     {
-        return impl_->offset;
+        return {float(impl_->offset.width), float(impl_->offset.height)};
     }
     size_t GridView::FirstVisibleRow() const
     {
@@ -133,24 +137,42 @@ namespace LWSUI
             (b.width != impl_->arrangedSize.width || b.height != impl_->arrangedSize.height))
             impl_->CancelDrag();
         impl_->arrangedSize = {b.width, b.height};
+        float numberWidth = 0;
+        if (impl_->options.lineNumbers)
+        {
+            const auto text = std::to_string(impl_->model ? impl_->model->RowCount() : 0);
+            const auto measure = [&](std::string_view value, const FontSpec& font)
+            {
+                return Host() ? Host()->MeasureText(value, 100000.f, false, font).width
+                              : float(value.size()) * font.size * .65f;
+            };
+            numberWidth = std::max(measure(text, Font()) + 2 * impl_->appearance.cellPadding,
+                                   measure(impl_->options.lineNumberLabel, impl_->HeaderFont()) + 2 * impl_->appearance.headerPadding);
+        }
         impl_->layout.Build(b, impl_->columns, impl_->options, impl_->model ? impl_->model->RowCount() : 0, bar,
-                            impl_->offset.width, impl_->offset.height);
-        const Size adjusted{std::clamp(impl_->offset.width, 0.f, impl_->layout.horizontalExtent),
-                            std::clamp(impl_->offset.height, 0.f, impl_->layout.VerticalLimit())};
+                            impl_->offset.width, impl_->offset.height, numberWidth);
+        const GridScrollOffset adjusted{std::clamp(impl_->offset.width, 0., double(impl_->layout.horizontalExtent)),
+                            std::clamp(impl_->offset.height, 0., impl_->layout.VerticalLimit())};
         if (adjusted.width != impl_->offset.width || adjusted.height != impl_->offset.height)
         {
             impl_->offset = adjusted;
             impl_->layout.Build(b, impl_->columns, impl_->options, impl_->model ? impl_->model->RowCount() : 0, bar,
-                                adjusted.width, adjusted.height);
+                                adjusted.width, adjusted.height, numberWidth);
         }
+        impl_->vertical->SetInwardDistance(impl_->options.inwardDistance);
+        impl_->horizontal->SetInwardDistance(impl_->options.inwardDistance);
+        impl_->vertical->SetDynamicResolution(impl_->options.dynamicResolution);
+        impl_->horizontal->SetDynamicResolution(impl_->options.dynamicResolution);
+        impl_->vertical->ConfigureResolution(b, impl_->layout.VerticalLimit(), impl_->options.rowHeight, impl_->options.centerResolution);
+        impl_->horizontal->ConfigureResolution(b, impl_->layout.horizontalExtent, impl_->options.rowHeight, impl_->options.centerResolution);
         impl_->vertical->SetVisible(impl_->layout.verticalBar);
         impl_->horizontal->SetVisible(impl_->layout.horizontalBar);
-        impl_->vertical->SetPage(impl_->layout.scrollPageHeight / std::max(1.f, impl_->layout.verticalExtent));
+        impl_->vertical->SetPage(impl_->layout.scrollPageHeight / std::max(1., impl_->layout.verticalExtent));
         impl_->horizontal->SetPage(impl_->layout.center.width /
                                    std::max(1.f, impl_->layout.center.width + impl_->layout.horizontalExtent));
-        impl_->vertical->SetValue(impl_->offset.height / std::max(1.f, impl_->layout.VerticalLimit()));
+        impl_->vertical->SetValue(impl_->offset.height / std::max(1., impl_->layout.VerticalLimit()));
         impl_->horizontal->SetValue(impl_->offset.width / std::max(1.f, impl_->layout.horizontalExtent));
-        impl_->vertical->Arrange({b.x + impl_->layout.body.width,
+        impl_->vertical->Arrange({impl_->layout.viewport.x + impl_->layout.viewport.width,
                                   impl_->options.stickyHeaders ? impl_->layout.body.y : impl_->layout.viewport.y, bar,
                                   impl_->layout.scrollPageHeight});
         impl_->horizontal->Arrange({impl_->layout.center.x, impl_->layout.body.y + impl_->layout.body.height,
@@ -291,6 +313,39 @@ namespace LWSUI
                 }
             }
         }
+        if (o.lineNumbers && layout.lineNumbers.width > 0)
+        {
+            const auto gutter = layout.lineNumbers;
+            {
+                Canvas::ClipScope clip(canvas, gutter.x, layout.viewport.y, gutter.width, layout.viewport.height);
+                if (o.headerVisible)
+                {
+                    Rect header{gutter.x, layout.header.y, gutter.width, layout.header.height};
+                    canvas.Fill(header.x, header.y, header.width, header.height, a.headerBackground.value_or(theme.background));
+                    AlignedText(canvas, o.lineNumberLabel, header, a.headerAlignment, a.headerPadding,
+                                a.headerForeground.value_or(theme.foreground), impl_->HeaderFont());
+                    canvas.Line(header.x, header.y + header.height - 1, header.x + header.width,
+                                header.y + header.height - 1, a.borderWidth, a.headerBorder.value_or(line));
+                }
+            }
+            canvas.Line(gutter.x + gutter.width - 1, layout.viewport.y, gutter.x + gutter.width - 1,
+                        layout.viewport.y + layout.viewport.height, a.borderWidth, line);
+            Canvas::ClipScope clip(canvas, gutter.x, gutter.y, gutter.width, gutter.height);
+            for (size_t i = FirstVisibleRow(), end = i + VisibleRowCount(); i < end; ++i)
+            {
+                Rect row{gutter.x, layout.RowY(i, o.rowHeight), gutter.width, o.rowHeight};
+                auto background = a.cellBackground.value_or(theme.surface);
+                if (o.striped && i % 2) background = a.alternateRow.value_or(theme.background);
+                canvas.Fill(row.x, row.y, row.width, row.height, background);
+                AlignedText(canvas, std::to_string(i + 1), row, Alignment::End, a.cellPadding,
+                            a.cellForeground.value_or(theme.foreground), Font());
+                if (o.horizontalLines)
+                    canvas.Line(row.x, row.y + row.height - 1, row.x + row.width, row.y + row.height - 1,
+                                a.borderWidth, line);
+            }
+            canvas.Line(gutter.x + gutter.width - 1, gutter.y, gutter.x + gutter.width - 1,
+                        gutter.y + gutter.height, a.borderWidth, line);
+        }
         if (!impl_->model || impl_->model->RowCount() == 0)
             AlignedText(canvas, o.emptyText, layout.body, Alignment::Center, 8, theme.muted, Font());
         for (float x : {layout.center.x, layout.right.x})
@@ -309,6 +364,13 @@ namespace LWSUI
         }
         if (impl_->editor)
             impl_->editor->Render(canvas);
+        if (o.resolutionGuide)
+        {
+            Canvas::ClipScope clip(canvas, Bounds().x, layout.viewport.y,
+                                   layout.viewport.x + layout.viewport.width - Bounds().x, layout.viewport.height);
+            impl_->vertical->RenderResolutionGuide(canvas);
+            impl_->horizontal->RenderResolutionGuide(canvas);
+        }
         impl_->vertical->Render(canvas);
         impl_->horizontal->Render(canvas);
     }

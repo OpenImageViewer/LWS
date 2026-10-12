@@ -298,10 +298,12 @@ namespace LWSUI
         impl_->horizontal->SetOrientation(Orientation::Horizontal);
         impl_->verticalConnection = impl_->vertical->OnEdit.Connect(
             [this](double f, EditPhase)
-            { SetScrollOffset(impl_->offset.width, float(f) * impl_->layout.VerticalLimit()); });
+            { SetPreciseScrollOffset(impl_->offset.width, f * impl_->layout.VerticalLimit()); });
         impl_->horizontalConnection = impl_->horizontal->OnEdit.Connect(
             [this](double f, EditPhase)
-            { SetScrollOffset(float(f) * impl_->layout.horizontalExtent, impl_->offset.height); });
+            { SetPreciseScrollOffset(f * impl_->layout.horizontalExtent, impl_->offset.height); });
+        impl_->verticalSpeed = impl_->vertical->OnScrollSpeed.Connect([this](double speed) { Invalidate(); OnScrollSpeed.Raise(speed); });
+        impl_->horizontalSpeed = impl_->horizontal->OnScrollSpeed.Connect([this](double speed) { Invalidate(); OnScrollSpeed.Raise(speed); });
         SetContextMenuProvider([](Control& c, const ContextMenuRequest& r)
                                { return static_cast<GridView&>(c).impl_->Menu(r); });
     }
@@ -331,6 +333,8 @@ namespace LWSUI
         FinishEdit(EditPhase::Cancel);
         impl_->CancelDrag();
         OnPointerLeave();
+        impl_->vertical->Finish(EditPhase::Cancel);
+        impl_->horizontal->Finish(EditPhase::Cancel);
         impl_->modelConnection.Disconnect();
         impl_->model = std::move(model);
         impl_->sortColumn.clear();
@@ -401,6 +405,8 @@ namespace LWSUI
         if (!std::isfinite(options.rowHeight) || !std::isfinite(options.headerHeight) || options.rowHeight <= 0 ||
             options.headerHeight <= 0)
             throw std::invalid_argument("Grid heights must be finite and positive");
+        if (!std::isfinite(options.inwardDistance) || options.inwardDistance <= 0 || options.inwardDistance > 1)
+            throw std::invalid_argument("Invalid inward distance");
         const auto old = impl_->options;
         if (options.readOnly || !options.editing || old.singleClickEdit != options.singleClickEdit)
             FinishEdit(EditPhase::Cancel);
@@ -410,7 +416,7 @@ namespace LWSUI
             const float oldHeader = old.headerVisible && !old.stickyHeaders ? old.headerHeight : 0;
             const float newHeader = options.headerVisible && !options.stickyHeaders ? options.headerHeight : 0;
             if (impl_->offset.height > 0)
-                impl_->offset.height = std::max(0.f, impl_->offset.height - oldHeader) + newHeader;
+                impl_->offset.height = std::max(0., impl_->offset.height - oldHeader) + newHeader;
         }
         impl_->options = std::move(options);
         if (!impl_->options.selection)
@@ -892,6 +898,8 @@ namespace LWSUI
     {
         if (!FinishEdit(phase))
             return false;
+        impl_->vertical->Finish(phase);
+        impl_->horizontal->Finish(phase);
         if (phase == EditPhase::Cancel)
             impl_->CancelDrag();
         return true;

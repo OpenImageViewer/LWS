@@ -135,78 +135,141 @@ namespace LWSUI
     ScrollView::ScrollView()
     {
         bar_ = &Emplace<ScrollBar>();
-        connection_ = bar_->OnEdit.Connect([this](double fraction, EditPhase)
-                                           { SetOffset(float(fraction) * std::max(0.f, extent_ - Bounds().height)); });
+        horizontal_ = &Emplace<ScrollBar>();
+        horizontal_->SetOrientation(Orientation::Horizontal);
+        horizontal_->SetVisible(false);
+        connection_ = bar_->OnEdit.Connect([this](double value, EditPhase)
+            { SetScrollOffset(offset_.width, float(value * std::max(0.f, extent_.height - viewport_.height))); });
+        horizontalConnection_ = horizontal_->OnEdit.Connect([this](double value, EditPhase)
+            { SetScrollOffset(float(value * std::max(0.f, extent_.width - viewport_.width)), offset_.height); });
+        verticalSpeed_ = bar_->OnScrollSpeed.Connect([this](double speed) { Invalidate(); OnScrollSpeed.Raise(speed); });
+        horizontalSpeed_ = horizontal_->OnScrollSpeed.Connect([this](double speed) { Invalidate(); OnScrollSpeed.Raise(speed); });
+    }
+    void ScrollView::SetOptions(ScrollViewOptions options)
+    {
+        if (!std::isfinite(options.inwardDistance) || options.inwardDistance <= 0 || options.inwardDistance > 1)
+            throw std::invalid_argument("Invalid inward distance");
+        bar_->Finish(EditPhase::Cancel);
+        horizontal_->Finish(EditPhase::Cancel);
+        options_ = options;
+        if (!options.horizontalScroll) offset_.width = 0;
+        Invalidate(true);
+    }
+    void ScrollView::SetContentMinimumSize(Size size)
+    {
+        if (!std::isfinite(size.width) || !std::isfinite(size.height) || size.width < 0 || size.height < 0)
+            throw std::invalid_argument("Invalid minimum content size");
+        bar_->Finish(EditPhase::Cancel);
+        horizontal_->Finish(EditPhase::Cancel);
+        minimumContent_ = size;
+        Invalidate(true);
     }
     void ScrollView::SetContent(std::unique_ptr<Control> content)
     {
-        if (content_)
-            Remove(*content_);
-        content_ = content.get();
-        Add(std::move(content));
-        offset_ = 0;
+        bar_->Finish(EditPhase::Cancel);
+        horizontal_->Finish(EditPhase::Cancel);
+        if (content_) Remove(*content_);
+        content_ = content ? &Add(std::move(content)) : nullptr;
+        offset_ = {};
+        extent_ = {};
+        Invalidate(true);
+    }
+    void ScrollView::LayoutContent(Size available)
+    {
+        const float gutter = Style().scrollbarWidth + Style().scrollbarMargin;
+        const float width = std::max(0.f, available.width - (overlayScrollBar ? 0 : gutter));
+        const float contentWidth = options_.horizontalScroll ? std::max(width, minimumContent_.width) : width;
+        const auto measured = content_ ? content_->Measure({contentWidth, std::max(available.height, minimumContent_.height)}) : Size{};
+        extent_ = content_ ? Size{options_.horizontalScroll ? std::max(contentWidth, measured.width) : width,
+                                 std::max(minimumContent_.height, measured.height)} : Size{};
+        const bool horizontal = options_.horizontalScroll && extent_.width > width;
+        viewport_ = {Bounds().x, Bounds().y, width,
+                     std::max(0.f, available.height - (horizontal && !overlayScrollBar ? gutter : 0))};
+        measuredAvailable_ = available;
+        measuredRevision_ = LayoutRevision();
+        measuredGutter_ = gutter;
+        measuredOverlay_ = overlayScrollBar;
     }
     Size ScrollView::OnMeasure(Size available)
     {
-        if (content_)
-            extent_ = content_
-                          ->Measure({std::max(0.f, available.width - (overlayScrollBar ? 0
-                                                                                       : Style().scrollbarWidth +
-                                                                                             Style().scrollbarMargin)),
-                                     available.height})
-                          .height;
-        bar_->Measure({7, available.height});
-        return {available.width, std::min(extent_, available.height)};
+        LayoutContent(available);
+        bar_->Measure({Style().scrollbarWidth, available.height});
+        horizontal_->Measure({available.width, Style().scrollbarWidth});
+        return {available.width, std::min(available.height, extent_.height)};
     }
     void ScrollView::OnArrange()
     {
-        auto b = Bounds();
-        offset_ = std::clamp(offset_, 0.f, std::max(0.f, extent_ - b.height));
-        if (content_)
-            content_->Arrange(
-                {b.x, b.y - offset_,
-                 std::max(0.f, b.width - (overlayScrollBar ? 0 : Style().scrollbarWidth + Style().scrollbarMargin)),
-                 extent_});
-        bar_->SetVisible(extent_ > b.height);
-        bar_->SetPage(b.height / std::max(1.f, extent_));
-        bar_->SetValue(offset_ / std::max(1.f, extent_ - b.height));
-        bar_->Arrange(
-            {b.x + b.width - Style().scrollbarWidth - Style().scrollbarMargin, b.y, Style().scrollbarWidth, b.height});
+        const auto b = Bounds();
+        // Offset-only moves reuse measured extents. Descendant layout invalidation,
+        // changed viewport dimensions and scrollbar policy invalidate this cache.
+        if (!measuredAvailable_ || measuredAvailable_->width != b.width || measuredAvailable_->height != b.height ||
+            measuredRevision_ != LayoutRevision() || measuredOverlay_ != overlayScrollBar ||
+            measuredGutter_ != Style().scrollbarWidth + Style().scrollbarMargin)
+            LayoutContent({b.width, b.height});
+        viewport_.x = b.x;
+        viewport_.y = b.y;
+        offset_.width = std::clamp(offset_.width, 0.f, std::max(0.f, extent_.width - viewport_.width));
+        offset_.height = std::clamp(offset_.height, 0.f, std::max(0.f, extent_.height - viewport_.height));
+        if (content_) content_->Arrange({b.x - offset_.width, b.y - offset_.height, extent_.width, extent_.height});
+        bar_->SetDynamicResolution(options_.dynamicResolution);
+        horizontal_->SetDynamicResolution(options_.dynamicResolution);
+        bar_->SetInwardDistance(options_.inwardDistance);
+        horizontal_->SetInwardDistance(options_.inwardDistance);
+        bar_->ConfigureResolution(b, std::max(0.f, extent_.height - viewport_.height), Style().scrollStep, options_.resolution);
+        horizontal_->ConfigureResolution(b, std::max(0.f, extent_.width - viewport_.width), Style().scrollStep, options_.resolution);
+        bar_->SetVisible(extent_.height > viewport_.height);
+        horizontal_->SetVisible(options_.horizontalScroll && extent_.width > viewport_.width);
+        bar_->SetPage(viewport_.height / std::max(1.f, extent_.height));
+        horizontal_->SetPage(viewport_.width / std::max(1.f, extent_.width));
+        bar_->SetValue(offset_.height / std::max(1.f, extent_.height - viewport_.height));
+        horizontal_->SetValue(offset_.width / std::max(1.f, extent_.width - viewport_.width));
+        const float bottom = horizontal_->Visible() ? Style().scrollbarWidth + Style().scrollbarMargin : 0;
+        bar_->Arrange({b.x + b.width - Style().scrollbarWidth - Style().scrollbarMargin, b.y,
+                       Style().scrollbarWidth, std::max(0.f, b.height - bottom)});
+        horizontal_->Arrange({b.x, b.y + b.height - Style().scrollbarWidth - Style().scrollbarMargin,
+                              std::max(0.f, b.width - Style().scrollbarWidth - Style().scrollbarMargin), Style().scrollbarWidth});
     }
     Control* ScrollView::HitTest(float x, float y)
     {
-        if (!Control::HitTest(x, y))
-            return nullptr;
-        if (auto* hit = bar_->HitTest(x, y))
-            return hit;
-        return Container::HitTest(x, y);
+        if (!Control::HitTest(x, y)) return nullptr;
+        if (auto* hit = bar_->HitTest(x, y)) return hit;
+        if (auto* hit = horizontal_->HitTest(x, y)) return hit;
+        if (content_ && viewport_.Contains(x, y))
+            if (auto* hit = content_->HitTest(x, y)) return hit;
+        return hitTestBackground ? this : nullptr;
     }
     void ScrollView::OnRender(Canvas& canvas)
     {
-        // Control::Render skips subtrees outside the active clip. Keep the complete
-        // control tree and layout so scrolling preserves drafts, focus and hit testing.
-        if (content_)
-            content_->Render(canvas);
-        bar_->Render(canvas);
-    }
-    void ScrollView::SetOffset(float offset)
-    {
-        // Reuse the ordinary layout pass for scrolling. Separate arrange-only
-        // invalidation is deferred with the host's finer layout caching policy.
-        const float next = std::clamp(offset, 0.f, std::max(0.f, extent_ - Bounds().height));
-        if (next == offset_)
-            return;
-        offset_ = next;
-        Invalidate(true);
-    }
-    bool ScrollView::OnInput(const Input& e)
-    {
-        if (e.kind == InputKind::Wheel)
         {
-            SetOffset(offset_ - e.wheel * Style().scrollStep);
-            return true;
+            Canvas::ClipScope clip(canvas, viewport_.x, viewport_.y, viewport_.width, viewport_.height);
+            if (content_) content_->Render(canvas);
+            if (options_.resolutionGuide)
+            {
+                bar_->RenderResolutionGuide(canvas);
+                horizontal_->RenderResolutionGuide(canvas);
+            }
         }
-        return false;
+        bar_->Render(canvas);
+        horizontal_->Render(canvas);
+    }
+    void ScrollView::SetOffset(float offset) { SetScrollOffset(offset_.width, offset); }
+    void ScrollView::SetScrollOffset(float x, float y)
+    {
+        if (!std::isfinite(x) || !std::isfinite(y)) throw std::invalid_argument("Scroll offsets must be finite");
+        const Size next{options_.horizontalScroll ? std::clamp(x, 0.f, std::max(0.f, extent_.width - viewport_.width)) : 0,
+                        std::clamp(y, 0.f, std::max(0.f, extent_.height - viewport_.height))};
+        if (next.width == offset_.width && next.height == offset_.height) return;
+        offset_ = next;
+        OnArrange();
+        Invalidate();
+        OnScroll.Raise(offset_);
+    }
+    bool ScrollView::OnInput(const Input& input)
+    {
+        if (input.kind != InputKind::Wheel) return false;
+        SetScrollOffset(offset_.width - (input.shift && options_.horizontalScroll ? input.wheel * Style().scrollStep : 0),
+                        offset_.height - (!input.shift || !options_.horizontalScroll ? input.wheel * Style().scrollStep : 0));
+        return true;
     }
 
     namespace

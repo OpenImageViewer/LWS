@@ -355,10 +355,34 @@ namespace LWSUI
         SliderValueMode valueMode_ = SliderValueMode::Hidden;
         std::unique_ptr<internal::SliderValueBinding> valueBinding_;
     };
+    // Content distance per logical pointer pixel at the configured inward endpoint.
+    enum class ScrollResolution
+    {
+        Row,
+        Pixel
+    };
     class ScrollBar : public Slider
     {
       public:
 
+        void SetDynamicResolution(bool);
+        // Fraction of the full control width (vertical bar) or height (horizontal bar), in (0, 1].
+        void SetInwardDistance(double fraction);
+        double InwardDistance() const { return inwardDistance_; }
+        void RenderResolutionGuide(Canvas&) const;
+        bool DynamicResolution() const { return dynamicResolution_; }
+        // contentRange is the maximum content offset, lineSize is a row height or estimated line unit.
+        // Horizontal row mode uses lineSize as an estimate rather than an actual column width.
+        // TODO: Find a better horizontal unit based on column widths or another meaningful measure.
+        void ConfigureResolution(Rect controlBounds, double contentRange, double lineSize,
+                                 ScrollResolution mode = ScrollResolution::Row);
+        // Display scale: normal 100%, one line 1%, one pixel 1/lineSize percent.
+        double ScrollSpeed() const { return speed_; }
+        bool ResolutionDragging() const { return resolutionDragging_; }
+        float ResolutionPosition() const { return inward_; }
+        ScrollResolution CenterResolution() const { return resolutionMode_; }
+        bool Finish(EditPhase) override;
+        Event<void(double)> OnScrollSpeed;
         void SetOrientation(Orientation value)
         {
             if (orientation_ != value)
@@ -369,14 +393,12 @@ namespace LWSUI
             }
         }
         Orientation GetOrientation() const { return orientation_; }
-        void SetPage(double page)
-        {
-            page_ = std::clamp(page, 0.0, 1.0);
-            Invalidate();
-        }
+        void SetPage(double page);
 
       protected:
 
+        void OnArrange() override;
+        void OnDetach() override { Finish(EditPhase::Cancel); }
         void OnRender(Canvas&) override;
         bool OnInput(const Input&) override;
         double Fraction(float, float) const override;
@@ -387,6 +409,13 @@ namespace LWSUI
         using Slider::SetValueDisplay;
         Rect Thumb() const;
         Orientation orientation_ = Orientation::Vertical;
+        void UpdateSpeed(float x, float y);
+        bool dynamicResolution_ = false, resolutionDragging_ = false;
+        Rect resolutionBounds_{}, arrangedBounds_{};
+        double contentRange_ = 0, lineSize_ = 1, sensitivity_ = 0, speed_ = 100;
+        ScrollResolution resolutionMode_ = ScrollResolution::Row;
+        float lastAxis_ = 0, inward_ = 0;
+        double inwardDistance_ = .5;
         double page_ = 1;
         float grab_ = 0.5f;
     };
