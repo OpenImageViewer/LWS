@@ -56,6 +56,7 @@ namespace LWSUI
         float Offset() const { return offset_.height; }
         void SetScrollOffset(float x, float y);
         Size ScrollOffset() const { return offset_; }
+        Rect Viewport() const { return viewport_; }
         void SetOptions(ScrollViewOptions);
         const ScrollViewOptions& Options() const { return options_; }
         // Minimum logical content extent, independent of the viewport dimensions.

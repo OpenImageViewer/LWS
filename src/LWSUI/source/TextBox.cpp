@@ -1,4 +1,5 @@
 #include <LWSUI/Primitives.hpp>
+#include <LWSUI/Containers.hpp>
 #include <LWSUI/UIHost.hpp>
 #include <LWSUI/TextEditing.hpp>
 #include <LWS/TextClipboard.hpp>
@@ -136,14 +137,14 @@ namespace LWSUI
         caretUpstream_ = false;
         preferredX_.reset();
         caret_ = anchor_ = mask_ && text_.find('_') != text_.npos ? mask_->Next(text_.find('_')) : text_.size();
-        editing_ = false;
+        editing_ = caretScrollPending_ = false;
         selecting_ = false;
         validation_.clear();
         inputError_.clear();
         RefreshValue();
         geometryDirty_ = true;
         UpdateGeometry(true);
-        Invalidate();
+        Invalidate(sizeToContent);
     }
     void TextBox::UpdateGeometry(bool reveal)
     {
@@ -317,8 +318,9 @@ namespace LWSUI
         inputError_.clear();
         geometryDirty_ = true;
         UpdateGeometry(true);
+        caretScrollPending_ = sizeToContent;
         OnEdit.Raise(Text(), EditPhase::Preview);
-        Invalidate();
+        Invalidate(sizeToContent);
         return true;
     }
     bool TextBox::Finish(EditPhase phase)
@@ -332,7 +334,7 @@ namespace LWSUI
         if (!editing_)
         {
             inputError_.clear();
-            Invalidate();
+            Invalidate(sizeToContent);
             return true;
         }
         if (phase == EditPhase::Commit && !validation_.empty())
@@ -352,7 +354,7 @@ namespace LWSUI
         preferredX_.reset();
         caret_ = anchor_ = mask_ && text_.find('_') != text_.npos ? mask_->Next(text_.find('_')) : text_.size();
         UpdateGeometry(true);
-        Invalidate();
+        Invalidate(sizeToContent);
         return true;
     }
     TextPosition TextBox::Position(float x, float y)
@@ -438,6 +440,7 @@ namespace LWSUI
         }
         if (e.kind == InputKind::Wheel && mode_ == TextBoxMode::Multiline)
         {
+            if (sizeToContent) return false;
             SetScrollOffset(scrollY_ - e.wheel * Style().scrollStep);
             return true;
         }
@@ -557,6 +560,13 @@ namespace LWSUI
     {
         if (mode_ == TextBoxMode::SingleLine)
             return Control::OnMeasure(available);
+        if (sizeToContent)
+        {
+            const float padding = Style().textPadding;
+            const float height = Host() ? Host()->MeasureText(Text(), std::max(1.f, available.width - 2 * padding), true, Font()).height
+                                        : Font().size * 1.4f;
+            return {available.width, height + 2 * padding};
+        }
         const float line = Host() ? Host()->MeasureText("Mg", available.width, false, Font()).height
                                   : Font().size * 1.4f;
         return {available.width, std::min(available.height, visibleLines_ * line + 2 * Style().textPadding)};
@@ -569,7 +579,27 @@ namespace LWSUI
         if (!extend)
             anchor_ = caret_;
         UpdateGeometry(true);
+        ScrollCaretIntoView();
         Invalidate();
+    }
+    void TextBox::ScrollCaretIntoView()
+    {
+        if (sizeToContent && mode_ == TextBoxMode::Multiline)
+            if (auto* scroll = OuterScrollView())
+            {
+                const auto visible = scroll->Viewport();
+                const float top = viewport_.y + caretBounds_.y - scrollY_ - Style().textPadding;
+                const float bottom = top + caretBounds_.height + 2 * Style().textPadding;
+                if (top < visible.y) scroll->SetOffset(scroll->Offset() + top - visible.y);
+                else if (bottom > visible.y + visible.height)
+                    scroll->SetOffset(scroll->Offset() + bottom - visible.y - visible.height);
+            }
+    }
+    ScrollView* TextBox::OuterScrollView() const
+    {
+        for (auto* parent = Parent(); parent; parent = parent->Parent())
+            if (auto* scroll = dynamic_cast<ScrollView*>(parent)) return scroll;
+        return nullptr;
     }
     size_t TextBox::CaretLine() const
     {
@@ -603,10 +633,13 @@ namespace LWSUI
         pointerY_ = y;
         if (mode_ == TextBoxMode::Multiline && Host())
         {
-            const float outside = y < viewport_.y                      ? y - viewport_.y
-                                  : y > viewport_.y + viewport_.height ? y - viewport_.y - viewport_.height
-                                                                       : 0;
-            SetScrollOffset(scrollY_ + std::clamp(outside, -Style().scrollStep, Style().scrollStep));
+            auto* outer = sizeToContent ? OuterScrollView() : nullptr;
+            const auto visible = outer ? outer->Viewport() : viewport_;
+            const float outside = y < visible.y ? y - visible.y
+                                  : y > visible.y + visible.height ? y - visible.y - visible.height : 0;
+            const float delta = std::clamp(outside, -Style().scrollStep, Style().scrollStep);
+            if (outer) outer->SetOffset(outer->Offset() + delta);
+            else SetScrollOffset(scrollY_ + delta);
             if (outside && !selectionTimer_)
             {
                 selectionTimer_ = std::make_unique<LWS::HighPrecisionTimer>(Host()->Window().GetPlatformContext(),
@@ -620,7 +653,7 @@ namespace LWSUI
             }
             if (selectionTimer_)
                 selectionTimer_->Enable(outside != 0);
-            y = std::clamp(y, viewport_.y, viewport_.y + std::max(0.f, viewport_.height - 1));
+            y = std::clamp(y, visible.y, visible.y + std::max(0.f, visible.height - 1));
         }
         SetCaret(Position(x, y), true);
     }

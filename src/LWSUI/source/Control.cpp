@@ -171,17 +171,17 @@ namespace LWSUI
         enabled_ = value;
         Invalidate();
     }
-    void Control::Invalidate(bool layout)
+    void Control::Invalidate(bool recalculateLayout)
     {
         // Detached trees need the same invalidation semantics without a host generation.
-        if (layout)
+        if (recalculateLayout)
             for (auto* control = this; control; control = control->parent_)
             {
                 control->allocationHint_.reset();
                 ++control->layoutRevision_;
             }
         if (host_)
-            host_->Invalidate(layout);
+            host_->Invalidate(recalculateLayout);
     }
     void Control::Capture()
     {

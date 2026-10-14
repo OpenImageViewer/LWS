@@ -1,5 +1,6 @@
 #pragma once
 #include <LWSUI/TextStyle.hpp>
+#include <optional>
 namespace LWSUI
 {
     enum class ThemePreset
@@ -8,6 +9,7 @@ namespace LWSUI
         Light,
         Warm
     };
+    inline constexpr ThemePreset ThemePresets[]{ThemePreset::Dark, ThemePreset::Light, ThemePreset::Warm};
     inline constexpr ThemePreset DefaultThemePreset = ThemePreset::Light;
     inline const char* ThemePresetName(ThemePreset preset)
     {
@@ -20,6 +22,20 @@ namespace LWSUI
             default:
                 return "dark";
         }
+    }
+    inline const char* ThemePresetLabel(ThemePreset preset)
+    {
+        switch (preset)
+        {
+            case ThemePreset::Light: return "Light";
+            case ThemePreset::Warm: return "Warm";
+            default: return "Dark";
+        }
+    }
+    inline std::optional<ThemePreset> ParseThemePreset(std::string_view name)
+    {
+        for (auto preset : ThemePresets) if (name == ThemePresetName(preset)) return preset;
+        return std::nullopt;
     }
     struct Theme
     {

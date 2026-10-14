@@ -28,7 +28,7 @@ namespace LWSUI
             theme_ = std::move(theme);
             Invalidate(true);
         }
-        void Invalidate(bool layout = false);
+        void Invalidate(bool recalculateLayout = false);
         void Update();
         // Opt-in synchronous rendering on size notifications; never runs deferred application work.
         void SetRedrawOnResize(bool enabled) { redrawOnResize_ = enabled; }

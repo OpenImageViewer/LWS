@@ -340,3 +340,17 @@ Normal feedback remains 100%. Fine feedback uses the existing unit scale
 multiplied by the fraction, giving default row feedback of 0.2% and pixel
 feedback of 0.2/lineSize%. These display units are not a percentage of normal
 physical sensitivity.
+
+## Reusable text and pointer services
+
+Multiline TextBox supports `sizeToContent` for natural wrapped height inside a
+ScrollView. Wheel input uses the enclosing viewport, and caret navigation and
+drag selection reveal content through that viewport. Editable and read-only
+text share this behavior. Default fixed-height text boxes retain their internal
+scrollbars. ScrollView exposes its arranged `Viewport()` rectangle.
+
+Control exposes `OnLeave` alongside `OnHover` for leaving the host's hovered
+subtree. The existing focus-to-hover behavior applies to both notifications.
+ScopedFlag restores a temporary boolean state across nesting and exceptions.
+ThemePresets, ThemePresetLabel, and ParseThemePreset share preset enumeration,
+display names, and checked parsing without file-format dependencies.

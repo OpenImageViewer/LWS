@@ -179,14 +179,14 @@ namespace LWSUI
             Invalidate();
         }
         LLUtils::Color Foreground() const;
-        void Invalidate(bool layout = false);
+        void Invalidate(bool recalculateLayout = false);
         // Action controls such as Cancel may discard the previous focused draft.
         EditPhase focusLossPhase = EditPhase::Commit;
         virtual bool Focusable() const { return false; }
         virtual bool Finish(EditPhase) { return true; }
         // Composite editors can validate a transaction before focus leaves their subtree.
         virtual bool PrepareFocusLoss(Control*, EditPhase) { return true; }
-        LWSUI::Event<void()> OnHover;
+        LWSUI::Event<void()> OnHover, OnLeave;
         // Replaces the default provider. An empty result suppresses ancestor menus.
         void SetContextMenuProvider(ContextMenuProvider provider) { contextMenuProvider_ = std::move(provider); }
 

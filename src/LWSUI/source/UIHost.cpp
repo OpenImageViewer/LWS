@@ -144,12 +144,12 @@ namespace LWSUI
         deferred_.push_back({std::move(owner), std::move(callback)});
         ScheduleUpdate();
     }
-    void UIHost::Invalidate(bool layout)
+    void UIHost::Invalidate(bool recalculateLayout)
     {
         paintDirty_ = true;
-        layoutDirty_ |= layout;
+        layoutDirty_ |= recalculateLayout;
         // Explicit layout changes also invalidate width corrections made earlier in this update.
-        if (layout)
+        if (recalculateLayout)
             ++layoutGeneration_;
         ScheduleUpdate();
     }
@@ -530,7 +530,10 @@ namespace LWSUI
                 for (auto* ancestor = previous; ancestor; ancestor = ancestor->Parent())
                 {
                     if (!internal::IsWithin(c, ancestor))
+                    {
                         ancestor->OnPointerLeave();
+                        ancestor->OnLeave.Raise();
+                    }
                 }
             }
             pointerHover_ = c ? c->Handle() : ControlHandle{};

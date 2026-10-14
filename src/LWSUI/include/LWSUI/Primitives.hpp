@@ -3,6 +3,7 @@
 #include <LWSUI/TextInput.hpp>
 #include <LWSUI/internal/InputMask.hpp>
 #include <cstdint>
+#include <utility>
 namespace LWS
 {
     class HighPrecisionTimer;
@@ -186,6 +187,7 @@ namespace LWSUI
         Multiline
     };
     class ScrollBar;
+    class ScrollView;
     class TextBox : public Container
     {
       public:
@@ -193,6 +195,8 @@ namespace LWSUI
         explicit TextBox(std::string value = {}, TextBoxMode mode = TextBoxMode::SingleLine);
         ~TextBox() override;
         TextBoxMode Mode() const { return mode_; }
+        // Multiline content can use an enclosing ScrollView instead of an internal scrollbar.
+        bool sizeToContent = false;
         // Preferred multiline height; allocation remains the parent's responsibility.
         void SetVisibleLines(unsigned lines);
         void SetText(std::string value);
@@ -232,7 +236,7 @@ namespace LWSUI
       protected:
 
         Size OnMeasure(Size available) override;
-        void OnArrange() override { UpdateGeometry(); }
+        void OnArrange() override { UpdateGeometry(); if (std::exchange(caretScrollPending_, false)) ScrollCaretIntoView(); }
         void OnDetach() override;
         void OnRender(Canvas&) override;
         bool OnInput(const Input&) override;
@@ -249,6 +253,8 @@ namespace LWSUI
         std::vector<ContextMenuItem> TextMenu(const ContextMenuRequest&);
         void UpdateGeometry(bool reveal = false);
         void SetCaret(TextPosition position, bool extend);
+        ScrollView* OuterScrollView() const;
+        void ScrollCaretIntoView();
         TextPosition Position(float x, float y);
         size_t CaretLine() const;
         void SetScrollOffset(float offset);
@@ -279,7 +285,7 @@ namespace LWSUI
         bool editing_ = false, selecting_ = false, readOnly_ = false, borderless_ = false;
         // Host text metrics are refreshed on text/font changes, independently of paint.
         // Multiline geometry also depends on viewport dimensions and the scrollbar gutter.
-        bool geometryDirty_ = true;
+        bool geometryDirty_ = true, caretScrollPending_ = false;
         FontSpec geometryFont_;
         float textWidth_ = 0, caretX_ = 0;
         size_t geometryCaret_ = std::string::npos;
