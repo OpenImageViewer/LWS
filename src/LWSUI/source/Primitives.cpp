@@ -244,6 +244,36 @@ namespace LWSUI
         Finish(EditPhase::Cancel);
         inwardDistance_ = fraction;
     }
+    void ScrollBar::SetResolutionFraction(double fraction)
+    {
+        if (!std::isfinite(fraction) || fraction <= 0)
+            throw std::invalid_argument("Resolution fraction must be finite and greater than zero");
+        if (fraction == resolutionFraction_) return;
+        Finish(EditPhase::Cancel);
+        resolutionFraction_ = fraction;
+    }
+    void ScrollBar::SetOutwardAcceleration(bool enabled)
+    {
+        if (enabled == outwardAcceleration_) return;
+        Finish(EditPhase::Cancel);
+        outwardAcceleration_ = enabled;
+    }
+    void ScrollBar::SetMaximumScrollSpeed(double percent)
+    {
+        if (!std::isfinite(percent) || percent < 100)
+            throw std::invalid_argument("Maximum scroll speed must be finite and at least 100 percent");
+        if (percent == maximumScrollSpeed_) return;
+        Finish(EditPhase::Cancel);
+        maximumScrollSpeed_ = percent;
+    }
+    void ScrollBar::SetOutwardDistance(double fraction)
+    {
+        if (!std::isfinite(fraction) || fraction <= 0 || fraction > 1)
+            throw std::invalid_argument("Outward distance must be greater than zero and at most one");
+        if (fraction == outwardDistance_) return;
+        Finish(EditPhase::Cancel);
+        outwardDistance_ = fraction;
+    }
     void ScrollBar::SetDynamicResolution(bool enabled)
     {
         if (dynamicResolution_ == enabled) return;
@@ -279,10 +309,19 @@ namespace LWSUI
         const double normal = contentRange_ / travel;
         // Horizontal row mode estimates a line using row height.
         // TODO: Find a better horizontal unit based on column widths or another meaningful measure.
-        const double fine = std::min(normal, resolutionMode_ == ScrollResolution::Row ? lineSize_ : 1.);
+        const double target = (resolutionMode_ == ScrollResolution::Row ? lineSize_ : 1.) * resolutionFraction_;
+        const double fine = std::min(normal, target);
         sensitivity_ = normal > 0 ? normal * std::pow(fine / normal, inward_) : 0;
-        const double end = resolutionMode_ == ScrollResolution::Row ? 1. : 1. / lineSize_;
+        const double end = resolutionMode_ == ScrollResolution::Row ? resolutionFraction_ : resolutionFraction_ / lineSize_;
         speed_ = fine == normal ? 100 : 100 * std::pow(std::min(100., end) / 100, inward_);
+        const double direction = barCenter >= center ? 1. : -1.;
+        const double outerEdge = vertical ? (direction > 0 ? b.x + b.width : b.x)
+                                          : (direction > 0 ? b.y + b.height : b.y);
+        const double outwardExtent = outwardDistance_ * (vertical ? area.width : area.height);
+        const double outward = outwardExtent > 0
+            ? std::clamp(((vertical ? x : y) - outerEdge) * direction / outwardExtent, 0., 1.) : 0;
+        outwardMultiplier_ = outwardAcceleration_ ? std::pow(maximumScrollSpeed_ / 100, outward) : 1;
+        if (outwardAcceleration_) speed_ = std::min(maximumScrollSpeed_, speed_ * outwardMultiplier_);
         OnScrollSpeed.Raise(speed_);
         Invalidate();
     }
@@ -292,6 +331,7 @@ namespace LWSUI
         resolutionDragging_ = false;
         const bool result = Slider::Finish(phase);
         inward_ = 0;
+        outwardMultiplier_ = 1;
         speed_ = 100;
         if (notify) OnScrollSpeed.Raise(speed_);
         return result;
@@ -329,7 +369,7 @@ namespace LWSUI
             lastAxis_ = axis;
             if (delta != 0 && contentRange_ > 0)
             {
-                value_ = std::clamp(value_ + delta * sensitivity_ / contentRange_, 0., 1.);
+                value_ = std::clamp(value_ + delta * (sensitivity_ / contentRange_) * outwardMultiplier_, 0., 1.);
                 OnEdit.Raise(value_, EditPhase::Preview);
             }
             if (input.kind == InputKind::Up && dragging_) Finish(EditPhase::Commit);
@@ -381,7 +421,7 @@ namespace LWSUI
                                     : (barCenter >= center ? bar.y : bar.y + bar.height);
         const float direction = barCenter >= center ? -1.f : 1.f;
         const float target = edge + direction * float(inwardDistance_ * (vertical ? area.width : area.height));
-        const float marker = edge + (target - edge) * inward_;
+        const float marker = speed_ > 100 ? edge : edge + (target - edge) * inward_;
         Canvas::ClipScope clip(canvas, area.x, area.y, area.width, area.height);
         if (vertical)
         {

@@ -82,6 +82,11 @@ namespace LWSUI
         std::string lineNumberLabel = "Line";
         // Inward fraction of the full perpendicular control dimension, in (0, 1].
         double inwardDistance = .5;
+        // Separately opt-in acceleration beyond the outer edge, speed in percent and distance as a fraction.
+        bool outwardAcceleration = false;
+        double maximumScrollSpeed = 400, outwardDistance = .1;
+        // Positive finite multiplier of the selected row or pixel unit per logical pointer pixel.
+        double resolutionFraction = .2;
     };
     struct GridAppearance
     {

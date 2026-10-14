@@ -425,11 +425,256 @@ TEST_CASE("Horizontal scrollbar preserves vertical default and uses horizontal i
 }
 
 
+TEST_CASE("Resolution fraction sets row and pixel endpoints independently of scroll range", "[ui][grid][scrollbar]")
+{
+    for (auto orientation : {Orientation::Vertical, Orientation::Horizontal})
+        for (auto mode : {ScrollResolution::Row, ScrollResolution::Pixel})
+            for (double fraction : {.01, .1, .2, 1., 2., 10.})
+                for (double range : {100., 10000., 1000000000.})
+                {
+                    ScrollBar bar;
+                    const bool vertical = orientation == Orientation::Vertical;
+                    bar.SetOrientation(orientation);
+                    bar.Arrange(vertical ? Rect{380, 0, 20, 400} : Rect{0, 380, 400, 20});
+                    bar.SetPage(.1);
+                    bar.SetValue(.5);
+                    bar.SetDynamicResolution(true);
+                    REQUIRE(bar.ResolutionFraction() == .2);
+                    bar.SetResolutionFraction(fraction);
+                    bar.ConfigureResolution({0, 0, 400, 400}, range, 28, mode);
+                    const auto input = [&](InputKind kind, float cross, float axis)
+                    {
+                        return bar.Dispatch({.kind = kind, .x = vertical ? cross : axis, .y = vertical ? axis : cross});
+                    };
+                    const double normal = range / 360;
+                    const double endpoint = std::min(normal, (mode == ScrollResolution::Row ? 28. : 1.) * fraction);
+                    input(InputKind::Down, 390, 200);
+                    input(InputKind::Move, 180, 200);
+                    REQUIRE(bar.Value() == .5);
+                    const double display = endpoint == normal ? 100 : (mode == ScrollResolution::Row ? fraction : fraction / 28);
+                    REQUIRE(bar.ScrollSpeed() == Catch::Approx(display));
+                    input(InputKind::Move, 180, 201);
+                    REQUIRE((bar.Value() - .5) * range == Catch::Approx(endpoint).margin(.000001));
+                    const auto before = bar.Value();
+                    input(InputKind::Move, 280, 201);
+                    REQUIRE(bar.Value() == before);
+                    input(InputKind::Move, 280, 202);
+                    REQUIRE((bar.Value() - before) * range == Catch::Approx(std::sqrt(normal * endpoint)).margin(.000001));
+                    const auto fine = bar.Value();
+                    input(InputKind::Move, 390, 202);
+                    REQUIRE(bar.Value() == fine);
+                    REQUIRE(bar.ScrollSpeed() == 100);
+                    bar.SetResolutionFraction(fraction == 1 ? .1 : 1);
+                    REQUIRE_FALSE(bar.ResolutionDragging());
+                    REQUIRE(bar.Value() == .5);
+                }
+    ScrollBar bar;
+    GridView grid;
+    ScrollView scroll;
+    for (double invalid : {0., -1., std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+    {
+        REQUIRE_THROWS(bar.SetResolutionFraction(invalid));
+        auto gridOptions = grid.Options();
+        gridOptions.resolutionFraction = invalid;
+        REQUIRE_THROWS(grid.SetOptions(gridOptions));
+        auto scrollOptions = scroll.Options();
+        scrollOptions.resolutionFraction = invalid;
+        REQUIRE_THROWS(scroll.SetOptions(scrollOptions));
+    }
+}
+
+TEST_CASE("Outward acceleration uses bounded multipliers and continuous relative dragging", "[ui][grid][scrollbar]")
+{
+    for (auto orientation : {Orientation::Vertical, Orientation::Horizontal})
+        for (bool mirrored : {false, true})
+            for (bool track : {false, true})
+            {
+                ScrollBar bar;
+                const bool vertical = orientation == Orientation::Vertical;
+                bar.SetOrientation(orientation);
+                const float origin = mirrored ? 0 : 380;
+                bar.Arrange(vertical ? Rect{origin, 0, 20, 400} : Rect{0, origin, 400, 20});
+                bar.SetPage(.1);
+                bar.SetValue(.5);
+                bar.ConfigureResolution({0, 0, 400, 400}, 1000000, 28);
+                bar.SetDynamicResolution(true);
+                REQUIRE_FALSE(bar.OutwardAcceleration());
+                const float cross = origin + 10, axis = track ? 300 : 200;
+                const float outer = mirrored ? 0 : 400, sign = mirrored ? -1 : 1;
+                const auto input = [&](InputKind kind, float perpendicular, float along)
+                {
+                    return bar.Dispatch({.kind = kind, .x = vertical ? perpendicular : along,
+                                          .y = vertical ? along : perpendicular});
+                };
+                input(InputKind::Down, cross, axis);
+                input(InputKind::Move, outer + sign * 40, axis);
+                REQUIRE(bar.ScrollSpeed() == 100);
+                input(InputKind::Up, outer + sign * 40, axis);
+                bar.SetOutwardAcceleration(true);
+                bar.SetValue(.5);
+                input(InputKind::Down, cross, axis);
+                const auto initial = bar.Value();
+                input(InputKind::Move, outer, axis);
+                REQUIRE(bar.ScrollSpeed() == 100);
+                input(InputKind::Move, outer + sign * 20, axis);
+                REQUIRE(bar.ScrollSpeed() == Catch::Approx(200));
+                REQUIRE(bar.Value() == initial);
+                input(InputKind::Move, outer + sign * 20, axis + 1);
+                REQUIRE(bar.Value() - initial == Catch::Approx(2. / 360));
+                const auto intermediate = bar.Value();
+                input(InputKind::Move, outer + sign * 400, axis + 1);
+                REQUIRE(bar.ScrollSpeed() == Catch::Approx(400));
+                REQUIRE(bar.Value() == intermediate);
+                input(InputKind::Move, outer + sign * 40, axis + 2);
+                REQUIRE(bar.Value() - intermediate == Catch::Approx(4. / 360));
+                const auto boosted = bar.Value();
+                input(InputKind::Move, cross, axis + 2);
+                REQUIRE(bar.ScrollSpeed() == 100);
+                REQUIRE(bar.Value() == boosted);
+                input(InputKind::Move, 200, axis + 2);
+                REQUIRE(bar.ScrollSpeed() < 100);
+                REQUIRE(bar.Value() == boosted);
+                input(InputKind::Move, outer + sign * 40, 100000);
+                REQUIRE(bar.Value() == 1);
+                input(InputKind::Move, outer + sign * 40, 99999);
+                REQUIRE(bar.Value() == Catch::Approx(1 - 4. / 360));
+                input(InputKind::Move, outer + sign * 40, -100000);
+                REQUIRE(bar.Value() == 0);
+                input(InputKind::Cancel, cross, axis);
+                REQUIRE(bar.Value() == Catch::Approx(.5));
+                REQUIRE_FALSE(bar.ResolutionDragging());
+                REQUIRE(bar.ScrollSpeed() == 100);
+                bar.SetMaximumScrollSpeed(100);
+                input(InputKind::Down, cross, 200);
+                input(InputKind::Move, outer + sign * 40, 200);
+                REQUIRE(bar.ScrollSpeed() == 100);
+                bar.SetMaximumScrollSpeed(900);
+                REQUIRE_FALSE(bar.ResolutionDragging());
+                input(InputKind::Down, cross, 200);
+                input(InputKind::Move, outer + sign * 20, 200);
+                REQUIRE(bar.ScrollSpeed() == Catch::Approx(300));
+                bar.SetOutwardDistance(.2);
+                REQUIRE_FALSE(bar.ResolutionDragging());
+                input(InputKind::Down, cross, 200);
+                input(InputKind::Move, outer + sign * 40, 200);
+                REQUIRE(bar.ScrollSpeed() == Catch::Approx(300));
+                bar.SetVisible(false);
+                REQUIRE_FALSE(bar.ResolutionDragging());
+                REQUIRE(bar.ScrollSpeed() == 100);
+                bar.SetVisible(true);
+                input(InputKind::Down, cross, 200);
+                input(InputKind::Move, outer + sign * 80, 200);
+                input(InputKind::Up, outer + sign * 80, 201);
+                REQUIRE_FALSE(bar.ResolutionDragging());
+                REQUIRE(bar.ScrollSpeed() == 100);
+                input(InputKind::Down, cross, 200);
+                bar.SetOutwardAcceleration(false);
+                REQUIRE_FALSE(bar.ResolutionDragging());
+                REQUIRE(bar.ScrollSpeed() == 100);
+            }
+    ScrollBar bar;
+    for (double invalid : {0., -1., 1.1, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+        REQUIRE_THROWS(bar.SetOutwardDistance(invalid));
+    for (double invalid : {99., -1., std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+        REQUIRE_THROWS(bar.SetMaximumScrollSpeed(invalid));
+}
+
+TEST_CASE("Outward acceleration options propagate and cancel captured container drags", "[ui][grid][scrollview]")
+{
+    Environment env;
+    for (bool useGrid : {false, true})
+    {
+        GridView* grid = nullptr;
+        ScrollView* scroll = nullptr;
+        if (useGrid)
+        {
+            auto widget = std::make_unique<GridView>();
+            grid = widget.get();
+            grid->SetModel(std::make_shared<CountingModel>());
+            auto columns = grid->Columns();
+            for (auto& column : columns) column.width = 400;
+            grid->SetColumns(columns);
+            auto options = grid->Options();
+            options.dynamicResolution = options.outwardAcceleration = true;
+            options.resolutionFraction = .1;
+            options.maximumScrollSpeed = 900;
+            options.outwardDistance = .2;
+            grid->SetOptions(options);
+            env.host->SetRoot(std::move(widget));
+        }
+        else
+        {
+            auto widget = std::make_unique<ScrollView>();
+            scroll = widget.get();
+            scroll->SetContent(std::make_unique<Label>("Content"));
+            scroll->SetContentMinimumSize({3000, 3000});
+            ScrollViewOptions options;
+            options.horizontalScroll = options.dynamicResolution = options.outwardAcceleration = true;
+            options.resolutionFraction = .1;
+            options.maximumScrollSpeed = 900;
+            options.outwardDistance = .2;
+            scroll->SetOptions(options);
+            env.host->SetRoot(std::move(widget));
+        }
+        env.host->Update();
+        auto* container = useGrid ? static_cast<Container*>(grid) : static_cast<Container*>(scroll);
+        for (size_t i : {size_t(0), size_t(1)})
+        {
+            auto* bar = static_cast<ScrollBar*>(container->Children()[i].get());
+            REQUIRE(bar->OutwardAcceleration());
+            REQUIRE(bar->MaximumScrollSpeed() == 900);
+            REQUIRE(bar->ResolutionFraction() == .1);
+            REQUIRE(bar->OutwardDistance() == .2);
+            if (!bar->Visible()) continue;
+            const auto b = bar->Bounds(), area = container->Bounds();
+            const bool vertical = i == 0;
+            const float x = b.x + b.width / 2, y = b.y + b.height / 2;
+            REQUIRE(env.host->Route({.kind = InputKind::Down, .x = x, .y = y}));
+            REQUIRE(env.host->Route({.kind = InputKind::Move,
+                .x = vertical ? b.x + b.width + area.width * .2f : x,
+                .y = vertical ? y : b.y + b.height + area.height * .2f}));
+            REQUIRE(bar->ScrollSpeed() == Catch::Approx(900).margin(.001));
+            REQUIRE(internal::UIHostTestAccess::Captured(*env.host) == bar);
+            REQUIRE(env.host->Route({.kind = InputKind::Up, .x = x, .y = y}));
+            REQUIRE_FALSE(bar->ResolutionDragging());
+            REQUIRE(bar->ScrollSpeed() == 100);
+        }
+        auto* bar = static_cast<ScrollBar*>(container->Children()[0].get());
+        const auto b = bar->Bounds();
+        REQUIRE(env.host->Route({.kind = InputKind::Down, .x = b.x + b.width / 2, .y = b.y + b.height / 2}));
+        if (grid)
+        {
+            auto options = grid->Options();
+            options.resolutionFraction = 1;
+            grid->SetOptions(options);
+            options.outwardDistance = 0;
+            REQUIRE_THROWS(grid->SetOptions(options));
+            options.outwardDistance = .1;
+            options.maximumScrollSpeed = 99;
+            REQUIRE_THROWS(grid->SetOptions(options));
+        }
+        else
+        {
+            auto options = scroll->Options();
+            options.resolutionFraction = 1;
+            scroll->SetOptions(options);
+            options.outwardDistance = 0;
+            REQUIRE_THROWS(scroll->SetOptions(options));
+            options.outwardDistance = .1;
+            options.maximumScrollSpeed = 99;
+            REQUIRE_THROWS(scroll->SetOptions(options));
+        }
+        REQUIRE_FALSE(bar->ResolutionDragging());
+        REQUIRE(internal::UIHostTestAccess::Captured(*env.host) == nullptr);
+    }
+}
+
 TEST_CASE("Dynamic resolution uses relative motion and exponential sensitivity", "[ui][grid][scrollbar]")
 {
     for (auto orientation : {Orientation::Vertical, Orientation::Horizontal})
     {
         ScrollBar bar;
+        bar.SetResolutionFraction(1);
         bar.SetInwardDistance(.45);
         REQUIRE_FALSE(bar.DynamicResolution());
         bar.SetOrientation(orientation);
@@ -482,6 +727,7 @@ TEST_CASE("Dynamic resolution handles opposite edges limits and lifecycle", "[ui
     for (auto orientation : {Orientation::Vertical, Orientation::Horizontal})
     {
         ScrollBar bar;
+        bar.SetResolutionFraction(1);
         bar.SetInwardDistance(.45);
         bar.SetOrientation(orientation);
         const bool vertical = orientation == Orientation::Vertical;
@@ -558,6 +804,7 @@ TEST_CASE("Track presses engage dynamic resolution and release applies final mot
     for (auto orientation : {Orientation::Vertical, Orientation::Horizontal})
     {
         ScrollBar bar;
+        bar.SetResolutionFraction(1);
         bar.SetInwardDistance(.45);
         const bool vertical = orientation == Orientation::Vertical;
         bar.SetOrientation(orientation);
@@ -613,6 +860,7 @@ TEST_CASE("Host routes captured scrollbar movement and cancels native lifecycle 
     grid->SetModel(model);
     auto options = grid->Options();
     options.dynamicResolution = true;
+    options.resolutionFraction = 1;
     grid->SetOptions(options);
     env.host->SetRoot(std::move(widget));
     env.host->Update();
@@ -670,6 +918,7 @@ TEST_CASE("Grid retains row and pixel precision near one hundred million rows", 
     auto options = grid.Options();
     options.rowHeight = 28;
     options.dynamicResolution = true;
+    options.resolutionFraction = 1;
     grid.SetOptions(options);
     grid.Arrange({0, 0, 600, 400});
     grid.SetPreciseScrollOffset(0, 99999980. * 28);
@@ -789,6 +1038,7 @@ TEST_CASE("Configured inward percentages control both scrollbar axes", "[ui][gri
             for (double distance : {.3, .5, 1.})
             {
                 ScrollBar bar;
+                bar.SetResolutionFraction(1);
                 bar.SetOrientation(orientation);
                 const bool vertical = orientation == Orientation::Vertical;
                 bar.Arrange(vertical ? Rect{opposite ? 0.f : 380.f, 0, 20, 400}
@@ -866,6 +1116,7 @@ TEST_CASE("Two-axis ScrollView preserves child input and dynamic captured drags"
     ScrollViewOptions options;
     options.horizontalScroll = options.dynamicResolution = true;
     options.resolution = ScrollResolution::Pixel;
+    options.resolutionFraction = 1;
     scroll->SetOptions(options);
     scroll->SetContentMinimumSize({3000, 3000});
     env.host->SetRoot(std::move(widget));

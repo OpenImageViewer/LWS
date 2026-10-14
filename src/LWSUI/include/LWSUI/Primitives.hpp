@@ -369,6 +369,17 @@ namespace LWSUI
         // Fraction of the full control width (vertical bar) or height (horizontal bar), in (0, 1].
         void SetInwardDistance(double fraction);
         double InwardDistance() const { return inwardDistance_; }
+        // Fraction of a row or content pixel per logical pointer pixel at the inward endpoint.
+        void SetResolutionFraction(double fraction);
+        double ResolutionFraction() const { return resolutionFraction_; }
+        // Requires dynamic resolution, maximum speed is a percent of normal sensitivity.
+        void SetOutwardAcceleration(bool);
+        bool OutwardAcceleration() const { return outwardAcceleration_; }
+        void SetMaximumScrollSpeed(double percent);
+        double MaximumScrollSpeed() const { return maximumScrollSpeed_; }
+        // Fraction of control width or height measured beyond the scrollbar outer edge, in (0, 1].
+        void SetOutwardDistance(double fraction);
+        double OutwardDistance() const { return outwardDistance_; }
         void RenderResolutionGuide(Canvas&) const;
         bool DynamicResolution() const { return dynamicResolution_; }
         // contentRange is the maximum content offset, lineSize is a row height or estimated line unit.
@@ -376,7 +387,7 @@ namespace LWSUI
         // TODO: Find a better horizontal unit based on column widths or another meaningful measure.
         void ConfigureResolution(Rect controlBounds, double contentRange, double lineSize,
                                  ScrollResolution mode = ScrollResolution::Row);
-        // Display scale: normal 100%, one line 1%, one pixel 1/lineSize percent.
+        // Display scale: normal 100%, one line 1%, one pixel 1/lineSize percent, scaled by ResolutionFraction.
         double ScrollSpeed() const { return speed_; }
         bool ResolutionDragging() const { return resolutionDragging_; }
         float ResolutionPosition() const { return inward_; }
@@ -415,7 +426,9 @@ namespace LWSUI
         double contentRange_ = 0, lineSize_ = 1, sensitivity_ = 0, speed_ = 100;
         ScrollResolution resolutionMode_ = ScrollResolution::Row;
         float lastAxis_ = 0, inward_ = 0;
-        double inwardDistance_ = .5;
+        double inwardDistance_ = .5, outwardDistance_ = .1, maximumScrollSpeed_ = 400, resolutionFraction_ = .2;
+        double outwardMultiplier_ = 1;
+        bool outwardAcceleration_ = false;
         double page_ = 1;
         float grab_ = 0.5f;
     };

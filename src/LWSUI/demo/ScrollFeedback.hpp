@@ -20,7 +20,7 @@ namespace LWSUI::demo
       protected:
         Size OnMeasure(Size available) override
         {
-            return {std::min(available.width, std::max(70.f, Font().size * 5.5f + 2 * Style().labelPadding)),
+            return {std::min(available.width, std::max(110.f, Font().size * 8.5f + 2 * Style().labelPadding)),
                     std::max(Style().rowHeight, Font().size * 1.4f + 2 * Style().labelPadding)};
         }
         Size OnMeasureContent(Size available) override { return OnMeasure(available); }

@@ -407,7 +407,18 @@ namespace LWSUI
             throw std::invalid_argument("Grid heights must be finite and positive");
         if (!std::isfinite(options.inwardDistance) || options.inwardDistance <= 0 || options.inwardDistance > 1)
             throw std::invalid_argument("Invalid inward distance");
+        if (!std::isfinite(options.resolutionFraction) || options.resolutionFraction <= 0)
+            throw std::invalid_argument("Invalid resolution fraction");
+        if (!std::isfinite(options.outwardDistance) || options.outwardDistance <= 0 || options.outwardDistance > 1 ||
+            !std::isfinite(options.maximumScrollSpeed) || options.maximumScrollSpeed < 100)
+            throw std::invalid_argument("Invalid outward acceleration settings");
         const auto old = impl_->options;
+        if (old.outwardAcceleration != options.outwardAcceleration || old.maximumScrollSpeed != options.maximumScrollSpeed ||
+            old.outwardDistance != options.outwardDistance || old.resolutionFraction != options.resolutionFraction)
+        {
+            impl_->vertical->Finish(EditPhase::Cancel);
+            impl_->horizontal->Finish(EditPhase::Cancel);
+        }
         if (options.readOnly || !options.editing || old.singleClickEdit != options.singleClickEdit)
             FinishEdit(EditPhase::Cancel);
         impl_->CancelDrag();

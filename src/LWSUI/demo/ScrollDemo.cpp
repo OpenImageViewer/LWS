@@ -107,7 +107,7 @@ namespace
     class Progress final : public Control
     {
       public:
-        double speed = 100;
+        double speed = 100, maximum = 100;
       protected:
         Size OnMeasure(Size) override { return {100, 20}; }
         Size OnMeasureContent(Size size) override { return OnMeasure(size); }
@@ -115,7 +115,15 @@ namespace
         {
             const auto b = Bounds();
             canvas.Fill(b.x, b.y, b.width, b.height, Style().surface);
-            canvas.Fill(b.x, b.y, b.width * float(std::clamp(speed / 100., 0., 1.)), b.height, Style().accent);
+            canvas.Fill(b.x, b.y, b.width * float(std::clamp(speed / maximum, 0., 1.)), b.height, Style().accent);
+            if (maximum > 100)
+            {
+                const float marker = b.x + b.width * float(100 / maximum);
+                canvas.Fill(marker, b.y, 1, b.height, Style().foreground);
+                const float labelWidth = std::min(48.f, b.width);
+                canvas.Text("100%", std::clamp(marker + 3, b.x, b.x + b.width - labelWidth), b.y,
+                            labelWidth, b.height, Style().foreground, Style().smallFont);
+            }
         }
     };
     void Snapshot(UIHost& host, const std::string& path)
@@ -181,10 +189,11 @@ int main(int argc, char** argv)
         auto population = std::make_unique<FlowPanel>();
         population->AddItem(std::make_unique<Label>("Grid side"), false, 70);
         auto& countSlider = static_cast<Slider&>(population->AddItem(std::make_unique<Slider>(), false, 320));
+        countSlider.SetMaxWidth(320);
         auto& countValue = countSlider.ConfigureValue<int64_t>({16, 256, 1}, CardSide, SliderValueMode::ReadOnly);
         auto& countLabel = static_cast<Label&>(population->AddItem(std::make_unique<Label>("64 x 64 = 4096 cards"), false, 250));
         heading->Add(std::move(population));
-        auto& instructions = heading->Emplace<Label>("Drag either scrollbar inward to reduce speed. Wheel scrolls vertically, Shift+wheel horizontally. Buttons, checkboxes and text fields retain their state. Line mode uses an estimated scroll unit.");
+        auto& instructions = heading->Emplace<Label>("Drag inward to reduce speed, or enable outward acceleration to increase speed outside the scrollbar. Wheel scrolls vertically, Shift+wheel horizontally. Buttons, checkboxes and text fields retain their state. Line mode uses an estimated scroll unit.");
         instructions.wrap = true;
         auto toolbar = std::make_unique<FlowPanel>();
         auto& dynamic = static_cast<CheckBox&>(toolbar->AddItem(std::make_unique<CheckBox>("Dynamic resolution"), false, 190));
@@ -192,11 +201,23 @@ int main(int argc, char** argv)
         toolbar->AddItem(std::make_unique<Label>("Inward distance %"), false, 115);
         auto& distance = static_cast<NumericEdit<int64_t>&>(toolbar->AddItem(std::make_unique<NumericEdit<int64_t>>(NumericSpec<int64_t>{1, 100, 1}), false, 85));
         distance.SetMaxWidth(85);
-        auto& precision = static_cast<ComboBox&>(toolbar->AddItem(std::make_unique<ComboBox>(std::vector<Choice>{{"One line (estimate)", "row"}, {"One pixel", "pixel"}}), false, 160));
+        auto& precision = static_cast<ComboBox&>(toolbar->AddItem(std::make_unique<ComboBox>(std::vector<Choice>{{"Row unit (estimate)", "row"}, {"Pixel unit", "pixel"}}), false, 160));
         toolbar->AddItem(std::make_unique<Label>("Scroll speed"), false, 85);
         auto& progress = static_cast<Progress&>(toolbar->AddItem(std::make_unique<Progress>()));
-        auto& speedLabel = static_cast<demo::SpeedReadout&>(toolbar->AddItem(std::make_unique<demo::SpeedReadout>(), false, 70));
+        auto& speedLabel = static_cast<demo::SpeedReadout&>(toolbar->AddItem(std::make_unique<demo::SpeedReadout>(), false, 110));
         heading->Add(std::move(toolbar));
+        auto acceleration = std::make_unique<FlowPanel>();
+        auto& outward = static_cast<CheckBox&>(acceleration->AddItem(std::make_unique<CheckBox>("Outward acceleration"), false, 190));
+        acceleration->AddItem(std::make_unique<Label>("Fine unit fraction %"), false, 120);
+        auto& unitFraction = static_cast<NumericEdit<double>&>(acceleration->AddItem(std::make_unique<NumericEdit<double>>(NumericSpec<double>{.01, std::nullopt, .01}), false, 85));
+        unitFraction.SetMaxWidth(85);
+        acceleration->AddItem(std::make_unique<Label>("Maximum speed %"), false, 125);
+        auto& maximumSpeed = static_cast<NumericEdit<int64_t>&>(acceleration->AddItem(std::make_unique<NumericEdit<int64_t>>(NumericSpec<int64_t>{100, 10000, 100}), false, 100));
+        acceleration->AddItem(std::make_unique<Label>("Outward distance %"), false, 130);
+        auto& outwardDistance = static_cast<NumericEdit<int64_t>&>(acceleration->AddItem(std::make_unique<NumericEdit<int64_t>>(NumericSpec<int64_t>{1, 100, 1}), false, 85));
+        maximumSpeed.SetMaxWidth(100);
+        outwardDistance.SetMaxWidth(85);
+        heading->Add(std::move(acceleration));
         root->AddDocked(std::move(heading), Dock::Top);
         auto& status = static_cast<Label&>(root->AddDocked(std::make_unique<Label>("Interact with a card, then scroll away and return."), Dock::Bottom));
         auto view = std::make_unique<ScrollView>();
@@ -269,6 +290,16 @@ int main(int argc, char** argv)
             guide.SetEnabled(o.dynamicResolution);
             distance.SetValue(int64_t(std::lround(o.inwardDistance * 100)));
             distance.SetEnabled(o.dynamicResolution);
+            outward.SetValue(o.outwardAcceleration);
+            outward.SetEnabled(o.dynamicResolution);
+            unitFraction.SetValue(o.resolutionFraction * 100);
+            unitFraction.SetEnabled(o.dynamicResolution);
+            maximumSpeed.SetValue(int64_t(o.maximumScrollSpeed));
+            outwardDistance.SetValue(int64_t(std::lround(o.outwardDistance * 100)));
+            maximumSpeed.SetEnabled(o.dynamicResolution && o.outwardAcceleration);
+            outwardDistance.SetEnabled(o.dynamicResolution && o.outwardAcceleration);
+            progress.maximum = o.dynamicResolution && o.outwardAcceleration ? o.maximumScrollSpeed : 100;
+            progress.Invalidate();
             precision.SetValue(o.resolution == ScrollResolution::Pixel ? "pixel" : "row");
             precision.SetEnabled(o.dynamicResolution);
         };
@@ -276,6 +307,14 @@ int main(int argc, char** argv)
         auto gc = guide.OnChange.Connect([&](bool enabled) { auto o = scroll->Options(); o.resolutionGuide = enabled; scroll->SetOptions(o); });
         auto distanceConnection = distance.OnEdit.Connect([&](int64_t value, EditPhase) { auto o = scroll->Options(); o.inwardDistance = double(value) / 100; scroll->SetOptions(o); });
         auto pc = precision.OnChange.Connect([&](const std::string& value) { auto o = scroll->Options(); o.resolution = value == "pixel" ? ScrollResolution::Pixel : ScrollResolution::Row; scroll->SetOptions(o); });
+        auto outwardConnection = outward.OnChange.Connect([&](bool enabled)
+        { auto o = scroll->Options(); o.outwardAcceleration = enabled; scroll->SetOptions(o); sync(); });
+        auto unitFractionConnection = unitFraction.OnEdit.Connect([&](double value, EditPhase)
+        { auto o = scroll->Options(); o.resolutionFraction = value / 100; scroll->SetOptions(o); });
+        auto maximumSpeedConnection = maximumSpeed.OnEdit.Connect([&](int64_t value, EditPhase)
+        { auto o = scroll->Options(); o.maximumScrollSpeed = double(value); scroll->SetOptions(o); progress.maximum = o.dynamicResolution && o.outwardAcceleration ? o.maximumScrollSpeed : 100; progress.Invalidate(); });
+        auto outwardDistanceConnection = outwardDistance.OnEdit.Connect([&](int64_t value, EditPhase)
+        { auto o = scroll->Options(); o.outwardDistance = double(value) / 100; scroll->SetOptions(o); });
         auto sc = scroll->OnScrollSpeed.Connect([&](double speed)
         {
             progress.speed = speed;
@@ -314,6 +353,7 @@ int main(int argc, char** argv)
                         host.Route({.kind = InputKind::Down, .x = b.x + 10, .y = b.y + b.height / 2});
                         host.Route({.kind = InputKind::Up, .x = b.x + 10, .y = b.y + b.height / 2});
                     };
+                    if (snapshot) Snapshot(host, narrow ? "scroll-initial-narrow.ppm" : "scroll-initial.ppm");
                     click(*firstButton);
                     click(*firstCheck);
                     click(*firstText);
@@ -377,6 +417,29 @@ int main(int argc, char** argv)
                             }
                         host.Route({.kind = InputKind::Up, .x = inwardX, .y = inwardY});
                         check(!bar->ResolutionDragging() && bar->ScrollSpeed() == 100, "Drag did not finish");
+                        auto acceleratedOptions = scroll->Options();
+                        acceleratedOptions.outwardAcceleration = true;
+                        scroll->SetOptions(acceleratedOptions);
+                        sync();
+                        host.Update();
+                        host.Route({.kind = InputKind::Down, .x = x, .y = y});
+                        const float outwardX = vertical ? b.x + b.width + area.width * .1f : x;
+                        const float outwardY = vertical ? y : b.y + b.height + area.height * .1f;
+                        host.Route({.kind = InputKind::Move, .x = outwardX, .y = outwardY});
+                        check(bar->ResolutionDragging() && bar->ScrollSpeed() > 399, "Outward acceleration did not engage");
+                        check(progress.speed > 399 && progress.maximum == 400, "Outward feedback did not update");
+                        if (snapshot)
+                            for (auto theme : {ThemePreset::Dark, ThemePreset::Light, ThemePreset::Warm})
+                            {
+                                host.SetTheme(MakeTheme(theme));
+                                Snapshot(host, "scroll-outward-" + std::string(vertical ? "vertical-" : "horizontal-") + std::string(ThemePresetName(theme)) + (narrow ? "-narrow.ppm" : ".ppm"));
+                            }
+                        host.Route({.kind = InputKind::Up, .x = outwardX, .y = outwardY});
+                        check(bar->ScrollSpeed() == 100 && progress.speed == 100, "Outward feedback did not reset");
+                        acceleratedOptions.outwardAcceleration = false;
+                        scroll->SetOptions(acceleratedOptions);
+                        sync();
+                        host.Update();
                     }
                 }
                 catch (const std::exception& e) { std::cerr << e.what() << '\n'; failed = true; }

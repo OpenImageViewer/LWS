@@ -39,6 +39,11 @@ namespace LWSUI
         bool horizontalScroll = false, dynamicResolution = false, resolutionGuide = false;
         double inwardDistance = .5;
         ScrollResolution resolution = ScrollResolution::Row;
+        // Separately opt-in acceleration beyond the outer edge, speed in percent and distance as a fraction.
+        bool outwardAcceleration = false;
+        double maximumScrollSpeed = 400, outwardDistance = .1;
+        // Positive finite multiplier of the selected row or pixel unit per logical pointer pixel.
+        double resolutionFraction = .2;
     };
     class ScrollView : public Container
     {

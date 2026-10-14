@@ -160,7 +160,15 @@ namespace LWSUI
                                 adjusted.width, adjusted.height, numberWidth);
         }
         impl_->vertical->SetInwardDistance(impl_->options.inwardDistance);
+        impl_->vertical->SetResolutionFraction(impl_->options.resolutionFraction);
+        impl_->vertical->SetOutwardAcceleration(impl_->options.outwardAcceleration);
+        impl_->vertical->SetMaximumScrollSpeed(impl_->options.maximumScrollSpeed);
+        impl_->vertical->SetOutwardDistance(impl_->options.outwardDistance);
         impl_->horizontal->SetInwardDistance(impl_->options.inwardDistance);
+        impl_->horizontal->SetResolutionFraction(impl_->options.resolutionFraction);
+        impl_->horizontal->SetOutwardAcceleration(impl_->options.outwardAcceleration);
+        impl_->horizontal->SetMaximumScrollSpeed(impl_->options.maximumScrollSpeed);
+        impl_->horizontal->SetOutwardDistance(impl_->options.outwardDistance);
         impl_->vertical->SetDynamicResolution(impl_->options.dynamicResolution);
         impl_->horizontal->SetDynamicResolution(impl_->options.dynamicResolution);
         impl_->vertical->ConfigureResolution(b, impl_->layout.VerticalLimit(), impl_->options.rowHeight, impl_->options.centerResolution);

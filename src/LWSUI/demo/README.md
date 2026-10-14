@@ -216,7 +216,7 @@ demo and are not additional LWSUI public APIs.
 ## Standalone grid demo
 
 `LWSUIGridDemo` is a separate GUI executable without a Windows console window with eleven layout presets and a scrollable
-two-column feature panel to the right of the grid, including single-click editing
+three-column feature panel to the right of the grid, including single-click editing
 and sticky-header options. In single-click mode, checkboxes toggle and progress
 bars support captured dragging with a live preview and a commit on release.
 The Drag value edits checkbox controls these gestures independently of single-click
@@ -227,7 +227,7 @@ precision, a drag guide overlay, and a Scroll speed progress indicator. The Rand
 100 million rows preset generates stable values on demand. Horizontal row mode
 uses row height as an estimate, with a TODO to find a better horizontal unit. It shares the ordinary LWSUI library and is
 built under `LWSUI_BUILD_DEMO`. Its `--smoke` and `--snapshot` modes cover all presets.
-`--snapshot-narrow` also verifies the minimum-size two-column configuration panel.
+`--snapshot-narrow` also verifies the minimum-size three-column configuration panel.
 
 The Text section also demonstrates [TextBox filtering and fixed masks](../TextInput.md) for numbers, hexadecimal input, dates, times, phone numbers, and product IDs. Invalid edits preserve the current value and show rejection feedback. Date and time examples apply semantic validation separately from mask syntax.
 
@@ -271,7 +271,7 @@ dynamic resolution default to disabled. The default inward fraction is `0.5`.
 `SetScrollOffset` and `ScrollOffset` manage both axes, while existing `SetOffset`
 and `Offset` remain vertical APIs. `OnScroll` reports offsets and `OnScrollSpeed`
 reports display speed. Row precision uses `Style().scrollStep` as an estimated
-line unit, with fine sensitivity capped at normal sensitivity for small ranges.
+line unit, with the resolution fraction providing fine control for small ranges too.
 
 `--smoke` exercises child interaction and state preservation, and both scrollbar
 gestures. `--snapshot` writes both orientations in Dark, Light and Warm themes.
@@ -299,3 +299,44 @@ cache, including previously unseen cards when they enter the viewport.
 The sample card container skips descendant preview traversal because its primitive
 controls have no preview handlers. Normal pointer and keyboard dispatch remains
 active, including capture and editing.
+
+## Outward scrollbar acceleration
+
+Outward acceleration is a separate opt-in and requires dynamic resolution.
+Set `outwardAcceleration` in GridOptions or ScrollViewOptions, or call
+`ScrollBar::SetOutwardAcceleration(true)` for a standalone scrollbar.
+`maximumScrollSpeed` defaults to 400 percent and must be finite and at least
+100. `outwardDistance` defaults to 0.1 and must be a finite fraction in (0, 1].
+Standalone scrollbars expose SetMaximumScrollSpeed and SetOutwardDistance.
+
+Distance starts at the scrollbar's outer edge and uses containing-control width
+for vertical bars and height for horizontal bars. Speed rises exponentially to
+the maximum, then remains capped. The scrollbar thickness stays at normal speed.
+Moving perpendicular to the scrolling axis alone changes speed without moving
+content. Returning inward preserves the existing fine-scroll behavior.
+Physical screen edges can limit outward pointer travel even with capture.
+
+Both demos provide an Outward acceleration checkbox, maximum-speed field
+(100 to 10,000 percent) and outward-distance field (1 to 100 percent).
+The speed progress bar uses the configured maximum with a marker at normal
+100 percent when acceleration is enabled. The single speed readout and guide
+remain inside the control while the pointer travels outside it.
+
+## Resolution fraction
+
+`resolutionFraction` sets the fraction of the selected row or pixel unit scrolled
+per logical pointer pixel at the inward endpoint. It defaults to 0.2 and accepts
+positive finite values without an upper bound. Row mode targets row height multiplied by the fraction.
+Pixel mode targets one content pixel multiplied by the fraction. For a 28-pixel
+row, the default targets 5.6 content pixels in row mode and 0.2 in pixel mode.
+If normal sensitivity is already lower, inward dragging retains normal speed.
+Changing the fraction cancels an active drag.
+
+Standalone scrollbars expose `SetResolutionFraction` and `ResolutionFraction`.
+Both demos provide a Fine unit fraction % field enabled with dynamic resolution.
+The field defaults to 20%, with a minimum of 0.01% and no upper bound.
+For example, 200% in pixel mode targets two content pixels per logical pointer pixel.
+Normal feedback remains 100%. Fine feedback uses the existing unit scale
+multiplied by the fraction, giving default row feedback of 0.2% and pixel
+feedback of 0.2/lineSize%. These display units are not a percentage of normal
+physical sensitivity.

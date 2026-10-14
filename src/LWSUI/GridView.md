@@ -172,7 +172,7 @@ without a console window. Interactive fatal errors use a dialog, while automated
 runs retain redirected diagnostics and exit codes. Its ComboBox offers Comfortable,
 Compact, Striped, Styled Headers, Read-only, Mixed Editors, Sticky Columns,
 Single-column List, Large External Model, Random 100 million rows and Wide columns presets. The right-side scrollable
-panel changes configuration immediately through two columns of compact checkboxes.
+panel changes configuration immediately through three columns of compact checkboxes.
 Every preset has a purpose description supplied by the same private preset catalog
 that supplies its choices and configuration. The demo uses a 1180 x 740 client
 area, 14-pixel grid text, 28-pixel rows and 30-pixel headers. Compact uses 24-pixel
@@ -212,11 +212,11 @@ for subsequent dragging. Returning toward the scrollbar restores normal sensitiv
 jump. The same behavior applies to horizontal scrollbars when moving upward.
 
 `centerResolution` selects `ScrollResolution::Row` or `ScrollResolution::Pixel`.
-At the configured inward distance, each logical pointer pixel scrolls one row-height or one content
-pixel respectively. Beyond that distance, the fine sensitivity stays constant.
+At the configured inward distance, each logical pointer pixel scrolls at most one row-height or one content
+pixel respectively, multiplied by `resolutionFraction`. Beyond that distance, the fine sensitivity stays constant.
 Horizontal row mode uses row height as an estimated horizontal scroll unit.
 TODO: Find a better horizontal unit based on column widths or another meaningful
-measure. Fine sensitivity never exceeds normal sensitivity for small ranges.
+measure. The resolution fraction allows fine control of small ranges using fractional row or pixel movement.
 
 Standalone `ScrollBar` users enable `SetDynamicResolution(true)` and supply the
 containing bounds, maximum content offset, line size, and mode through
@@ -226,8 +226,8 @@ Release, cancellation, capture loss, detach, and configuration changes reset it.
 `resolutionGuide` optionally renders a noninteractive drag guide, endpoint reference,
 pointer marker, and one current-speed label. It defaults to false and is enabled in the demo.
 The demo toolbar displays a read-only progress bar labeled **Scroll speed**.
-Normal speed is 100%, row precision is 1%, and pixel precision is
-`1 / rowHeight` percent. These are a display scale rather than a physical ratio
+Normal speed is 100%. At a full-unit fraction, row precision is 1% and pixel
+precision is `1 / rowHeight` percent. Fine feedback is multiplied by the configured fraction. These are a display scale rather than a physical ratio
 of fine sensitivity to normal sensitivity. The indicator resets after dragging.
 
 `SetPreciseScrollOffset`, `PreciseScrollOffset`, and `OnPreciseScroll` use
@@ -275,3 +275,44 @@ The Wide columns preset uses 1,000 virtual rows and 1,000 fixed-width columns
 with stable generated values. It enables dynamic resolution and line numbers.
 Editing, sorting, select-all, multi-row selection and auto-sizing are disabled.
 Its horizontal scrollbar demonstrates a substantial sensitivity reduction.
+
+## Outward scrollbar acceleration
+
+Outward acceleration is a separate opt-in and requires dynamic resolution.
+Set `outwardAcceleration` in GridOptions or ScrollViewOptions, or call
+`ScrollBar::SetOutwardAcceleration(true)` for a standalone scrollbar.
+`maximumScrollSpeed` defaults to 400 percent and must be finite and at least
+100. `outwardDistance` defaults to 0.1 and must be a finite fraction in (0, 1].
+Standalone scrollbars expose SetMaximumScrollSpeed and SetOutwardDistance.
+
+Distance starts at the scrollbar's outer edge and uses containing-control width
+for vertical bars and height for horizontal bars. Speed rises exponentially to
+the maximum, then remains capped. The scrollbar thickness stays at normal speed.
+Moving perpendicular to the scrolling axis alone changes speed without moving
+content. Returning inward preserves the existing fine-scroll behavior.
+Physical screen edges can limit outward pointer travel even with capture.
+
+Both demos provide an Outward acceleration checkbox, maximum-speed field
+(100 to 10,000 percent) and outward-distance field (1 to 100 percent).
+The speed progress bar uses the configured maximum with a marker at normal
+100 percent when acceleration is enabled. The single speed readout and guide
+remain inside the control while the pointer travels outside it.
+
+## Resolution fraction
+
+`resolutionFraction` sets the fraction of the selected row or pixel unit scrolled
+per logical pointer pixel at the inward endpoint. It defaults to 0.2 and accepts
+positive finite values without an upper bound. Row mode targets row height multiplied by the fraction.
+Pixel mode targets one content pixel multiplied by the fraction. For a 28-pixel
+row, the default targets 5.6 content pixels in row mode and 0.2 in pixel mode.
+If normal sensitivity is already lower, inward dragging retains normal speed.
+Changing the fraction cancels an active drag.
+
+Standalone scrollbars expose `SetResolutionFraction` and `ResolutionFraction`.
+Both demos provide a Fine unit fraction % field enabled with dynamic resolution.
+The field defaults to 20%, with a minimum of 0.01% and no upper bound.
+For example, 200% in pixel mode targets two content pixels per logical pointer pixel.
+Normal feedback remains 100%. Fine feedback uses the existing unit scale
+multiplied by the fraction, giving default row feedback of 0.2% and pixel
+feedback of 0.2/lineSize%. These display units are not a percentage of normal
+physical sensitivity.

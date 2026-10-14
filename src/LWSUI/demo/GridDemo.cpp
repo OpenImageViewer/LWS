@@ -84,6 +84,7 @@ namespace
     {
       public:
         void SetSpeed(double value) { speed_ = value; Invalidate(); }
+        void SetMaximum(double value) { maximum_ = value; Invalidate(); }
       protected:
         Size OnMeasure(Size available) override { return {std::min(100.f, available.width), 16}; }
         Size OnMeasureContent(Size available) override { return OnMeasure(available); }
@@ -91,10 +92,18 @@ namespace
         {
             const auto b = Bounds();
             canvas.Fill(b.x, b.y, b.width, b.height, Style().surface);
-            canvas.Fill(b.x, b.y, b.width * float(std::clamp(speed_ / 100., 0., 1.)), b.height, Style().accent);
+            canvas.Fill(b.x, b.y, b.width * float(std::clamp(speed_ / maximum_, 0., 1.)), b.height, Style().accent);
+            if (maximum_ > 100)
+            {
+                const float marker = b.x + b.width * float(100 / maximum_);
+                canvas.Fill(marker, b.y, 1, b.height, Style().foreground);
+                const float labelWidth = std::min(48.f, b.width);
+                canvas.Text("100%", std::clamp(marker + 3, b.x, b.x + b.width - labelWidth), b.y,
+                            labelWidth, b.height, Style().foreground, Style().smallFont);
+            }
         }
       private:
-        double speed_ = 100;
+        double speed_ = 100, maximum_ = 100;
     };
     class LargeModel final : public GridModel
     {
@@ -366,7 +375,7 @@ int main(int argc, char** argv)
         auto& instructions = top->Emplace<Label>(
             "Drag headers to move columns. Drag boundaries to resize. Double-click/F2 edits. Ctrl/Shift selects rows. "
             "Drag progress bars to adjust them. Shift+wheel scrolls horizontally. "
-            "With dynamic resolution enabled, drag the scrollbar inward to reduce speed.");
+            "Drag inward for finer scrolling. Opt into outward acceleration to drag outward for faster scrolling.");
         instructions.wrap = true;
         instructions.fontRole = Control::FontRole::Small;
         root->AddDocked(std::move(top), Dock::Top);
@@ -379,7 +388,7 @@ int main(int argc, char** argv)
         featureStack->spacing = 2;
         featureStack->Emplace<Label>("Live configuration").fontRole = Control::FontRole::Heading;
         auto featureChecks = std::make_unique<Grid>();
-        featureChecks->columns = {-1, -1};
+        featureChecks->columns = {-1, -1, -1};
         featureChecks->spacing = 4;
         struct Toggle
         {
@@ -399,8 +408,8 @@ int main(int argc, char** argv)
                                     {"Sticky headers", &GridOptions::stickyHeaders},
                                     {"Sort glyphs", &GridOptions::sortGlyphs},
                                     {"Row striping", &GridOptions::striped},
-                                    {"Horizontal grid lines", &GridOptions::horizontalLines},
-                                    {"Vertical grid lines", &GridOptions::verticalLines},
+                                    {"Horizontal lines", &GridOptions::horizontalLines},
+                                    {"Vertical lines", &GridOptions::verticalLines},
                                     {"Copy enabled", &GridOptions::copy},
                                     {"Copy headers", &GridOptions::copyHeaders},
                                     {"Single-click edits", &GridOptions::singleClickEdit},
@@ -412,6 +421,7 @@ int main(int argc, char** argv)
                                     {"Tab navigates cells", &GridOptions::tabNavigation},
                                     {"Context menus", &GridOptions::contextMenus},
                                     {"Dynamic resolution", &GridOptions::dynamicResolution},
+                                    {"Outward speed", &GridOptions::outwardAcceleration},
                                     {"Line numbers", &GridOptions::lineNumbers},
                                     {"Show guide", &GridOptions::resolutionGuide}};
         for (auto& toggle : toggles)
@@ -434,11 +444,17 @@ int main(int argc, char** argv)
         auto& headerStyle = fields->Emplace<ComboBox>(
             std::vector<Choice>{{"Theme default", "default"}, {"Blue header", "blue"}, {"Amber header", "amber"}});
         fields->Emplace<Label>("Fine resolution");
-        auto& resolution = fields->Emplace<ComboBox>(std::vector<Choice>{{"One row", "row"}, {"One pixel", "pixel"}});
+        auto& resolution = fields->Emplace<ComboBox>(std::vector<Choice>{{"Row unit", "row"}, {"Pixel unit", "pixel"}});
+        fields->Emplace<Label>("Fine unit fraction %").wrap = true;
+        auto& unitFraction = fields->Emplace<NumericEdit<double>>(NumericSpec<double>{.01, std::nullopt, .01});
         fields->Emplace<Label>("Line label");
         auto& lineLabel = fields->Emplace<TextBox>("Line");
         fields->Emplace<Label>("Inward distance %");
         auto& distance = fields->Emplace<NumericEdit<int64_t>>(NumericSpec<int64_t>{1, 100, 1});
+        fields->Emplace<Label>("Maximum speed %");
+        auto& maximumSpeed = fields->Emplace<NumericEdit<int64_t>>(NumericSpec<int64_t>{100, 10000, 100});
+        fields->Emplace<Label>("Outward distance %");
+        auto& outwardDistance = fields->Emplace<NumericEdit<int64_t>>(NumericSpec<int64_t>{1, 100, 1});
         featureStack->Add(std::move(fields));
         auto& metrics = featureStack->Emplace<Label>();
         metrics.wrap = true;
@@ -493,7 +509,7 @@ int main(int argc, char** argv)
                 if ((grid->Model() == random || grid->Model() == wide) && (toggle.member == &GridOptions::sorting ||
                     toggle.member == &GridOptions::selectAll || toggle.member == &GridOptions::resizing ||
                     toggle.member == &GridOptions::editing || toggle.member == &GridOptions::multipleSelection || toggle.member == &GridOptions::readOnly)) enabled = false;
-                if (toggle.member == &GridOptions::resolutionGuide) enabled = options.dynamicResolution;
+                if (toggle.member == &GridOptions::resolutionGuide || toggle.member == &GridOptions::outwardAcceleration) enabled = options.dynamicResolution;
                 toggle.control->SetEnabled(enabled);
             }
             const auto column = [&](const std::string& id) -> const GridColumn*
@@ -511,8 +527,15 @@ int main(int argc, char** argv)
             lineLabel.SetEnabled(options.lineNumbers);
             distance.SetValue(int64_t(std::lround(options.inwardDistance * 100)));
             distance.SetEnabled(options.dynamicResolution);
+            maximumSpeed.SetValue(int64_t(options.maximumScrollSpeed));
+            outwardDistance.SetValue(int64_t(std::lround(options.outwardDistance * 100)));
+            maximumSpeed.SetEnabled(options.dynamicResolution && options.outwardAcceleration);
+            outwardDistance.SetEnabled(options.dynamicResolution && options.outwardAcceleration);
+            speedProgress.SetMaximum(options.dynamicResolution && options.outwardAcceleration ? options.maximumScrollSpeed : 100);
             resolution.SetValue(options.centerResolution == ScrollResolution::Row ? "row" : "pixel");
             resolution.SetEnabled(options.dynamicResolution);
+            unitFraction.SetValue(options.resolutionFraction * 100);
+            unitFraction.SetEnabled(options.dynamicResolution);
             rowHeight.SetValue(int64_t(options.rowHeight));
             headerStyle.SetEnabled(options.headerVisible);
             metrics.SetText(std::to_string(grid->Model()->RowCount()) + " rows. Visible: " +
@@ -587,6 +610,25 @@ int main(int argc, char** argv)
         {
             auto options = grid->Options();
             options.inwardDistance = double(percent) / 100;
+            grid->SetOptions(options);
+        });
+        auto unitFractionConnection = unitFraction.OnEdit.Connect([&](double value, EditPhase)
+        {
+            auto options = grid->Options();
+            options.resolutionFraction = value / 100;
+            grid->SetOptions(options);
+        });
+        auto maximumSpeedConnection = maximumSpeed.OnEdit.Connect([&](int64_t value, EditPhase)
+        {
+            auto options = grid->Options();
+            options.maximumScrollSpeed = double(value);
+            grid->SetOptions(options);
+            speedProgress.SetMaximum(options.dynamicResolution && options.outwardAcceleration ? options.maximumScrollSpeed : 100);
+        });
+        auto outwardDistanceConnection = outwardDistance.OnEdit.Connect([&](int64_t value, EditPhase)
+        {
+            auto options = grid->Options();
+            options.outwardDistance = double(value) / 100;
             grid->SetOptions(options);
         });
         auto speedConnection = grid->OnScrollSpeed.Connect([&](double speed)
@@ -814,6 +856,74 @@ int main(int argc, char** argv)
                                 }
                                 grid->SetScrollOffset(0, 0);
                                 grid->ClearSelection();
+                                host.Update();
+                            }
+                            if (!item.wideModel && !item.randomModel && !item.externalModel)
+                            {
+                                host.Finish(EditPhase::Cancel);
+                                grid->FinishEdit(EditPhase::Cancel);
+                                host.Focus(grid);
+                                const auto originalOptions = grid->Options();
+                                auto fineOptions = originalOptions;
+                                fineOptions.dynamicResolution = true;
+                                grid->SetOptions(fineOptions);
+                                sync();
+                                grid->SetPreciseScrollOffset(0, 0);
+                                host.Update();
+                                auto* bar = static_cast<ScrollBar*>(grid->Children()[0].get());
+                                const auto b = bar->Bounds(), area = grid->Bounds();
+                                const float x = b.x + b.width / 2, y = b.y + b.height / 2;
+                                const float inwardX = b.x - area.width * .5f - 1;
+                                pointer({.kind = InputKind::Down, .x = x, .y = y});
+                                const auto before = grid->PreciseScrollOffset().height;
+                                pointer({.kind = InputKind::Move, .x = inwardX, .y = y});
+                                if (!bar->ResolutionDragging() || bar->ScrollSpeed() >= 100 ||
+                                    grid->PreciseScrollOffset().height != before)
+                                    throw std::runtime_error("Small grid did not engage fine scrolling without a jump");
+                                pointer({.kind = InputKind::Move, .x = inwardX, .y = y + 10});
+                                const auto movement = grid->PreciseScrollOffset().height - before;
+                                // Allow native coordinate rounding at each end of the gesture.
+                                if (movement <= 0 || movement > fineOptions.rowHeight * fineOptions.resolutionFraction * 12 + .001)
+                                    throw std::runtime_error("Small grid " + item.choice.value + " moved " + std::to_string(movement) + " from " + std::to_string(before) + " at speed " + std::to_string(bar->ScrollSpeed()) + " dragging " + std::to_string(bar->ResolutionDragging()) + " editing " + std::to_string(grid->Editing()));
+                                pointer({.kind = InputKind::Up, .x = inwardX, .y = y + 10});
+                                grid->SetOptions(originalOptions);
+                                sync();
+                                grid->SetPreciseScrollOffset(0, 0);
+                                host.Update();
+                            }
+                            if (item.wideModel || item.randomModel)
+                            {
+                                auto acceleratedOptions = grid->Options();
+                                acceleratedOptions.outwardAcceleration = true;
+                                grid->SetOptions(acceleratedOptions);
+                                sync();
+                                host.Update();
+                                for (size_t axis : {size_t(0), size_t(1)})
+                                {
+                                    auto* bar = static_cast<ScrollBar*>(grid->Children()[axis].get());
+                                    if (!bar->Visible()) continue;
+                                    const auto b = bar->Bounds(), area = grid->Bounds();
+                                    const bool vertical = axis == 0;
+                                    const float x = b.x + b.width / 2, y = b.y + b.height / 2;
+                                    pointer({.kind = InputKind::Down, .x = x, .y = y});
+                                    const float outwardX = vertical ? b.x + b.width + area.width * .1f + 1 : x;
+                                    const float outwardY = vertical ? y : b.y + b.height + area.height * .1f + 1;
+                                    pointer({.kind = InputKind::Move, .x = outwardX, .y = outwardY});
+                                    if (!bar->ResolutionDragging() || bar->ScrollSpeed() < 399)
+                                        throw std::runtime_error("Grid outward acceleration did not engage");
+                                    if (snapshot)
+                                        for (const std::string palette : {"dark", "light", "warm"})
+                                        {
+                                            applyTheme(palette);
+                                            Snapshot(host, "grid-outward-" + std::string(vertical ? "vertical-" : "horizontal-") + palette + (narrow ? "-narrow.ppm" : ".ppm"));
+                                        }
+                                    pointer({.kind = InputKind::Up, .x = outwardX, .y = outwardY});
+                                    if (bar->ScrollSpeed() != 100)
+                                        throw std::runtime_error("Grid outward feedback did not reset");
+                                }
+                                acceleratedOptions.outwardAcceleration = false;
+                                grid->SetOptions(acceleratedOptions);
+                                sync();
                                 host.Update();
                             }
                             if (item.wideModel)

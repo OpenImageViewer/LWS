@@ -149,6 +149,11 @@ namespace LWSUI
     {
         if (!std::isfinite(options.inwardDistance) || options.inwardDistance <= 0 || options.inwardDistance > 1)
             throw std::invalid_argument("Invalid inward distance");
+        if (!std::isfinite(options.resolutionFraction) || options.resolutionFraction <= 0)
+            throw std::invalid_argument("Invalid resolution fraction");
+        if (!std::isfinite(options.outwardDistance) || options.outwardDistance <= 0 || options.outwardDistance > 1 ||
+            !std::isfinite(options.maximumScrollSpeed) || options.maximumScrollSpeed < 100)
+            throw std::invalid_argument("Invalid outward acceleration settings");
         bar_->Finish(EditPhase::Cancel);
         horizontal_->Finish(EditPhase::Cancel);
         options_ = options;
@@ -214,7 +219,15 @@ namespace LWSUI
         bar_->SetDynamicResolution(options_.dynamicResolution);
         horizontal_->SetDynamicResolution(options_.dynamicResolution);
         bar_->SetInwardDistance(options_.inwardDistance);
+        bar_->SetResolutionFraction(options_.resolutionFraction);
+        bar_->SetOutwardAcceleration(options_.outwardAcceleration);
+        bar_->SetMaximumScrollSpeed(options_.maximumScrollSpeed);
+        bar_->SetOutwardDistance(options_.outwardDistance);
         horizontal_->SetInwardDistance(options_.inwardDistance);
+        horizontal_->SetResolutionFraction(options_.resolutionFraction);
+        horizontal_->SetOutwardAcceleration(options_.outwardAcceleration);
+        horizontal_->SetMaximumScrollSpeed(options_.maximumScrollSpeed);
+        horizontal_->SetOutwardDistance(options_.outwardDistance);
         bar_->ConfigureResolution(b, std::max(0.f, extent_.height - viewport_.height), Style().scrollStep, options_.resolution);
         horizontal_->ConfigureResolution(b, std::max(0.f, extent_.width - viewport_.width), Style().scrollStep, options_.resolution);
         bar_->SetVisible(extent_.height > viewport_.height);
