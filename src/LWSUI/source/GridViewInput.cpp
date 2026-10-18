@@ -288,7 +288,7 @@ namespace LWSUI
             Finish(EditPhase::Cancel);
             return true;
         }
-        if (input.control && input.key == K::C)
+        if (input.control && (input.key == K::C || (!input.shift && !input.alt && input.key == K::Insert)))
             return CopySelection();
         if (input.control && input.key == K::A)
         {

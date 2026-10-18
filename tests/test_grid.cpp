@@ -7,6 +7,7 @@
     #include "demo/GridDemoPresets.hpp"
     #include "demo/ScrollFeedback.hpp"
     #include <LWS/Platform.hpp>
+    #include <LWS/TextClipboard.hpp>
     #ifdef LWS_HAS_WIN32_BACKEND
         #include <LWS/Win32/Platform.hpp>
     #endif
@@ -388,6 +389,7 @@ TEST_CASE("Grid pointer sorting resizing cancellation and reordering use public 
 TEST_CASE("Grid composite focus validation prevents leaving a rejected edit", "[ui][grid][focus]")
 {
     Environment env;
+    env.host->SetInvalidEditPolicy(InvalidEditPolicy::BlockOnLeave);
     auto root = std::make_unique<DockPanel>();
     auto grid = std::make_unique<GridView>();
     auto* view = grid.get();
@@ -2154,4 +2156,24 @@ TEST_CASE("Grid rechecks read-only state after value-changing callbacks", "[ui][
         REQUIRE(model->Value({1, "number"}) == GridValue{int64_t{42}});
     }
 }
+
+#ifdef LWS_HAS_WIN32_BACKEND
+TEST_CASE("Grid Ctrl Insert copies the selection without adding paste", "[ui][grid][copy][clipboard]")
+{
+    Environment env;
+    auto grid = std::make_unique<GridView>();
+    auto* view = grid.get();
+    Setup(*view, Model());
+    env.host->SetRoot(std::move(grid)); env.host->Update();
+    REQUIRE(view->SelectCell({1, "name"}));
+    REQUIRE(env.host->Focus(view));
+    REQUIRE(env.host->Route({.kind = InputKind::KeyDown, .key = LWS::KeyCode::Insert, .control = true}));
+    std::string copied;
+    LWS::RequestClipboardText(*env.window, [&](auto result, auto value)
+    { if (result == LWS::ClipboardResult::Success) copied = std::move(value); });
+    if (copied.empty()) SKIP("Clipboard access unavailable");
+    REQUIRE(copied == view->CopyText());
+    REQUIRE_FALSE(env.host->Route({.kind = InputKind::KeyDown, .key = LWS::KeyCode::Insert, .shift = true}));
+}
+#endif
 #endif

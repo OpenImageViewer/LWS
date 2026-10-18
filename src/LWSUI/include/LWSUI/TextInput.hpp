@@ -4,8 +4,10 @@
 #include <stdexcept>
 #include <expected>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace LWSUI
 {
@@ -21,7 +23,9 @@ namespace LWSUI
     namespace internal
     {
         inline std::expected<void, std::string> CheckHexadecimal(std::string_view value, HexadecimalFormFlags forms,
-                                                                 bool complete)
+                                                                 bool complete,
+                                                                 std::optional<unsigned> spacing = std::nullopt,
+                                                                 unsigned groupSize = 2)
         {
             if (value.empty())
             {
@@ -44,8 +48,24 @@ namespace LWSUI
                 return {};
             if (!forms.test(form))
                 return std::unexpected("This hexadecimal form is not enabled");
-            if (value.find_first_not_of("0123456789abcdefABCDEF") != value.npos)
+            if (!groupSize) return std::unexpected("Group size must be positive");
+            const bool grouped = spacing.value_or(0) != 0;
+            if (value.find_first_not_of(grouped ? "0123456789abcdefABCDEF " : "0123456789abcdefABCDEF") != value.npos)
                 return std::unexpected("Use hexadecimal digits");
+            if (complete && grouped && value.find(' ') != value.npos)
+            {
+                for (size_t begin = 0; begin < value.size();)
+                {
+                    auto end = value.find(' ', begin);
+                    if (end == value.npos) end = value.size();
+                    if (end - begin != groupSize) return std::unexpected("Use complete hexadecimal groups");
+                    if (end == value.size()) break;
+                    auto next = value.find_first_not_of(' ', end);
+                    if (next == value.npos || next - end != *spacing)
+                        return std::unexpected("Use the configured spacing between groups");
+                    begin = next;
+                }
+            }
             if (complete && value.empty())
                 return std::unexpected("Enter digits after the hexadecimal prefix");
             return {};
@@ -60,6 +80,23 @@ namespace LWSUI
     };
     // An empty result accepts the proposed whole value. An error rejects the entire edit.
     using InputFilter = std::function<std::expected<void, std::string>(std::string_view, TextEditOrigin)>;
+    struct DynamicMaskProfile
+    {
+        std::string prefix;
+        unsigned base = 10, fieldCount = 1, minimumDigits = 1, maximumDigits = 3;
+        uint64_t minimumValue = 0, maximumValue = 255;
+        char separator = ',';
+        bool inferFromDigits = false;
+        bool uppercaseDigits = false;
+    };
+    struct DynamicMaskDefinition
+    {
+        std::vector<DynamicMaskProfile> profiles;
+        bool pasteReplacesValue = false;
+        std::function<bool(std::string_view)> isComplete;
+        // Normalize whole-value paste with an optional existing prefix.
+        std::function<std::expected<std::string, std::string>(std::string_view, std::string_view)> normalizePaste;
+    };
     namespace InputFilters
     {
         inline InputFilter Number(bool integer = false, bool signedValue = true, bool exponent = true)
@@ -97,25 +134,29 @@ namespace LWSUI
                 return {};
             };
         }
-        inline InputFilter Hexadecimal(HexadecimalFormFlags forms)
+        inline InputFilter Hexadecimal(HexadecimalFormFlags forms, std::optional<unsigned> spacing = std::nullopt,
+                                      unsigned groupSize = 2)
         {
             const auto bits = static_cast<unsigned>(forms.get());
             if (!bits || (bits & ~7U))
                 throw std::invalid_argument("Choose at least one valid hexadecimal form");
-            return [forms](std::string_view value, TextEditOrigin)
-            { return internal::CheckHexadecimal(value, forms, false); };
+            if (!groupSize) throw std::invalid_argument("Group size must be positive");
+            return [forms, spacing, groupSize](std::string_view value, TextEditOrigin)
+            { return internal::CheckHexadecimal(value, forms, false, spacing, groupSize); };
         }
-        inline InputFilter Hexadecimal(bool color = false)
+        inline InputFilter Hexadecimal(bool color = false, std::optional<unsigned> spacing = std::nullopt,
+                                      unsigned groupSize = 2)
         {
             auto syntax = Hexadecimal(
-                HexadecimalFormFlags{color ? HexadecimalForm::HashPrefix : HexadecimalForm::Bare});
+                HexadecimalFormFlags{color ? HexadecimalForm::HashPrefix : HexadecimalForm::Bare}, spacing, groupSize);
             if (!color)
                 return syntax;
             return [syntax = std::move(syntax)](std::string_view value,
                                                 TextEditOrigin origin) -> std::expected<void, std::string>
             {
-                if (value.size() > 9)
-                    return std::unexpected("Use #RRGGBB or #RRGGBBAA");
+                size_t digits = 0;
+                for (char c : value) if (c != '#' && c != ' ') ++digits;
+                if (digits > 8) return std::unexpected("Use #RRGGBB or #RRGGBBAA");
                 return syntax(value, origin);
             };
         }

@@ -6,6 +6,7 @@
 #include <LWSUI/UIHost.hpp>
 #include <LWS/Timer.hpp>
 #include <LWSUI/ColorMath.hpp>
+#include <LWSUI/internal/ColorText.hpp>
 #include <charconv>
 #include <expected>
 #include <chrono>
@@ -90,7 +91,7 @@ namespace LWSUI
                     const auto parsed = Draft();
                     if (!parsed)
                     {
-                        text_->SetValidation("Enter a number within the allowed bounds");
+                        text_->SetValidation(parsed.error());
                         return;
                     }
                     value_ = *parsed;
@@ -137,8 +138,14 @@ namespace LWSUI
             if (!parsed)
                 return std::unexpected(std::is_integral_v<T> ? "Enter a valid integer" : "Enter a valid number");
             if (!ValidNumericValue(*parsed, spec_))
-                return std::unexpected(std::is_integral_v<T> ? "Enter an integer within the allowed bounds"
-                                                           : "Enter a finite number within the allowed bounds");
+            {
+                if (spec_.minimum && spec_.maximum)
+                    return std::unexpected("Enter a value from " + internal::NumericText(*spec_.minimum) +
+                                           " to " + internal::NumericText(*spec_.maximum));
+                if (spec_.minimum) return std::unexpected("Enter a value of at least " + internal::NumericText(*spec_.minimum));
+                if (spec_.maximum) return std::unexpected("Enter a value no greater than " + internal::NumericText(*spec_.maximum));
+                return std::unexpected("Enter a finite number within the allowed bounds");
+            }
             return *parsed;
         }
         void SetValidation(std::string message) { text_->SetValidation(std::move(message)); }
@@ -317,6 +324,7 @@ namespace LWSUI
 
         void Open();
         void Refresh();
+        internal::ColorTextFormat format_ = internal::ColorTextFormat::Hash, startFormat_ = format_, preferredHexFormat_ = format_;
         ColorSwatch* swatch_;
         TextBox* text_;
         LLUtils::Color value_{uint32_t{0x000000ff}}, start_;

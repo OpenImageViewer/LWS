@@ -1,28 +1,12 @@
 #pragma once
 #include <LWSUI/Composites.hpp>
 #include <LWSUI/UIHost.hpp>
+#include <LWSUI/internal/ColorTextBox.hpp>
 #include <array>
 #include <cstdio>
 
 namespace LWSUI::internal
 {
-    inline std::string ColorText(LLUtils::Color color)
-    {
-        char text[10];
-        std::snprintf(text, sizeof(text), "#%02x%02x%02x%02x", color.R(), color.G(), color.B(), color.A());
-        return text;
-    }
-    inline std::optional<LLUtils::Color> ParseColor(std::string_view text)
-    {
-        if ((text.size() != 7 && text.size() != 9) || text.front() != '#')
-            return {};
-        uint32_t value = 0;
-        const auto [end, error] = std::from_chars(text.data() + 1, text.data() + text.size(), value, 16);
-        if (error != std::errc{} || end != text.data() + text.size())
-            return {};
-        return LLUtils::Color{text.size() == 7 ? (value << 8) | 255 : value};
-    }
-
     // CPU raster caches are local to the popup. Marker movement never regenerates a gradient.
     class ColorGradient
     {
@@ -289,8 +273,11 @@ namespace LWSUI::internal
     {
       public:
 
-        ColorPanel(LLUtils::Color color, std::function<void(LLUtils::Color)> preview, const Theme& style = {})
-            : color_(color), hsl_(RgbToHsl(color)), preview_(std::move(preview))
+        ColorPanel(LLUtils::Color color, std::function<void(LLUtils::Color, bool)> preview, const Theme& style = {},
+                   ColorTextFormat format = ColorTextFormat::Hash)
+            : color_(color), hsl_(RgbToHsl(color)), preview_(std::move(preview)), format_(format),
+              preferredHexFormat_(format == ColorTextFormat::DecimalRgba ? ColorTextFormat::Hash : format),
+              originalFormat_(format), originalHexFormat_(preferredHexFormat_)
         {
             title_ = &Emplace<Label>("Color");
             title_->fontRole = FontRole::Title;
@@ -301,7 +288,7 @@ namespace LWSUI::internal
                     hsl_.lightness = l;
                     color_ = HslToRgb(hsl_, color_.A());
                     Refresh();
-                    preview_(color_);
+                    preview_(color_, true);
                 });
             hue_ = &Emplace<HueSlider>();
             hueEdit_ = hue_->OnEdit.Connect([this](double value, EditPhase) { SetChannel(4, value); });
@@ -317,7 +304,13 @@ namespace LWSUI::internal
                 sliders_[i]->filled = true;
                 sliders_[i]->keyboardStep = 1. / Maximum(i);
                 values_[i] = &Emplace<TextBox>();
-                values_[i]->SetInputFilter(InputFilters::Number(i < 4, false, false));
+                if (i < 4)
+                {
+                    ConfigureColorTextBox(*values_[i], i,
+                        [this, i] { return ToggleColorByteTextBox(*values_[i], i, preferredByteHex_[i]); });
+                    (void) values_[i]->SetInputMask(ColorByteInputMask());
+                }
+                else values_[i]->SetInputFilter(InputFilters::Number(false, false, false));
                 values_[i]->fontRole = FontRole::Small;
                 units_[i] = &Emplace<Label>(i == 4 ? "°" : i > 4 ? "%" : "");
                 units_[i]->fontRole = FontRole::Small;
@@ -326,6 +319,16 @@ namespace LWSUI::internal
                 valueEdits_[i] = values_[i]->OnEdit.Connect(
                     [this, i](const std::string& text, EditPhase phase)
                     {
+                        if (i < 4)
+                        {
+                            const auto value = ParseColorByte(text);
+                            if (!value)
+                            { Invalid(*values_[i], "Enter 0 to 255 or a hexadecimal byte such as #FF or 0xFF"); return; }
+                            byteFormats_[i] = DetectColorFormat(text);
+                            if (byteFormats_[i] != ColorTextFormat::DecimalRgba) preferredByteHex_[i] = byteFormats_[i];
+                            SetChannel(i, *value / 255., phase == EditPhase::Preview ? values_[i] : nullptr);
+                            return;
+                        }
                         double value = 0;
                         auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value,
                                                             std::chars_format::fixed);
@@ -344,27 +347,47 @@ namespace LWSUI::internal
             originalLabel_ = &Emplace<Label>("Original");
             newLabel_ = &Emplace<Label>("New");
             originalLabel_->fontRole = newLabel_->fontRole = FontRole::Small;
-            hex_ = &Emplace<TextBox>();
-            hex_->SetInputFilter(InputFilters::Hexadecimal(true));
-            hex_->SetPlaceholder("#RRGGBBAA");
-            hexEdit_ = hex_->OnEdit.Connect(
+            colorText_ = &Emplace<TextBox>();
+            (void) colorText_->SetInputMask(ColorInputMask());
+            ConfigureColorTextBox(*colorText_, std::nullopt,
+                [this] { return ToggleColorTextBox(*colorText_, preferredHexFormat_); });
+            colorText_->SetPlaceholder("#RR-GG-BB-AA or R,G,B,A");
+            textEdit_ = colorText_->OnEdit.Connect(
                 [this](const std::string& text, EditPhase phase)
                 {
-                    auto parsed = ParseColor(text);
-                    if (!parsed)
+                    const auto draft = ReadColorDraft(text);
+                    if (!draft || !draft->complete)
                     {
-                        Invalid(*hex_, "Use #RRGGBB or #RRGGBBAA");
+                        if (draft)
+                        {
+                            color_ = draft->value;
+                            hsl_ = RgbToHsl(color_, hsl_.hue);
+                            Refresh(colorText_);
+                            preview_(color_, false);
+                        }
+                        Invalid(*colorText_, ColorInputMessage);
                         return;
                     }
-                    color_ = *parsed;
+                    format_ = DetectColorFormat(text);
+                    if (format_ != ColorTextFormat::DecimalRgba) preferredHexFormat_ = format_;
+                    color_ = draft->value;
                     hsl_ = RgbToHsl(color_, hsl_.hue);
-                    Refresh(phase == EditPhase::Preview ? hex_ : nullptr);
-                    preview_(color_);
+                    Refresh(phase == EditPhase::Preview ? colorText_ : nullptr);
+                    preview_(color_, true);
                 });
-            originalHex_ = &Emplace<TextBox>(ColorText(color));
-            originalHex_->fontRole = FontRole::Small;
-            originalHex_->SetReadOnly(true);
-            originalHex_->SetBorderless(true);
+            originalText_ = &Emplace<TextBox>(ColorText(color, originalFormat_));
+            ConfigureColorTextBox(*originalText_, std::nullopt, [this]
+            {
+                return ToggleColorNotation(originalFormat_, originalHexFormat_, [this](auto next)
+                {
+                    originalFormat_ = next;
+                    originalText_->SetText(ColorText(comparison_->Original(), originalFormat_));
+                    return true;
+                });
+            });
+            originalText_->fontRole = FontRole::Small;
+            originalText_->SetReadOnly(true);
+            originalText_->SetBorderless(true);
             comparison_ = &Emplace<ColorComparison>(color);
             hint_ = &Emplace<Label>();
             hint_->fontRole = FontRole::Small;
@@ -403,8 +426,8 @@ namespace LWSUI::internal
                 unit->SetStyle(compact);
             for (auto* value : values_)
                 value->SetStyle(compact);
-            hex_->SetStyle(compact);
-            originalHex_->SetStyle(compact);
+            colorText_->SetStyle(compact);
+            originalText_->SetStyle(compact);
         }
         std::optional<Size> Fit(UIHost& host, Size available)
         {
@@ -440,9 +463,8 @@ namespace LWSUI::internal
             place(*hue_, m.padding + m.planeWidth + m.gap, plotTop, m.hueWidth, m.planeHeight);
             const float right = m.stacked ? m.padding : b.width - m.padding - m.channelWidth;
             const float channelTop = m.stacked ? plotTop + m.planeHeight + m.gap : top;
-            const float nameWidth = s.font.size * 1.3f, unitWidth = s.smallFont.size * 1.5f;
-            const float valueWidth = std::min(
-                m.channelWidth * .35f, std::max(64.f, TextWidth("360.00", values_[4]->Font()) + 2 * s.textPadding));
+            const float nameWidth = m.nameWidth, unitWidth = m.unitWidth;
+            const float valueWidth = std::min(m.channelWidth * .35f, m.valueWidth);
             const float valueX = right + m.channelWidth - valueWidth - unitWidth;
             for (size_t i = 0; i < sliders_.size(); ++i)
             {
@@ -456,14 +478,14 @@ namespace LWSUI::internal
             const float previewY = channelTop + m.channelsHeight + m.gap;
             const float labelWidth = std::min(m.channelWidth,
                                               TextWidth("Original", originalLabel_->Font()) + 2 * s.labelPadding);
-            const float hexX = right + labelWidth + m.rowGap;
-            const float hexWidth = std::max(0.f, m.channelWidth - labelWidth - m.rowGap);
+            const float textX = right + labelWidth + m.rowGap;
+            const float textWidth = std::max(0.f, m.channelWidth - labelWidth - m.rowGap);
             place(*newLabel_, right, previewY + (m.previewRow - m.label) / 2, labelWidth, m.label);
-            place(*hex_, hexX, previewY, hexWidth, m.previewRow);
+            place(*colorText_, textX, previewY, textWidth, m.previewRow);
             place(*comparison_, previewX, previewY + m.previewRow, 2 * m.previewWidth, m.previewHeight);
             const float originalY = previewY + m.previewRow + m.previewHeight;
             place(*originalLabel_, right, originalY + (m.previewRow - m.label) / 2, labelWidth, m.label);
-            place(*originalHex_, hexX, originalY, hexWidth, m.previewRow);
+            place(*originalText_, textX, originalY, textWidth, m.previewRow);
             float y = top + m.bodyHeight + m.gap;
             hint_->SetForeground(error_.empty() ? s.muted : s.error);
             cancel_->SetForeground(s.muted);
@@ -567,7 +589,7 @@ namespace LWSUI::internal
                 color_ = comparison_->Original();
                 hsl_ = RgbToHsl(color_);
                 Refresh();  // Silent setters replace invalid drafts without intermediate edits.
-                preview_(color_);
+                preview_(color_, true);
                 return true;
             }
             previousClick_ = Click{input.x, input.y, now};
@@ -576,7 +598,8 @@ namespace LWSUI::internal
         struct Layout
         {
             float padding, inner, gap, rowGap, header, label, row, channelWidth, minimumChannel, hueWidth, planeWidth,
-                planeHeight, channelsHeight, previewWidth, previewHeight, previewRow, bodyHeight, hint, button, height;
+                planeHeight, channelsHeight, previewWidth, previewHeight, previewRow, bodyHeight, hint, button, height,
+                nameWidth, unitWidth, valueWidth;
             bool stacked;
         };
         float TextWidth(std::string_view text, const FontSpec& font, UIHost* measureHost = nullptr) const
@@ -601,7 +624,28 @@ namespace LWSUI::internal
                               line(labels_[0]->Font()) + 2 * labels_[0]->Style().labelPadding,
                               line(units_[0]->Font()) + 2 * units_[0]->Style().labelPadding});
             m.button = std::max(s.rowHeight, line(cancel_->Font()) + 2 * s.textPadding);
-            m.minimumChannel = std::max(240.f, s.font.size * 6.3f + s.smallFont.size * 1.5f + 64 + m.rowGap);
+            m.nameWidth = s.font.size * 1.3f;
+            m.unitWidth = s.smallFont.size * 1.5f;
+            m.valueWidth = 64;
+            for (size_t i = 0; i < values_.size(); ++i)
+            {
+                m.row = std::max(m.row, line(values_[i]->Font()) + 2 * values_[i]->Style().textPadding);
+                m.nameWidth = std::max(m.nameWidth, TextWidth(labels_[i]->Text(), labels_[i]->Font(), host) +
+                                                     2 * labels_[i]->Style().labelPadding);
+                m.unitWidth = std::max(m.unitWidth, TextWidth(units_[i]->Text(), units_[i]->Font(), host) +
+                                                     2 * units_[i]->Style().labelPadding);
+                m.valueWidth = std::max(m.valueWidth, TextWidth(i < 4 ? "0xFF" : "360.00", values_[i]->Font(), host) +
+                                                       2 * values_[i]->Style().textPadding);
+            }
+            const float previewLabel = TextWidth("Original", originalLabel_->Font(), host) + 2 * s.labelPadding;
+            const auto valueWidth = [&](const TextBox& field)
+            {
+                return std::max(TextWidth("0XFF-FF-FF-FF", field.Font(), host),
+                                TextWidth("255,255,255,255", field.Font(), host)) + 2 * field.Style().textPadding;
+            };
+            const float previewText = std::max(valueWidth(*colorText_), valueWidth(*originalText_));
+            m.minimumChannel = std::max({240.f, m.nameWidth + m.unitWidth + 5 * s.font.size + m.valueWidth + m.rowGap,
+                                        previewLabel + m.rowGap + previewText, m.valueWidth / .35f});
             m.channelWidth = std::min(m.inner, m.minimumChannel);
             m.hueWidth = std::min(std::max(24.f, s.popupChannelHeight), m.inner / 4);
             m.stacked = m.inner < 192 + m.hueWidth + 2 * m.gap + m.channelWidth;
@@ -612,8 +656,8 @@ namespace LWSUI::internal
             m.previewWidth = std::min(m.channelWidth / 2, std::max(s.popupPreviewHeight,
                                                                    TextWidth("Original", originalLabel_->Font(), host) +
                                                                        2 * s.labelPadding));
-            m.previewRow = std::max({m.label, line(hex_->Font()) + 2 * hex_->Style().textPadding,
-                                     line(originalHex_->Font()) + 2 * originalHex_->Style().textPadding});
+            m.previewRow = std::max({m.label, line(colorText_->Font()) + 2 * colorText_->Style().textPadding,
+                                     line(originalText_->Font()) + 2 * originalText_->Style().textPadding});
             m.previewHeight = 2 * m.previewWidth;
             m.hint = host ? host->MeasureText(hint_->Text(), std::max(1.f, m.inner - 2 * s.labelPadding), true,
                                               hint_->Font())
@@ -665,7 +709,7 @@ namespace LWSUI::internal
                 color_ = HslToRgb(hsl_, color_.A());
             }
             Refresh(editing);
-            preview_(color_);
+            preview_(color_, true);
         }
         void Refresh(TextBox* editing = nullptr)
         {
@@ -675,9 +719,11 @@ namespace LWSUI::internal
             plane_->SetValue(hsl_);
             hue_->SetValue(hsl_.hue / 360);
             comparison_->SetValue(color_);
-            const auto hex = ColorText(color_);
-            if (hex_ != editing && hex_->Text() != hex)
-                hex_->SetText(hex);
+            const auto formatted = ColorText(color_, format_);
+            const auto original = ColorText(comparison_->Original(), originalFormat_);
+            if (originalText_->Text() != original) originalText_->SetText(original);
+            if (colorText_ != editing && colorText_->Text() != formatted)
+                colorText_->SetText(formatted);
             const std::array values{double(color_.R()), double(color_.G()),    double(color_.B()),  double(color_.A()),
                                     hsl_.hue,           hsl_.saturation * 100, hsl_.lightness * 100};
             for (size_t i = 0; i < values.size(); ++i)
@@ -686,7 +732,8 @@ namespace LWSUI::internal
                 char buffer[40];
                 auto [end, error] = std::to_chars(buffer, buffer + sizeof(buffer), values[i], std::chars_format::fixed,
                                                   i < 4 ? 0 : 2);
-                std::string text = error == std::errc{} ? std::string(buffer, end) : "";
+                std::string text = i < 4 ? ColorByteText(unsigned(color_.channels[i]), byteFormats_[i]) :
+                    error == std::errc{} ? std::string(buffer, end) : "";
                 if (i >= 4)
                 {
                     while (text.ends_with('0'))
@@ -701,9 +748,14 @@ namespace LWSUI::internal
         }
         LLUtils::Color color_;
         HslColor hsl_;
-        std::function<void(LLUtils::Color)> preview_;
+        std::function<void(LLUtils::Color, bool)> preview_;
+        ColorTextFormat format_, preferredHexFormat_, originalFormat_, originalHexFormat_;
+        std::array<ColorTextFormat, 4> preferredByteHex_{ColorTextFormat::Hash, ColorTextFormat::Hash,
+                                                       ColorTextFormat::Hash, ColorTextFormat::Hash};
+        std::array<ColorTextFormat, 4> byteFormats_{ColorTextFormat::DecimalRgba, ColorTextFormat::DecimalRgba,
+                                                   ColorTextFormat::DecimalRgba, ColorTextFormat::DecimalRgba};
         Label *title_, *planeLabel_, *hueLabel_, *originalLabel_, *newLabel_, *hint_;
-        TextBox *hex_, *originalHex_;
+        TextBox *colorText_, *originalText_;
         SaturationLightness* plane_;
         HueSlider* hue_;
         ColorComparison* comparison_;
@@ -713,7 +765,7 @@ namespace LWSUI::internal
         std::array<TextBox*, 7> values_{};
         std::string error_;
         std::optional<Click> previousClick_, pressedClick_;
-        Event<void(const std::string&, EditPhase)>::Connection hexEdit_;
+        Event<void(const std::string&, EditPhase)>::Connection textEdit_;
         Event<void(double, EditPhase)>::Connection hueEdit_;
         std::array<Event<void(double, EditPhase)>::Connection, 7> sliderEdits_;
         std::array<Event<void(const std::string&, EditPhase)>::Connection, 7> valueEdits_;

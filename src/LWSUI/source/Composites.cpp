@@ -206,20 +206,27 @@ namespace LWSUI
         columns = {-1, Style().swatchWidth};
         spacing = Style().swatchGap;
         text_ = &Emplace<TextBox>();
-        text_->SetInputFilter(InputFilters::Hexadecimal(true));
+        (void) text_->SetInputMask(internal::ColorInputMask());
+        internal::ConfigureColorTextBox(*text_, std::nullopt,
+            [this] { return internal::ToggleColorTextBox(*text_, preferredHexFormat_); });
+        text_->SetPlaceholder("#RR-GG-BB-AA or R,G,B,A");
         swatch_ = &Emplace<ColorSwatch>();
         open_ = swatch_->OnClick.Connect([this] { Open(); });
         textConnection_ = text_->OnEdit.Connect(
             [this](const std::string& text, EditPhase phase)
             {
-                const auto color = internal::ParseColor(text);
-                if (!color)
+                const auto draft = internal::ReadColorDraft(text);
+                if (!draft || !draft->complete)
                 {
-                    text_->SetValidation("Use #RRGGBB or #RRGGBBAA");
+                    if (draft) swatch_->SetValue(draft->value);
+                    text_->SetValidation(internal::ColorInputMessage);
                     return;
                 }
-                value_ = *color;
+                format_ = internal::DetectColorFormat(text);
+                if (format_ != internal::ColorTextFormat::DecimalRgba) preferredHexFormat_ = format_;
+                value_ = draft->value;
                 swatch_->SetValue(value_);
+                if (phase != EditPhase::Preview) Refresh();
                 OnEdit.Raise(value_, phase);
             });
         Refresh();
@@ -232,26 +239,28 @@ namespace LWSUI
     void ColorPicker::Refresh()
     {
         swatch_->SetValue(value_);
-        text_->SetText(internal::ColorText(value_));
+        text_->SetText(internal::ColorText(value_, format_));
     }
     void ColorPicker::Open()
     {
         if (!Host() || !text_->Finish(EditPhase::Commit))
             return;
         start_ = value_;
+        startFormat_ = format_;
         const auto& popupStyle = Host()->PopupStyle();
         auto panel = std::make_unique<internal::ColorPanel>(
             value_,
-            [handle = Handle()](LLUtils::Color color)
+            [handle = Handle()](LLUtils::Color color, bool complete)
             {
                 if (auto* control = handle.Get())
                 {
                     auto& picker = static_cast<ColorPicker&>(*control);
+                    if (!complete) { picker.swatch_->SetValue(color); return; }
                     picker.SetValue(color);
                     picker.OnEdit.Raise(color, EditPhase::Preview);
                 }
             },
-            popupStyle);
+            popupStyle, format_);
         auto* initialFocus = &panel->InitialFocus();
         auto size = Host()->Window().GetClientAreaMetrics().logical;
         const auto fitted = panel->Fit(*Host(), {std::min(float(size.x), popupStyle.popupWidth), float(size.y)});
@@ -267,7 +276,10 @@ namespace LWSUI
                 [this](EditPhase phase)
                 {
                     if (phase == EditPhase::Cancel)
+                    {
+                        format_ = startFormat_;
                         SetValue(start_);
+                    }
                     OnEdit.Raise(value_, phase);
                 },
                 true))
