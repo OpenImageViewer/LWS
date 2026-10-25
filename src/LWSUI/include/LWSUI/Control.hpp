@@ -18,6 +18,11 @@ namespace LWSUI
         float x = 0, y = 0, width = 0, height = 0;
         bool Contains(float px, float py) const { return px >= x && py >= y && px < x + width && py < y + height; }
     };
+    enum class Orientation
+    {
+        Vertical,
+        Horizontal
+    };
     enum class EditPhase
     {
         Preview,
@@ -45,6 +50,7 @@ namespace LWSUI
         std::string text;
         bool control = false, shift = false, repeat = false, alt = false;
         LWS::MouseButton button = LWS::MouseButton::Left;
+        unsigned clickCount = 1;
     };
     class UIHost;
     class Container;
