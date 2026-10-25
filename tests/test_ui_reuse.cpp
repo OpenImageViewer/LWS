@@ -1,16 +1,79 @@
 #ifdef LWS_TEST_UI
-#include "source/MenuRows.hpp"
-#include <LWSUI/internal/NumericMath.hpp>
-#include <LWSUI/Composites.hpp>
-#include <catch2/catch_approx.hpp>
-#include <LWSUI/internal/TextPresentation.hpp>
-#include <catch2/catch_test_macros.hpp>
-#include <LWSUI/internal/ScopedFlag.hpp>
-#include <stdexcept>
-#include <LWSUI/Containers.hpp>
-#include <LWSUI/internal/ControlTree.hpp>
-
+    #include <catch2/catch_test_macros.hpp>
+    #include <catch2/catch_approx.hpp>
+    #include <LWSUI/Composites.hpp>
+    #include <LWSUI/internal/ScopedFlag.hpp>
+    #include <LWSUI/internal/ControlTree.hpp>
+    #include <LWSUI/internal/NumericMath.hpp>
+    #include "source/MenuRows.hpp"
+    #include <LWSUI/internal/TextPresentation.hpp>
+    #include <limits>
+    #include <stdexcept>
 using namespace LWSUI;
+TEST_CASE("Numeric drafts are typed inspections without value or event changes", "[ui][reuse][numeric]")
+{
+    NumericEdit<int64_t> edit({0, 100, 1});
+    edit.SetValue(12);
+    int notifications = 0;
+    auto connection = edit.OnEdit.Connect([&](int64_t, EditPhase) { ++notifications; });
+    auto* text = dynamic_cast<TextBox*>(&edit.FocusTarget());
+    REQUIRE(text);
+    text->SetText("42");
+    REQUIRE(edit.Draft() == 42);
+    REQUIRE(edit.Value() == 12);
+    REQUIRE(notifications == 0);
+    edit.SetValidation("Model rejected the draft");
+    REQUIRE(text->Validation() == "Model rejected the draft");
+    edit.SetValidation({});
+    REQUIRE(text->Validation().empty());
+    for (const auto* invalid : {"-", "101", "9223372036854775808"})
+    {
+        text->SetText(invalid);
+        REQUIRE_FALSE(edit.Draft());
+        REQUIRE(edit.Value() == 12);
+        REQUIRE(notifications == 0);
+    }
+    NumericEdit<int64_t> exact;
+    auto& exactText = static_cast<TextBox&>(exact.FocusTarget());
+    exactText.SetText("9223372036854775807");
+    REQUIRE(exact.Draft() == std::numeric_limits<int64_t>::max());
+    exactText.SetText("-9223372036854775808");
+    REQUIRE(exact.Draft() == std::numeric_limits<int64_t>::lowest());
+
+    NumericEdit<double> decimal({-1., 1., .1});
+    decimal.SetValue(.2);
+    auto& decimalText = static_cast<TextBox&>(decimal.FocusTarget());
+    decimalText.SetText("0.75");
+    REQUIRE(decimal.Draft() == .75);
+    for (const auto* invalid : {"nan", "inf", "1.1", "unfinished"})
+    {
+        decimalText.SetText(invalid);
+        REQUIRE_FALSE(decimal.Draft());
+        REQUIRE(decimal.Value() == .2);
+    }
+}
+TEST_CASE("Shared numeric rules retain numeric and slider boundary differences", "[ui][reuse][numeric]")
+{
+    NumericSpec<int64_t> unbounded;
+    REQUIRE(ValidNumericSpec(unbounded));
+    REQUIRE(ValidNumericValue(std::numeric_limits<int64_t>::lowest(), unbounded));
+    REQUIRE(ValidNumericValue(std::numeric_limits<int64_t>::max(), unbounded));
+    const NumericSpec<int64_t> fixed{5, 5, 1};
+    REQUIRE(ValidNumericSpec(fixed));
+    REQUIRE(ValidNumericValue(int64_t{5}, fixed));
+    REQUIRE_FALSE(ValidNumericValue(int64_t{6}, fixed));
+    REQUIRE(SliderRangeError(fixed));
+    NumericEdit<int64_t> fixedEdit(fixed);
+    REQUIRE(fixedEdit.Value() == 5);
+    REQUIRE_FALSE(ValidNumericSpec(NumericSpec<int64_t>{10, 0, 1}));
+    REQUIRE_FALSE(ValidNumericSpec(NumericSpec<int64_t>{0, 10, 0}));
+    REQUIRE_FALSE(ValidNumericSpec(NumericSpec<double>{0., 1., std::numeric_limits<double>::quiet_NaN()}));
+    REQUIRE_FALSE(ValidNumericSpec(NumericSpec<double>{0., std::numeric_limits<double>::infinity(), .1}));
+    REQUIRE_FALSE(ValidNumericValue(std::numeric_limits<double>::quiet_NaN(), NumericSpec<double>{}));
+    REQUIRE_FALSE(ValidNumericValue(std::numeric_limits<double>::infinity(), NumericSpec<double>{}));
+    REQUIRE(SliderRangeError(NumericSpec<int64_t>{0, std::numeric_limits<int64_t>::max(), 1}));
+    REQUIRE(SliderRangeError(NumericSpec<double>{0., std::numeric_limits<double>::max(), .1}));
+}
 TEST_CASE("Scoped flags restore nested state during exception unwinding", "[ui][reuse][state]")
 {
     bool flag = false;
@@ -37,58 +100,6 @@ TEST_CASE("Scoped flags restore nested state during exception unwinding", "[ui][
     }
     REQUIRE(flag);
 }
-
-TEST_CASE("Shared ancestry membership is inclusive and distinguishes separate trees", "[ui][reuse][tree]")
-{
-    StackPanel root, other;
-    auto& branch = root.Emplace<StackPanel>();
-    auto& leaf = branch.Emplace<Label>("Leaf");
-    REQUIRE(internal::IsWithin(&leaf, &root));
-    REQUIRE(internal::IsWithin(&leaf, &branch));
-    REQUIRE(internal::IsWithin(&leaf, &leaf));
-    REQUIRE_FALSE(internal::IsWithin(&root, &leaf));
-    REQUIRE_FALSE(internal::IsWithin(&leaf, &other));
-    REQUIRE_FALSE(internal::IsWithin(nullptr, &root));
-    REQUIRE_FALSE(internal::IsWithin(&leaf, nullptr));
-    REQUIRE_FALSE(internal::IsWithin(nullptr, nullptr));
-    auto detached = branch.Remove(leaf);
-    REQUIRE_FALSE(internal::IsWithin(detached.get(), &root));
-    REQUIRE(internal::IsWithin(detached.get(), detached.get()));
-}
-
-TEST_CASE("Connection collections retain heterogeneous subscriptions and disconnect on clear", "[ui][reuse][event]")
-{
-    Event<void(int)> first;
-    Event<void()> second;
-    int total = 0;
-    ConnectionSet connections;
-    connections.Connect(first, [&](int n) { total += n; });
-    connections.Connect(second, [&] { ++total; });
-    first.Raise(2);
-    second.Raise();
-    REQUIRE(total == 3);
-    auto moved = std::move(connections);
-    connections.Clear();
-    first.Raise(2);
-    REQUIRE(total == 5);
-    moved.Clear();
-    first.Raise(2);
-    second.Raise();
-    REQUIRE(total == 5);
-    {
-        ConnectionSet scoped;
-        scoped.Connect(first, [&](int n) { total += n; });
-        first.Raise(3);
-    }
-    first.Raise(3);
-    REQUIRE(total == 8);
-    moved.Connect(first, [&](int) { moved.Clear(); });
-    moved.Connect(first, [&](int) { ++total; });
-    first.Raise(1);
-    REQUIRE(total == 8);
-}
-
-
 TEST_CASE("Shared text presentation keeps native alignment and UTF-8 trimming at fractional scales",
           "[ui][reuse][text]")
 {
@@ -134,88 +145,23 @@ TEST_CASE("Shared text presentation keeps native alignment and UTF-8 trimming at
         canvas.End();
     }
 }
-
-TEST_CASE("Caption alignment preserves centered clipping for oversized fonts", "[ui][reuse][text]")
+TEST_CASE("Shared ancestry membership is inclusive and distinguishes separate trees", "[ui][reuse][tree]")
 {
-    Canvas canvas;
-    canvas.Begin(240, 160, {1.25, 1.25});
-    const FontSpec font{40};
-    const Rect area{5, 30, 160, 12};
-    const auto bounds = internal::AlignedTextBounds(canvas, "Caption", area, font, Alignment::Start,
-                                                   Alignment::Center, /*wrap=*/false, /*constrainHeight=*/false);
-    REQUIRE(bounds.height > area.height);
-    REQUIRE(bounds.y < area.y);
-    REQUIRE(bounds.y + bounds.height / 2 == Catch::Approx(area.y + area.height / 2));
-    canvas.End();
+    StackPanel root, other;
+    auto& branch = root.Emplace<StackPanel>();
+    auto& leaf = branch.Emplace<Label>("Leaf");
+    REQUIRE(internal::IsWithin(&leaf, &root));
+    REQUIRE(internal::IsWithin(&leaf, &branch));
+    REQUIRE(internal::IsWithin(&leaf, &leaf));
+    REQUIRE_FALSE(internal::IsWithin(&root, &leaf));
+    REQUIRE_FALSE(internal::IsWithin(&leaf, &other));
+    REQUIRE_FALSE(internal::IsWithin(nullptr, &root));
+    REQUIRE_FALSE(internal::IsWithin(&leaf, nullptr));
+    REQUIRE_FALSE(internal::IsWithin(nullptr, nullptr));
+    auto detached = branch.Remove(leaf);
+    REQUIRE_FALSE(internal::IsWithin(detached.get(), &root));
+    REQUIRE(internal::IsWithin(detached.get(), detached.get()));
 }
-
-
-TEST_CASE("Numeric drafts are typed inspections without value or event changes", "[ui][reuse][numeric]")
-{
-    NumericEdit<int64_t> edit({0, 100, 1});
-    edit.SetValue(12);
-    int notifications = 0;
-    auto connection = edit.OnEdit.Connect([&](int64_t, EditPhase) { ++notifications; });
-    auto* text = dynamic_cast<TextBox*>(&edit.FocusTarget());
-    REQUIRE(text);
-    text->SetText("42");
-    REQUIRE(edit.Draft() == 42);
-    REQUIRE(edit.Value() == 12);
-    REQUIRE(notifications == 0);
-    edit.SetValidation("Model rejected the draft");
-    REQUIRE(text->Validation() == "Model rejected the draft");
-    edit.SetValidation({});
-    REQUIRE(text->Validation().empty());
-    for (const auto* invalid : {"-", "101", "9223372036854775808"})
-    {
-        text->SetText(invalid);
-        REQUIRE_FALSE(edit.Draft());
-        REQUIRE(edit.Value() == 12);
-        REQUIRE(notifications == 0);
-    }
-    NumericEdit<int64_t> exact;
-    auto& exactText = static_cast<TextBox&>(exact.FocusTarget());
-    exactText.SetText("9223372036854775807");
-    REQUIRE(exact.Draft() == std::numeric_limits<int64_t>::max());
-    exactText.SetText("-9223372036854775808");
-    REQUIRE(exact.Draft() == std::numeric_limits<int64_t>::lowest());
-
-    NumericEdit<double> decimal({-1., 1., .1});
-    decimal.SetValue(.2);
-    auto& decimalText = static_cast<TextBox&>(decimal.FocusTarget());
-    decimalText.SetText("0.75");
-    REQUIRE(decimal.Draft() == .75);
-    for (const auto* invalid : {"nan", "inf", "1.1", "unfinished"})
-    {
-        decimalText.SetText(invalid);
-        REQUIRE_FALSE(decimal.Draft());
-        REQUIRE(decimal.Value() == .2);
-    }
-}
-
-TEST_CASE("Shared numeric rules retain numeric and slider boundary differences", "[ui][reuse][numeric]")
-{
-    NumericSpec<int64_t> unbounded;
-    REQUIRE(ValidNumericSpec(unbounded));
-    REQUIRE(ValidNumericValue(std::numeric_limits<int64_t>::lowest(), unbounded));
-    REQUIRE(ValidNumericValue(std::numeric_limits<int64_t>::max(), unbounded));
-    const NumericSpec<int64_t> fixed{5, 5, 1};
-    REQUIRE(ValidNumericSpec(fixed));
-    REQUIRE(ValidNumericValue(int64_t{5}, fixed));
-    REQUIRE_FALSE(ValidNumericValue(int64_t{6}, fixed));
-    REQUIRE(SliderRangeError(fixed));
-    NumericEdit<int64_t> fixedEdit(fixed);
-    REQUIRE(fixedEdit.Value() == 5);
-    REQUIRE_FALSE(ValidNumericSpec(NumericSpec<int64_t>{10, 0, 1}));
-    REQUIRE_FALSE(ValidNumericSpec(NumericSpec<int64_t>{0, 10, 0}));
-    REQUIRE_FALSE(ValidNumericSpec(NumericSpec<double>{0., 1., std::numeric_limits<double>::quiet_NaN()}));
-    REQUIRE_FALSE(ValidNumericSpec(NumericSpec<double>{0., std::numeric_limits<double>::infinity(), .1}));
-    REQUIRE_FALSE(ValidNumericValue(std::numeric_limits<double>::quiet_NaN(), NumericSpec<double>{}));
-    REQUIRE_FALSE(ValidNumericValue(std::numeric_limits<double>::infinity(), NumericSpec<double>{}));
-    REQUIRE(SliderRangeError(NumericSpec<int64_t>{0, std::numeric_limits<int64_t>::max(), 1}));
-    REQUIRE(SliderRangeError(NumericSpec<double>{0., std::numeric_limits<double>::max(), .1}));
-}
-
 TEST_CASE("Shared numeric stepping saturates without losing integer or decimal precision", "[ui][reuse][numeric]")
 {
     const NumericSpec<int64_t> integer{std::numeric_limits<int64_t>::lowest(), std::numeric_limits<int64_t>::max(), 2};
@@ -235,8 +181,37 @@ TEST_CASE("Shared numeric stepping saturates without losing integer or decimal p
     REQUIRE(internal::StepNumericValue(0., tiny, 1, 100) == .0001);
     REQUIRE(std::isfinite(internal::RoundNumericValue(1e300, 1e300, 324)));
 }
-
-
+TEST_CASE("Connection collections retain heterogeneous subscriptions and disconnect on clear", "[ui][reuse][event]")
+{
+    Event<void(int)> first;
+    Event<void()> second;
+    int total = 0;
+    ConnectionSet connections;
+    connections.Connect(first, [&](int n) { total += n; });
+    connections.Connect(second, [&] { ++total; });
+    first.Raise(2);
+    second.Raise();
+    REQUIRE(total == 3);
+    auto moved = std::move(connections);
+    connections.Clear();
+    first.Raise(2);
+    REQUIRE(total == 5);
+    moved.Clear();
+    first.Raise(2);
+    second.Raise();
+    REQUIRE(total == 5);
+    {
+        ConnectionSet scoped;
+        scoped.Connect(first, [&](int n) { total += n; });
+        first.Raise(3);
+    }
+    first.Raise(3);
+    REQUIRE(total == 8);
+    moved.Connect(first, [&](int) { moved.Clear(); });
+    moved.Connect(first, [&](int) { ++total; });
+    first.Raise(1);
+    REQUIRE(total == 8);
+}
 namespace
 {
     class MenuTestRow final : public Control
@@ -268,5 +243,18 @@ TEST_CASE("Menu reveal uses measured rows and preserves spacing before relayout"
     REQUIRE(internal::NextMenuRow(3, 2, 1, [](size_t) { return true; }) == 0);
     REQUIRE_FALSE(internal::NextMenuRow(3, 0, 1, [](size_t) { return false; }));
     REQUIRE_FALSE(internal::NextMenuRow(0, 0, 1, [](size_t) { return true; }));
+}
+TEST_CASE("Caption alignment preserves centered clipping for oversized fonts", "[ui][reuse][text]")
+{
+    Canvas canvas;
+    canvas.Begin(240, 160, {1.25, 1.25});
+    const FontSpec font{40};
+    const Rect area{5, 30, 160, 12};
+    const auto bounds = internal::AlignedTextBounds(canvas, "Caption", area, font, Alignment::Start,
+                                                   Alignment::Center, /*wrap=*/false, /*constrainHeight=*/false);
+    REQUIRE(bounds.height > area.height);
+    REQUIRE(bounds.y < area.y);
+    REQUIRE(bounds.y + bounds.height / 2 == Catch::Approx(area.y + area.height / 2));
+    canvas.End();
 }
 #endif

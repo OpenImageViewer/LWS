@@ -327,11 +327,36 @@ DPI scenarios run in separate child processes because process DPI initialization
 
 The optional `LWSUI::LWSUI` target provides controls, layout, text rendering, popups,
 focus/capture and bitmap presentation without a JSON dependency. `LWS_BUILD_UI` defaults
-on for Windows/Wayland and off for the unavailable X11 scaffold. Dependency builds compile LWSUI only when linked
+on for Windows/Wayland and off for the unavailable X11 scaffold. `LWSUI_BUILD_DEMO`
+controls the [multi-window control showcase](src/LWSUI/demo/README.md),
+with fixed and resizable native child panes and a complete control catalog. Dependency builds compile LWSUI only when linked
 (or explicitly requested); standalone builds include it. LWSSettings is a separate consumer.
 
+### Control size limits
+
+Every control supports optional maximum dimensions in logical pixels:
+
+```cpp
+splitPanel->SetMaxHeight(120); // Leaves room for following StackPanel children.
+control.SetMaxWidth(300);
+control.SetMaxWidth(std::nullopt); // Restore unconstrained width.
+```
+
+Limits apply before measuring content (so text can wrap at the limited width), to
+its requested size, and to its arranged bounds. A control remains at the origin
+assigned by its parent and can be smaller when less space is assigned. Limits
+must be finite and nonnegative; zero is allowed, and invalid values throw
+`std::invalid_argument`. Setters automatically invalidate layout. `MaxWidth()` and
+`MaxHeight()` return the current optional limits; both are unset by default.
+
+A maximum does not reserve space for siblings or add scrolling. The parent still
+needs enough room for all children; use `DockPanel` when a child should fill the
+space remaining after other controls have been allocated.
+
+### Host lifetime and platform services
+
 UIHost coalesces deferred work, layout and painting through PlatformContext::PostTask.
-Idle hosts have no periodic tick or tree traversal.
+Numeric holds arm their own timers; idle hosts have no periodic tick or tree traversal.
 Wayland timers use timerfd in the context wait loop, and clipboard transfers wait on
 pipe readiness and their actual timeout. Portal dialogs still use a nested timed D-Bus
 pump; converting that path remains a separate asynchronous-dialog design.
@@ -385,45 +410,13 @@ control.SetContextMenuProvider([](LWSUI::Control&, const LWSUI::ContextMenuReque
 Providers run on request; item availability and optional `checked` states are snapshots.
 Shortcut hints are descriptive, not key bindings, and checkmarks do not toggle themselves.
 `UIHost::ShowContextMenu` and `CloseContextMenu` support programmatic invocation.
-Menus retain editor focus and drafts, including inside a modal popup. Up/Down,
+Menus retain editor focus and drafts, including inside a modal color picker. Up/Down,
 Home/End, Enter/Space navigate and activate; Escape/Tab or an outside click dismiss.
 Outside clicks are consumed. Commands execute through an owner-checked `Post` after
 closing the menu; detached or unavailable owners are skipped. Callbacks must respect
 the existing structural-edit lifetime rules and must not capture shorter-lived objects.
 Long menus scroll using existing menu theme metrics. Submenus, icons, native menus,
 and automatic shortcut registration are intentionally deferred.
-
-### Theme presets
-
-`LWSUI::MakeTheme(ThemePreset::Dark/Light/Warm)` returns a complete palette with the same
-font and geometry defaults. `Theme{}` and unconfigured hosts/controls default to Light. Explicit Dark retains the original palette. Apply a palette through the
-existing UIHost theme update path; close transient popups first so they reopen with the
-new style. The controls-only demo's Palette button demonstrates live switching.
-Settings-specific sections, JSON profiles, Save/Revert, and the F6 editor remain in
-LWSSettings; LWSUI has no persistence or theme registry.
-
-Popup replacement returns a success flag: callers must only use the new popup's controls
-when OpenPopup succeeds. Rejected validation preserves the current popup, and window
-resizing cancels transient popups through their normal rollback callback.
-TextBox uses native point hit-testing for bidirectional text and measures only the active
-caret and visual extent, avoiding an all-character caret map on every edit.
-
-The Windows LWSLib target exports `UNICODE`, `_UNICODE`, and `NOMINMAX` as public
-usage requirements, so core-only consumers see the same string ABI and compatible
-Windows headers as the library. LWSUI inherits these requirements.
-
-`TreeView::Row` is a fixed property row, constructed with owned name/editor controls
-and an optional trailing action. Use NameControl(), EditorControl(), and ActionControl()
-to access those roles. It no longer exposes Grid column configuration; measurement and
-arrangement share one column calculation. As with other composites, callers must not
-mutate the owned structure through a base-container cast. Derived controls retain the
-protected capture helpers; host detachment/capture plumbing and handle lifetime records
-are implementation-private. Logical focus may survive hiding/disabling a parent, but
-input cannot reach that unavailable subtree, and Focus rejects foreign-host controls.
-
-When LWSUI is enabled, LWSTests also covers event connection mutation and lifetime,
-UTF-8 editing and validation, popup cancellation, deferred context-menu commands,
-and scrolling without losing editor drafts. Core-only builds omit these UI tests.
 
 ### Multiline text
 
@@ -445,6 +438,17 @@ Assigned and pasted multiline text normalizes CRLF/CR to LF. Existing OnEdit,
 validation, read-only, clipboard, placeholder, borderless, and highlighting APIs
 apply. Scrollbar interaction keeps the draft and does not add a Tab stop. These
 are plain-text notes, without rich text, syntax highlighting, or undo history.
+
+### Main-menu input and popup ownership
+
+Each native dropdown has its own UIHost for layout, rendering, scrolling, and
+mouse capture. The menu session coordinates keyboard navigation and submenu
+lifetimes. Switching top menus on Windows retains the root popup window; closed
+levels remain alive until their current input dispatch has returned.
+
+Captured control gestures and active modal/context popups take priority over the
+main menu. On Wayland, keyboard focus may move between the owner and its dropdowns
+without dismissing the menu; leaving that group or compositor dismissal closes it.
 
 ### Window snapping
 
@@ -497,3 +501,200 @@ resizing (including DPI-induced resizing), hiding, minimizing, maximizing,
 fullscreen, and destruction also release attachments. No-op role or mode setters
 preserve attachments. Outside a live window, state queries retain the configured
 role with no attachments. All operations require the context thread.
+
+### Menu-bar window controls
+
+Horizontal Top/Bottom menu bars on top-level windows can opt into caption buttons
+and native dragging. Other layouts retain their ordinary menu behavior.
+
+```cpp
+bar->SetWindowControls({
+    .minimize = true,
+    .maximize = true,
+    .draggable = true,
+    .requestClose = [&] { platform.RequestQuit(); }
+});
+```
+
+The close callback enables the Close button and runs outside input dispatch. The
+application decides whether to quit, hide the window, or decline closing. Minimize
+and maximize/restore call `RequestShowState`; dragging unused bar space calls
+`BeginWindowDrag(Move)` synchronously with the pointer press. Wayland Minimize is
+visible but disabled. Defaults leave all window controls and dragging off.
+
+For a resizable captionless window, use `WindowStyle::ResizableBorder` without
+native caption or caption-button flags: the Win32 backend adds a caption for
+`CloseButton`, `MinimizeButton`, and `MaximizeButton`. The controls-only showcase's
+main Workspace demonstrates this configuration while its companion windows keep
+native captions.
+
+Close uses red hover and darker red pressed backgrounds with a white X. Applications
+can customize `Theme::closeHoverBackground`, `closePressedBackground`, and
+`closeActiveForeground`. Normal/disabled Close appearance and other caption buttons
+continue to use the ordinary theme colors. These are C++ theme properties; this
+change does not extend LWSSettings JSON definitions or its theme catalog.
+
+`MenuBarWindowControls::doubleClickMaximize` defaults to false. Explicitly enable it
+for title-bar-style maximize/restore on a left double-click in blank caption space,
+the icon, or passive hosted text. It does not depend on native caption styles,
+`draggable`, or a visible Maximize button. Interactive/disabled controls, menu items,
+and caption buttons keep their normal behavior. Only horizontal Top/Bottom bars on
+top-level windows support caption gestures. State requests remain deferred and
+cancel when the bar detaches or the option is disabled before execution.
+
+`EventMouseButton::clickCount` and `Input::clickCount` report a double press as 2 on
+the second Down event. Windows uses native double-click recognition; Wayland uses
+the same 500 ms / five-logical-pixel policy as its client-side caption.
+
+### Live resize redraw
+
+`UIHost::SetRedrawOnResize(true)` opts into synchronous layout and presentation on
+each client-size notification. The default is false; the application decides
+whether its rendering workload can afford live resizing. No hardware detection or
+frame-rate cap is applied. This also works inside Windows' native resize loop,
+where queued updates may otherwise wait until resizing finishes.
+
+The live path does not execute posted application work or reap retired controls.
+Nested size/layout changes retry a current frame without recursive rendering;
+repeated invalidation is bounded and remaining work stays queued. Hidden, minimized,
+unconfigured, or destroyed windows are not presented. Normal deferred updates keep
+processing callbacks and cleanup outside the resize event.
+
+### Menu-bar icons and custom content
+
+`MenuBar::SetIcon(BitmapSharedPtr)` adds an optional leading icon (left in a
+horizontal bar, top in a vertical one). `Icon()` returns the retained bitmap;
+passing null removes it and its space. The icon keeps its aspect ratio in a
+24-logical-pixel box, clamped to the bar thickness. It starts a native window move
+when window dragging is enabled for the bar. It is not a menu item and does not
+change the native window icon.
+
+`SetContent(std::unique_ptr<Control>, minimumWidth)` owns one optional control tree
+between menu items and window buttons in horizontal Top/Bottom bars. `Content()`
+returns that tree, and `SetContentMinimumWidth()` updates its minimum. The child
+reports its preferred size through measurement. `MinimumWidth()` combines required
+icon, menu, content, and window-button widths; `OnMinimumWidthChanged` lets the
+application defer updates to native size limits. Structural content replacements
+must be deferred from control callbacks, just like other tree mutations.
+
+Content participates in focus, capture, Tab traversal, context menus, popups, and
+edit completion. Its hit-test result identifies occupied regions; disabled controls
+still occupy their rectangles. Containers that intend gaps to be draggable should
+return null from HitTest for those gaps or passive text intended as a drag region.
+Labels remain occupied unless their content container passes hits through; the
+settings header does this for its title and saved-state indicator. Content
+is clipped to its slot and never intercepts window buttons. Other bar layouts keep
+the content attached but inactive, preserving control state for returning to a
+horizontal dock. Existing bars without content retain their previous behavior.
+
+The settings editor demonstrates this with its icon, title, theme selector, and
+saved-state indicator. The bar remains generic and has no dependency on settings
+documents, JSON, or theme persistence. A TODO in its layout code records the deferred
+decision about reserving a guaranteed drag strip for combined-content bars.
+
+### Theme presets
+
+`LWSUI::MakeTheme(ThemePreset::Dark/Light/Warm)` returns a complete palette with the same
+font and geometry defaults. `Theme{}` and unconfigured hosts/controls default to Light. Explicit Dark retains the original palette. Apply a palette through the
+existing UIHost theme update path; close transient popups first so they reopen with the
+new style. The connected showcase Theme menus demonstrate live switching.
+Settings-specific sections, JSON profiles, Save/Revert, and the F6 editor remain in
+LWSSettings; LWSUI has no persistence or theme registry.
+
+Popup replacement returns a success flag: callers must only use the new popup's controls
+when OpenPopup succeeds. Rejected validation preserves the current popup, and window
+resizing cancels transient popups through their normal rollback callback.
+TextBox uses native point hit-testing for bidirectional text and measures only the active
+caret and visual extent, avoiding an all-character caret map on every edit.
+
+The Windows LWSLib target exports `UNICODE`, `_UNICODE`, and `NOMINMAX` as public
+usage requirements, so core-only consumers see the same string ABI and compatible
+Windows headers as the library. LWSUI inherits these requirements.
+
+`TreeView::Row` is a fixed property row, constructed with owned name/editor controls
+and an optional trailing action. Use NameControl(), EditorControl(), and ActionControl()
+to access those roles. It no longer exposes Grid column configuration; measurement and
+arrangement share one column calculation. As with other composites, callers must not
+mutate the owned structure through a base-container cast. Derived controls retain the
+protected capture helpers; host detachment/capture plumbing and handle lifetime records
+are implementation-private. Logical focus may survive hiding/disabling a parent, but
+input cannot reach that unavailable subtree, and Focus rejects foreign-host controls.
+
+When LWSUI is enabled, LWSTests also covers event connection mutation and lifetime,
+UTF-8 editing and validation, popup cancellation, deferred context-menu commands,
+and scrolling without losing editor drafts. Core-only builds omit these UI tests.
+
+### Composable layout and value presentation
+
+`SplitPanel` owns exactly two controls and its divider. Nest instances for larger
+layouts; `Orientation::Horizontal` places panes beside each other, and Vertical
+stacks them. `First()`, `Second()`, and `Divider()` expose the owned roles.
+`SetRatio()` selects the initial proportion, `SetMinimumSizes()` constrains panes,
+and `SetDefaultTrailingSize(size, maximumFraction)` supports a preferred details
+area. A user drag may exceed that initial fraction cap. When the available extent
+is too small, pane minima scale proportionally. Dragging preserves editor focus;
+Escape, detachment, or resizing cancels a drag. Tab/arrow keys resize a focused
+divider; Home/double-click restores its configured default. `OnEdit` reports
+preview/commit/cancel. Layout state is in memory only.
+
+```cpp
+auto split = std::make_unique<LWSUI::SplitPanel>(
+    std::move(settings), std::move(description));
+split->SetDefaultTrailingSize(180, .45f);
+split->SetMinimumSizes(100, 80);
+host.SetRoot(std::move(split));
+```
+
+`Panel` owns one content control and supplies background, borders, padding and a
+minimum height. `DockPanel::AddDocked()` consumes top/bottom/left/right space in
+insertion order, then assigns Fill children the remaining rectangle. Ownership
+order controls keyboard traversal independently of docking. Zero extent uses measured content. `Take()` removes
+a docked child. `FlowPanel::AddItem()` lays out intrinsic widths, wraps rows, and
+optionally grows an item to fill spare space. `firstLeading` and `alignEnd` support
+leading Reset plus trailing action buttons. These role-owning controls must not
+be structurally mutated through a base `Container` cast.
+
+`MeasureContent()` requests intrinsic width; horizontal `StackPanel::sizeToContent`
+uses those widths, and `clipPartialChildren` hides actions that cannot fit fully.
+Labels support `verticalAlignment`, `TextTrimming::Ellipsis`, and `minimumText`
+for stable intrinsic widths. `GlyphButton` supplies reusable chevrons; `Image`
+presents a shared bitmap. Controls may set `SetTooltip()` and an optional `cursor`;
+the host presents them. `hitTestVisible=false` makes a subtree pointer-transparent,
+and `Container::hitTestBackground=false` passes hits through empty container space.
+`OnAttach()` runs after children attach and complements `OnDetach()` for queued work.
+
+The existing `Slider` has optional `SliderValueMode::Hidden` (default), `ReadOnly`,
+and `Editable` presentation. `SetValueDisplay()` adds a normalized double readout
+without changing continuous dragging. `Value()` and `OnEdit` remain normalized.
+For a typed range, include `<LWSUI/Composites.hpp>` and configure the same slider:
+
+```cpp
+auto& amount = slider.ConfigureValue<int64_t>({0, 100, 1}, 25,
+                                             LWSUI::SliderValueMode::Editable);
+auto connection = amount.OnEdit.Connect([](int64_t value, LWSUI::EditPhase phase) {
+    // Preview, commit, or roll back the application's typed value.
+});
+amount.SetValue(30); // External writes cancel pending interaction without notifications.
+```
+
+The returned model belongs to the slider and is valid until reconfiguration or
+slider destruction. Reconfiguration is structural: post it through `UIHost::Post`
+when requested from a callback. The numeric editor retains exact typed values;
+integer slider bounds and span must fit within 2^53-1, while ordinary `NumericEdit`
+keeps its wider integer support. Steps must be positive and bounds finite/distinct.
+`TrackBounds()` excludes the value field; `ValueField()` returns the current visible
+field or null. `ScrollBar` retains its ordinary normalized behavior.
+
+### GridView and standalone grid demo
+
+`LWSUI::GridView` provides typed editable tables, full-row and multiple-row selection,
+column movement/resizing/sorting, both-edge pinned columns and virtual scrolling.
+It supports owned or external models and custom cell renderers/editors.
+See [GridView](src/LWSUI/GridView.md) for configuration, events and model contracts.
+
+Build `LWSUIGridDemo` with `LWSUI_BUILD_DEMO=ON`. A layout ComboBox and right-side
+feature checkboxes exercise nine presets, including a single-column list and a
+million-row external model. Single-click mode commits checkbox toggles and custom
+progress-bar value actions immediately through normal validation and events.
+`--smoke` exercises all presets, while `--snapshot`
+also writes `grid-<preset>.ppm`. Run `LWSTests "[grid]"` for the focused tests.
