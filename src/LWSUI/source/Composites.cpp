@@ -2,6 +2,9 @@
 #include <LWSUI/UIHost.hpp>
 #include "MenuRows.hpp"
 #include <algorithm>
+#include <LWS/FileDialog.hpp>
+#include <filesystem>
+#include <cstdio>
 namespace LWSUI
 {
     namespace
@@ -197,5 +200,128 @@ namespace LWSUI
             return true;
         }
         return Button::OnInput(e);
+    }
+    namespace
+    {
+        std::string FilePathError(std::string_view text)
+        {
+            if (text.empty())
+                return {};
+            if (text.find('\0') != text.npos)
+                return "Choose an existing file.";
+            try
+            {
+                const std::filesystem::path path(
+                    std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
+                std::error_code error;
+                const auto status = std::filesystem::status(path, error);
+                if (status.type() == std::filesystem::file_type::not_found)
+                    return "File does not exist.";
+                if (error)
+                    return "Cannot check this file.";
+                return std::filesystem::is_regular_file(status) ? std::string{} : "Choose an existing file.";
+            }
+            catch (const std::filesystem::filesystem_error&)
+            {
+                return "Invalid file path.";
+            }
+        }
+        class FilePathTextBox final : public TextBox
+        {
+          public:
+
+            explicit FilePathTextBox(Button& browse) : browse_(browse)
+            {
+                edit_ = OnEdit.Connect([this](const auto&, EditPhase phase) { edited_ = phase == EditPhase::Preview; });
+            }
+            void SetValue(std::string value)
+            {
+                edited_ = false;
+                browse_.focusLossPhase = EditPhase::Commit;
+                SetText(std::move(value));
+            }
+            bool ValidateDraft()
+            {
+                auto error = FilePathError(Text());
+                const bool valid = error.empty();
+                SetValidation(std::move(error));
+                // Browse must remain available to replace an invalid typed draft.
+                browse_.focusLossPhase = valid ? EditPhase::Commit : EditPhase::Cancel;
+                return valid;
+            }
+            bool Finish(EditPhase phase) override
+            {
+                // Loaded values are displayable even if their files have since disappeared.
+                if (phase == EditPhase::Commit && edited_ && !ValidateDraft())
+                    return false;
+                const bool result = TextBox::Finish(phase);
+                if (phase == EditPhase::Cancel)
+                    browse_.focusLossPhase = EditPhase::Commit;
+                return result;
+            }
+
+          private:
+
+            Button& browse_;
+            bool edited_ = false;
+            Event<void(const std::string&, EditPhase)>::Connection edit_;
+        };
+    }
+    FilePicker::FilePicker()
+    {
+        columns = {-1, Style().browseWidth};
+        spacing = 0;
+        auto button = std::make_unique<Button>("...");
+        button->SetHighlightPattern("");
+        auto& field = Emplace<FilePathTextBox>(*button);
+        text_ = &field;
+        browse_ = button->OnClick.Connect([this] { Browse(); });
+        Add(std::move(button));
+        edit_ = text_->OnEdit.Connect(
+            [this, &field](const auto& value, EditPhase phase)
+            {
+                if (phase != EditPhase::Preview || field.ValidateDraft())
+                    OnEdit.Raise(value, phase);
+            });
+    }
+    void FilePicker::SetValue(std::string value)
+    {
+        static_cast<FilePathTextBox*>(text_)->SetValue(std::move(value));
+    }
+    bool FilePicker::OnInput(const Input& e)
+    {
+        if (e.kind == InputKind::KeyDown && e.key == LWS::KeyCode::F4)
+        {
+            Browse();
+            return true;
+        }
+        return false;
+    }
+    void FilePicker::Browse()
+    {
+        if (!Host())
+            return;
+        if (!text_->Finish(EditPhase::Commit))
+            text_->Finish(EditPhase::Cancel);
+        auto self = Handle();  // The native dialog runs a nested event loop.
+        LWS::string_type path;
+        auto result = LWS::FileDialog::Show(LWS::FileDialogType::OpenFile, {}, NativeText("Choose file"),
+                                            Host()->Window(), {}, 0, NativeText(Value()), path);
+        if (!self)
+            return;
+        if (result == LWS::FileDialogResult::Success)
+        {
+            auto utf8 = std::filesystem::path(path).u8string();
+            std::string chosen(reinterpret_cast<const char*>(utf8.data()), utf8.size());
+            if (auto error = FilePathError(chosen); !error.empty())
+            {
+                Host()->ReportError(std::move(error));
+                return;
+            }
+            SetValue(std::move(chosen));
+            OnEdit.Raise(Value(), EditPhase::Commit);
+        }
+        else if (result != LWS::FileDialogResult::UserCanceled)
+            Host()->ReportError("Native file dialog failed");
     }
 }  // namespace LWSUI

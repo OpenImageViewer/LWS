@@ -295,5 +295,38 @@ namespace LWSUI
         LWSUI::Event<void(bool)>::Connection downConnection_, upConnection_;
         LWSUI::Event<void(EditPhase)>::Connection downRelease_, upRelease_;
     };
+    class FilePicker : public Grid
+    {
+      public:
+
+        FilePicker();
+        // User edits require an existing file or empty text; stored/programmatic values remain unrestricted.
+        void SetValue(std::string value);
+        const std::string& Value() const { return text_->Text(); }
+        LWSUI::Event<void(const std::string&, EditPhase)> OnEdit;
+
+      protected:
+
+        Size OnMeasure(Size available) override
+        {
+            columns = {-1, Style().browseWidth};
+            return Grid::OnMeasure(available);
+        }
+
+        bool OnInput(const Input&) override;
+
+      private:
+
+        // Child roles are owned by this composite.
+        using Container::Add;
+        using Container::Clear;
+        using Container::Emplace;
+        using Container::Remove;
+
+        void Browse();
+        TextBox* text_;
+        LWSUI::Event<void()>::Connection browse_;
+        LWSUI::Event<void(const std::string&, EditPhase)>::Connection edit_;
+    };
 }  // namespace LWSUI
 #include <LWSUI/SliderValue.hpp>
