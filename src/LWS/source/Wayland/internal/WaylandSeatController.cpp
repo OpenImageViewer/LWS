@@ -9,9 +9,12 @@
 
     #include <algorithm>
     #include <cmath>
+    #include <cstdlib>
+    #include <sys/mman.h>
     #include <optional>
     #include <sys/timerfd.h>
     #include <tuple>
+    #include <utility>
     #include <unistd.h>
 
 namespace
@@ -74,6 +77,10 @@ namespace LWS::internal
     void WaylandSeatController::seatCapabilities(void* data, wl_seat* seat, uint32_t capabilities)
     {
         auto& controller = *static_cast<WaylandSeatController*>(data);
+        if (seat != controller.fSeat)
+            return;
+        wl_surface* lostPointerSurface = nullptr;
+        wl_surface* lostKeyboardSurface = nullptr;
         if ((capabilities & WL_SEAT_CAPABILITY_POINTER) != 0 && controller.fPointer == nullptr)
         {
             controller.fPointer = wl_seat_get_pointer(seat);
@@ -97,19 +104,14 @@ namespace LWS::internal
         }
         else if ((capabilities & WL_SEAT_CAPABILITY_POINTER) == 0 && controller.fPointer != nullptr)
         {
-            if (controller.fPointerWindow != nullptr)
-            {
-                std::ignore = controller.fPointerWindow->setPointerLocked(false);
-                controller.fPointerWindow->handlePointerLeave();
-            }
-            if (wl_pointer_get_version(controller.fPointer) >= WL_POINTER_RELEASE_SINCE_VERSION)
-                wl_pointer_release(controller.fPointer);
+            auto* pointer = std::exchange(controller.fPointer, nullptr);
+            lostPointerSurface = controller.clearPointerFocus();
+            if (auto* window = controller.fPlatform.findWindow(lostPointerSurface))
+                std::ignore = window->setPointerLocked(false);
+            if (wl_pointer_get_version(pointer) >= WL_POINTER_RELEASE_SINCE_VERSION)
+                wl_pointer_release(pointer);
             else
-                wl_pointer_destroy(controller.fPointer);
-            controller.fPointer = nullptr;
-            controller.fPointerWindow = nullptr;
-            controller.fPointerWheelFrame.clear();
-            controller.fPointerWheelWindow = nullptr;
+                wl_pointer_destroy(pointer);
         }
 
         if ((capabilities & WL_SEAT_CAPABILITY_KEYBOARD) != 0 && controller.fKeyboard == nullptr)
@@ -127,17 +129,19 @@ namespace LWS::internal
         }
         else if ((capabilities & WL_SEAT_CAPABILITY_KEYBOARD) == 0 && controller.fKeyboard != nullptr)
         {
-            if (controller.fKeyboardWindow != nullptr)
-                controller.fKeyboardWindow->handleKeyboardFocus(false);
-            if (wl_keyboard_get_version(controller.fKeyboard) >= WL_KEYBOARD_RELEASE_SINCE_VERSION)
-                wl_keyboard_release(controller.fKeyboard);
-            else
-                wl_keyboard_destroy(controller.fKeyboard);
-            controller.fKeyboard = nullptr;
+            auto* keyboard = std::exchange(controller.fKeyboard, nullptr);
+            lostKeyboardSurface = std::exchange(controller.fKeyboardSurface, nullptr);
             controller.fKeyboardWindow = nullptr;
-            controller.fPressedKeys.clear();
-            controller.stopKeyRepeat();
+            controller.clearKeymap();
+            controller.fPressedScanCodes.clear();
+            if (wl_keyboard_get_version(keyboard) >= WL_KEYBOARD_RELEASE_SINCE_VERSION)
+                wl_keyboard_release(keyboard);
+            else
+                wl_keyboard_destroy(keyboard);
         }
+        // All retiring resources and focus state are gone before any callback can
+        // pump a capability change or replace the selected seat. No writes follow.
+        controller.notifyFocusLoss(lostPointerSurface, lostKeyboardSurface);
     }
 
     void WaylandSeatController::seatName(void*, wl_seat*, const char*) {}
@@ -166,14 +170,8 @@ namespace LWS::internal
     void WaylandSeatController::pointerLeave(void* data, wl_pointer*, uint32_t, wl_surface*)
     {
         auto& controller = *static_cast<WaylandSeatController*>(data);
-        if (controller.fPointerWindow != nullptr)
-        {
-            controller.fPointerWindow->handlePointerLeave();
-            controller.fPointerWindow = nullptr;
-        }
-        controller.fPointerSurfaceRole = WaylandSurfaceRole::Content;
-        controller.fPointerButtonSerial = 0;
-        controller.fPointerEnterSerial = 0;
+        auto* surface = controller.clearPointerFocus();
+        controller.notifyFocusLoss(surface, nullptr);
     }
 
     void WaylandSeatController::pointerMotion(void* data, wl_pointer*, uint32_t, wl_fixed_t x, wl_fixed_t y)
@@ -191,6 +189,7 @@ namespace LWS::internal
     {
         auto& controller = *static_cast<WaylandSeatController*>(data);
         controller.fPointerButtonSerial = serial;
+        controller.fInputSerial = serial;
         const auto mouseButton = mouseButtonFromLinux(button);
         if (controller.fPointerWindow != nullptr && mouseButton.has_value())
         {
@@ -249,63 +248,168 @@ namespace LWS::internal
     }
     #endif
 
-    void WaylandSeatController::keyboardKeymap(void*, wl_keyboard*, uint32_t, int32_t fd, uint32_t)
+    void WaylandSeatController::keyboardKeymap(void* data, wl_keyboard*, uint32_t format, int32_t fd, uint32_t size)
     {
+        auto& s = *static_cast<WaylandSeatController*>(data);
+        // Every keymap event supersedes the old mapping, including no_keymap.
+        s.clearKeymap();
+        if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 || size == 0)
+        {
+            close(fd);
+            return;
+        }
+        void* mapped = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
         close(fd);
+        if (mapped == MAP_FAILED)
+            return;
+        if (!s.fXkbContext)
+            s.fXkbContext = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+        auto* map = s.fXkbContext ? xkb_keymap_new_from_buffer(s.fXkbContext, static_cast<char*>(mapped), size - 1,
+                                                               XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS)
+                                  : nullptr;
+        munmap(mapped, size);
+        if (!map)
+            return;
+        auto* state = xkb_state_new(map);
+        if (!state)
+        {
+            xkb_keymap_unref(map);
+            return;
+        }
+        s.fXkbKeymap = map;
+        s.fXkbState = state;
+        if (!s.fComposeTable)
+        {
+            const char* locale = std::getenv("LC_ALL");
+            if (!locale || !*locale)
+                locale = std::getenv("LC_CTYPE");
+            if (!locale || !*locale)
+                locale = std::getenv("LANG");
+            s.fComposeTable = xkb_compose_table_new_from_locale(s.fXkbContext, locale && *locale ? locale : "C.UTF-8",
+                                                                XKB_COMPOSE_COMPILE_NO_FLAGS);
+            if (s.fComposeTable)
+                s.fComposeState = xkb_compose_state_new(s.fComposeTable, XKB_COMPOSE_STATE_NO_FLAGS);
+        }
     }
 
-    void WaylandSeatController::keyboardEnter(void* data, wl_keyboard*, uint32_t, wl_surface* surface, wl_array*)
+    void WaylandSeatController::dispatchText(uint32_t key, bool repeat)
     {
-        auto& controller = *static_cast<WaylandSeatController*>(data);
-        controller.fKeyboardWindow = controller.fPlatform.findWindow(surface);
-        if (controller.fKeyboardWindow != nullptr)
-            controller.fKeyboardWindow->handleKeyboardFocus(true);
+        if (!fXkbState || !fKeyboardWindow)
+            return;
+        bool composed = false;
+        const auto sym = xkb_state_key_get_one_sym(fXkbState, key + 8);
+        // Repeating a printable prefix must not bypass an unfinished compose sequence.
+        if (fComposeState && repeat && xkb_compose_state_get_status(fComposeState) == XKB_COMPOSE_COMPOSING)
+            return;
+        if (fComposeState && !repeat)
+        {
+            xkb_compose_state_feed(fComposeState, sym);
+            auto status = xkb_compose_state_get_status(fComposeState);
+            if (status == XKB_COMPOSE_COMPOSING)
+                return;
+            if (status == XKB_COMPOSE_CANCELLED)
+            {
+                xkb_compose_state_reset(fComposeState);
+                return;
+            }
+            composed = status == XKB_COMPOSE_COMPOSED;
+        }
+        auto readText = [&](char* buffer, size_t size)
+        {
+            return composed ? xkb_compose_state_get_utf8(fComposeState, buffer, size)
+                            : xkb_state_key_get_utf8(fXkbState, key + 8, buffer, size);
+        };
+        char text[128]{};
+        int length = readText(text, sizeof(text));
+        std::string committed;
+        if (length >= int(sizeof(text)))
+        {
+            // Custom compose rules can produce strings larger than the normal stack buffer.
+            committed.resize(size_t(length) + 1);
+            length = readText(committed.data(), committed.size());
+            committed.resize(length > 0 && size_t(length) < committed.size() ? size_t(length) : 0);
+        }
+        else if (length > 0)
+            committed.assign(text, size_t(length));
+        if (composed)
+            xkb_compose_state_reset(fComposeState);
+        // A completed non-text keysym consumes the sequence; it must not emit the raw final key.
+        if (!committed.empty() && static_cast<unsigned char>(committed.front()) >= 32 && committed.front() != 127)
+            fKeyboardWindow->handleText(std::move(committed));
+    }
+
+    void WaylandSeatController::keyboardEnter(void* data, wl_keyboard*, uint32_t, wl_surface* surface, wl_array* keys)
+    {
+        auto& state = *static_cast<WaylandSeatController*>(data);
+        state.resetKeyboardInput();
+        state.fKeyboardSurface = surface;
+        if (keys)
+        {
+            const auto* codes = static_cast<const uint32_t*>(keys->data);
+            for (size_t index = 0; index < keys->size / sizeof(uint32_t); ++index)
+                state.fPressedScanCodes.insert(codes[index]);
+        }
+        state.fKeyboardWindow = state.fPlatform.findWindow(surface);
+        if (state.fKeyboardWindow != nullptr)
+        {
+            state.fKeyboardWindow->handleKeyboardFocus(true);
+        }
     }
 
     void WaylandSeatController::keyboardLeave(void* data, wl_keyboard*, uint32_t, wl_surface*)
     {
-        auto& controller = *static_cast<WaylandSeatController*>(data);
-        if (controller.fKeyboardWindow != nullptr)
-        {
-            controller.fKeyboardWindow->handleKeyboardFocus(false);
-            controller.fKeyboardWindow = nullptr;
-        }
-        controller.fPressedKeys.clear();
-        controller.stopKeyRepeat();
+        auto& state = *static_cast<WaylandSeatController*>(data);
+        auto* window = state.fKeyboardWindow;
+        state.fKeyboardWindow = nullptr;
+        state.fKeyboardSurface = nullptr;
+        state.resetKeyboardInput();
+        if (window)
+            window->handleKeyboardFocus(false);
     }
 
-    void WaylandSeatController::keyboardKey(void* data, wl_keyboard*, uint32_t, uint32_t, uint32_t key,
+    void WaylandSeatController::keyboardKey(void* data, wl_keyboard*, uint32_t serial, uint32_t, uint32_t key,
                                             uint32_t keyState)
     {
-        auto& controller = *static_cast<WaylandSeatController*>(data);
+        auto& state = *static_cast<WaylandSeatController*>(data);
+        state.fInputSerial = serial;
+        const uint64_t generation = ++state.fKeyboardGeneration;
+        auto* window = state.fKeyboardWindow;
         const KeyCode translated = keyCodeFromLinux(key);
         const bool pressed = keyState == WL_KEYBOARD_KEY_STATE_PRESSED;
-        if (translated != KeyCode::Unknown)
-        {
-            if (pressed)
-                controller.fPressedKeys.insert(translated);
-            else
-                controller.fPressedKeys.erase(translated);
-        }
-        if (controller.fKeyboardWindow != nullptr)
-            controller.fKeyboardWindow->handleKey(translated, pressed);
-        if (pressed && isRepeatableKey(translated))
-            controller.startKeyRepeat(translated);
-        else if (translated == controller.fRepeatingKey)
-            controller.stopKeyRepeat();
+        if (pressed)
+            state.fPressedScanCodes.insert(key);
+        else
+            state.fPressedScanCodes.erase(key);
+        if (window)
+            window->handleKey(translated, pressed);
+        // A key handler can pump a modal loop, release this key, or destroy its window.
+        if (!state.keyboardDispatchCurrent(window, generation))
+            return;
+        if (pressed)
+            state.dispatchText(key);
+        if (!state.keyboardDispatchCurrent(window, generation))
+            return;
+        if (pressed)
+            state.startKeyRepeat(key);
+        else if (state.fRepeatingScanCode == key)
+            state.stopKeyRepeat();
     }
 
-    void WaylandSeatController::keyboardModifiers(void*, wl_keyboard*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t)
+    void WaylandSeatController::keyboardModifiers(void* data, wl_keyboard*, uint32_t, uint32_t depressed,
+                                                  uint32_t latched, uint32_t locked, uint32_t group)
     {
+        auto& s = *static_cast<WaylandSeatController*>(data);
+        ++s.fKeyboardGeneration;
+        if (s.fXkbState)
+            xkb_state_update_mask(s.fXkbState, depressed, latched, locked, 0, 0, group);
     }
-
     void WaylandSeatController::keyboardRepeatInfo(void* data, wl_keyboard*, int32_t rate, int32_t delay)
     {
-        auto& controller = *static_cast<WaylandSeatController*>(data);
-        controller.fKeyRepeatRate = rate;
-        controller.fKeyRepeatDelay = delay;
+        auto& state = *static_cast<WaylandSeatController*>(data);
+        state.fKeyRepeatRate = rate;
+        state.fKeyRepeatDelay = delay;
         if (rate <= 0)
-            controller.stopKeyRepeat();
+            state.stopKeyRepeat();
     }
 
     bool WaylandSeatController::isKeyPressed(KeyCode key) const
@@ -316,7 +420,8 @@ namespace LWS::internal
             return isKeyPressed(KeyCode::LControl) || isKeyPressed(KeyCode::RControl);
         if (key == KeyCode::Alt)
             return isKeyPressed(KeyCode::LAlt) || isKeyPressed(KeyCode::RAlt);
-        return fPressedKeys.contains(key);
+        return key != KeyCode::Unknown && std::ranges::any_of(fPressedScanCodes, [key](uint32_t scanCode)
+                                                              { return keyCodeFromLinux(scanCode) == key; });
     }
 
     void WaylandSeatController::applyCursor(WindowBackendWayland& window, CursorShape shape, bool visible)
@@ -329,10 +434,48 @@ namespace LWS::internal
         }
     }
 
-    void WaylandSeatController::startKeyRepeat(KeyCode key)
+    bool WaylandSeatController::keyboardDispatchCurrent(WindowBackendWayland* window, uint64_t generation) const
     {
+        return fPlatform.context().IsUsable() && window && fKeyboardWindow == window &&
+               fKeyboardGeneration == generation && window->surface() != nullptr;
+    }
+
+    void WaylandSeatController::resetCompositionAndRepeat()
+    {
+        ++fKeyboardGeneration;
+        if (fComposeState)
+            xkb_compose_state_reset(fComposeState);
         stopKeyRepeat();
-        if (fKeyRepeatDescriptor < 0 || fKeyRepeatRate <= 0 || fKeyRepeatDelay < 0 || !isRepeatableKey(key))
+    }
+
+    void WaylandSeatController::resetKeyboardInput()
+    {
+        resetCompositionAndRepeat();
+        fPressedScanCodes.clear();
+    }
+
+    void WaylandSeatController::clearKeymap()
+    {
+        // Mapping changes do not release physically held keys.
+        resetCompositionAndRepeat();
+        xkb_state_unref(fXkbState);
+        fXkbState = nullptr;
+        xkb_keymap_unref(fXkbKeymap);
+        fXkbKeymap = nullptr;
+    }
+
+    bool WaylandSeatController::isRepeatableScanCode(uint32_t scanCode) const
+    {
+        return fXkbKeymap ? xkb_keymap_key_repeats(fXkbKeymap, scanCode + 8) != 0
+                          : isRepeatableKey(keyCodeFromLinux(scanCode));
+    }
+
+    void WaylandSeatController::startKeyRepeat(uint32_t scanCode)
+    {
+        if (!isRepeatableScanCode(scanCode))
+            return;
+        stopKeyRepeat();
+        if (fKeyRepeatDescriptor < 0 || fKeyRepeatRate <= 0 || fKeyRepeatDelay < 0)
             return;
 
         constexpr int64_t nanosecondsPerSecond = 1'000'000'000;
@@ -344,12 +487,14 @@ namespace LWS::internal
                          .tv_nsec = static_cast<int64_t>(fKeyRepeatDelay % 1000) * nanosecondsPerMillisecond},
         };
         if (timerfd_settime(fKeyRepeatDescriptor, 0, &timer, nullptr) == 0)
-            fRepeatingKey = key;
+        {
+            fRepeatingScanCode = scanCode;
+        }
     }
 
     void WaylandSeatController::stopKeyRepeat()
     {
-        fRepeatingKey = KeyCode::Unknown;
+        fRepeatingScanCode.reset();
         if (fKeyRepeatDescriptor >= 0)
         {
             const itimerspec timer{};
@@ -360,16 +505,29 @@ namespace LWS::internal
     void WaylandSeatController::dispatchKeyRepeats()
     {
         uint64_t expirations{};
-        if (fKeyRepeatDescriptor >= 0 && read(fKeyRepeatDescriptor, &expirations, sizeof(expirations)) > 0 &&
-            fKeyboardWindow != nullptr && fPressedKeys.contains(fRepeatingKey))
+        if (fKeyRepeatDescriptor >= 0 && read(fKeyRepeatDescriptor, &expirations, sizeof(expirations)) > 0)
+            dispatchKeyRepeats(expirations);
+    }
+
+    void WaylandSeatController::dispatchKeyRepeats(uint64_t expirations)
+    {
+        auto* window = fKeyboardWindow;
+        const auto scanCode = fRepeatingScanCode;
+        if (!scanCode)
+            return;
+        const auto key = keyCodeFromLinux(*scanCode);
+        const auto generation = fKeyboardGeneration;
+        auto current = [&]
         {
-            WindowBackendWayland* window = fKeyboardWindow;
-            const KeyCode key = fRepeatingKey;
-            for (uint64_t index = 0; index < expirations && fKeyboardWindow == window && fRepeatingKey == key &&
-                                     fPressedKeys.contains(key); ++index)
-            {
-                window->handleKey(key, true, true);
-            }
+            return keyboardDispatchCurrent(window, generation) && fRepeatingScanCode == scanCode &&
+                   fPressedScanCodes.contains(*scanCode);
+        };
+        for (uint64_t index = 0; index < expirations && current(); ++index)
+        {
+            window->handleKey(key, true, true);
+            if (!current())
+                break;
+            dispatchText(*scanCode, true);
         }
     }
 
@@ -379,21 +537,24 @@ namespace LWS::internal
         {
             fPointerWheelWindow = fPointerWindow;
             fPointerWheelPosition = fPointerPosition;
+            fPointerWheelRole = fPointerSurfaceRole;
         }
     }
 
     void WaylandSeatController::dispatchPointerWheelFrame()
     {
         const std::optional<int32_t> delta = fPointerWheelFrame.takeDelta();
-        if (delta && fPointerWheelWindow != nullptr)
-            fPointerWheelWindow->handlePointerWheel(*delta, fPointerWheelPosition);
-        fPointerWheelWindow = nullptr;
+        auto* window = std::exchange(fPointerWheelWindow, nullptr);
+        const auto position = fPointerWheelPosition;
+        const auto role = fPointerWheelRole;
+        if (delta && window)
+            window->handlePointerWheel(*delta, position, role);
     }
 
     void WaylandSeatController::windowRemoved(WindowBackendWayland& window)
     {
         if (fPointerWindow == &window)
-            fPointerWindow = nullptr;
+            std::ignore = clearPointerFocus();
         if (fPointerWheelWindow == &window)
         {
             fPointerWheelFrame.clear();
@@ -402,62 +563,78 @@ namespace LWS::internal
         if (fKeyboardWindow == &window)
         {
             fKeyboardWindow = nullptr;
-            fPressedKeys.clear();
-            stopKeyRepeat();
+            fKeyboardSurface = nullptr;
+            resetKeyboardInput();
         }
+    }
+
+    wl_surface* WaylandSeatController::clearPointerFocus()
+    {
+        auto* window = std::exchange(fPointerWindow, nullptr);
+        auto* surface = window ? static_cast<wl_surface*>(window->surface()) : nullptr;
+        fPointerSurfaceRole = WaylandSurfaceRole::Content;
+        fPointerButtonSerial = 0;
+        fPointerEnterSerial = 0;
+        fPointerWheelFrame.clear();
+        fPointerWheelWindow = nullptr;
+        fPointerWheelPosition = {};
+        return surface;
+    }
+
+    void WaylandSeatController::notifyFocusLoss(wl_surface* pointerSurface, wl_surface* keyboardSurface)
+    {
+        if (auto* window = fPlatform.findWindow(pointerSurface); window && window != fPointerWindow)
+            window->handlePointerLeave();
+        // The first callback can destroy this target or give it focus on a new seat.
+        if (auto* window = fPlatform.findWindow(keyboardSurface); window && window != fKeyboardWindow)
+            window->handleKeyboardFocus(false);
     }
 
     void WaylandSeatController::reset()
     {
-        if (fPointerWindow != nullptr)
-        {
-            std::ignore = fPointerWindow->setPointerLocked(false);
-            fPointerWindow->handlePointerLeave();
-        }
-        if (fKeyboardWindow != nullptr)
-            fKeyboardWindow->handleKeyboardFocus(false);
-        fCursorController.reset();
-        stopKeyRepeat();
-        fPressedKeys.clear();
-        fPointerWindow = nullptr;
-        fPointerSurfaceRole = WaylandSurfaceRole::Content;
+        auto* pointerSurface = clearPointerFocus();
+        auto* keyboardSurface = std::exchange(fKeyboardSurface, nullptr);
         fKeyboardWindow = nullptr;
-        fPointerButtonSerial = 0;
-        fPointerEnterSerial = 0;
+        if (auto* window = fPlatform.findWindow(pointerSurface))
+            std::ignore = window->setPointerLocked(false);
+        fCursorController.reset();
+        clearKeymap();
+        fPressedScanCodes.clear();
+        xkb_compose_state_unref(fComposeState);
+        fComposeState = nullptr;
+        xkb_compose_table_unref(fComposeTable);
+        fComposeTable = nullptr;
+        xkb_context_unref(fXkbContext);
+        fXkbContext = nullptr;
+        fInputSerial = 0;
         fPointerPosition = {};
-        fPointerWheelFrame.clear();
-        fPointerWheelWindow = nullptr;
-        fPointerWheelPosition = {};
-        if (fKeyboard != nullptr)
+        if (auto* keyboard = std::exchange(fKeyboard, nullptr))
         {
-            if (wl_keyboard_get_version(fKeyboard) >= WL_KEYBOARD_RELEASE_SINCE_VERSION)
-                wl_keyboard_release(fKeyboard);
+            if (wl_keyboard_get_version(keyboard) >= WL_KEYBOARD_RELEASE_SINCE_VERSION)
+                wl_keyboard_release(keyboard);
             else
-                wl_keyboard_destroy(fKeyboard);
+                wl_keyboard_destroy(keyboard);
         }
-        if (fPointer != nullptr)
+        if (auto* pointer = std::exchange(fPointer, nullptr))
         {
-            if (wl_pointer_get_version(fPointer) >= WL_POINTER_RELEASE_SINCE_VERSION)
-                wl_pointer_release(fPointer);
+            if (wl_pointer_get_version(pointer) >= WL_POINTER_RELEASE_SINCE_VERSION)
+                wl_pointer_release(pointer);
             else
-                wl_pointer_destroy(fPointer);
+                wl_pointer_destroy(pointer);
         }
-        if (fSeat != nullptr)
+        if (auto* seat = std::exchange(fSeat, nullptr))
         {
-            if (wl_seat_get_version(fSeat) >= WL_SEAT_RELEASE_SINCE_VERSION)
-                wl_seat_release(fSeat);
+            if (wl_seat_get_version(seat) >= WL_SEAT_RELEASE_SINCE_VERSION)
+                wl_seat_release(seat);
             else
-                wl_seat_destroy(fSeat);
+                wl_seat_destroy(seat);
         }
         if (fKeyRepeatDescriptor >= 0)
             close(fKeyRepeatDescriptor);
-        fKeyboard = nullptr;
-        fPointer = nullptr;
-        fSeat = nullptr;
         fKeyRepeatDescriptor = -1;
         fKeyRepeatRate = 0;
         fKeyRepeatDelay = 0;
-        fRepeatingKey = KeyCode::Unknown;
+        notifyFocusLoss(pointerSurface, keyboardSurface);
     }
 }  // namespace LWS::internal
 

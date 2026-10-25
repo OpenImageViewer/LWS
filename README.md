@@ -316,3 +316,12 @@ DPI scenarios run in separate child processes because process DPI initialization
 | `src/LWS/include/LWS` | Portable public headers and typed extension headers |
 | `src/LWS/source` | Portable implementation and private native backends |
 | `tests` | Unit and platform integration tests |
+
+## UI platform services
+
+AnyEvent additionally carries EventTextInput (committed UTF-8), EventMouseLeave and
+EventMouseCaptureLost.
+
+The Windows LWSLib target exports `UNICODE`, `_UNICODE`, and `NOMINMAX` as public
+usage requirements, so core-only consumers see the same string ABI and compatible
+Windows headers as the library.

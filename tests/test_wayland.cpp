@@ -6,6 +6,13 @@
     #include <LWS/Timer.hpp>
     #include <LWS/Wayland/WindowExtensions.hpp>
     #include <LWS/Window.hpp>
+    #include <LWS/source/Wayland/internal/PlatformState.hpp>
+    #include <LWS/source/Wayland/internal/KeyCodeLinux.hpp>
+    #include <LWS/source/Wayland/internal/WindowBackendWayland.hpp>
+    #include <LWS/source/internal/WindowBackendAccess.hpp>
+    #include <sys/mman.h>
+    #include <unistd.h>
+    #include <cstring>
 
     #include <array>
     #include <chrono>
@@ -25,6 +32,179 @@ namespace
         return true;
     }
 }  // namespace
+
+namespace LWS::internal
+{
+    struct WaylandTextInputTestAccess
+    {
+        static void Exercise(Window& owner)
+        {
+            auto& backend = *static_cast<WindowBackendWayland*>(WindowBackendAccess::Get(owner));
+            WaylandPlatformState platform(owner.GetPlatformContext());
+            WaylandSeatController seat(platform);
+            struct Cleanup
+            {
+                WaylandSeatController& seat;
+                WindowBackendWayland& backend;
+                ~Cleanup()
+                {
+                    seat.windowRemoved(backend);
+                    seat.reset();
+                }
+            } cleanup{seat, backend};
+            auto* context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+            REQUIRE(context);
+            xkb_rule_names names{};
+            names.layout = "us";
+            names.variant = "intl";
+            auto* keymap = xkb_keymap_new_from_names(context, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
+            REQUIRE(keymap);
+            char* serialized = xkb_keymap_get_as_string(keymap, XKB_KEYMAP_FORMAT_TEXT_V1);
+            REQUIRE(serialized);
+            const std::string keymapText(serialized);
+            free(serialized);
+            xkb_keymap_unref(keymap);
+            xkb_context_unref(context);
+            auto load = [&](uint32_t format)
+            {
+                const int fd = memfd_create("lws-input-test", MFD_CLOEXEC);
+                REQUIRE(fd >= 0);
+                REQUIRE(write(fd, keymapText.c_str(), keymapText.size() + 1) == ssize_t(keymapText.size() + 1));
+                WaylandSeatController::keyboardKeymap(&seat, nullptr, format, fd, uint32_t(keymapText.size() + 1));
+            };
+            load(WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1);
+            REQUIRE(seat.fXkbState);
+            seat.fKeyboardWindow = &backend;
+            std::string text;
+            auto listener = owner.Listen(
+                [&](const AnyEvent& event)
+                {
+                    if (const auto* value = std::get_if<EventTextInput>(&event))
+                        text += value->text;
+                    return EventResponse::Unhandled;
+                });
+            REQUIRE(listener.has_value());
+            auto press = [&](uint32_t key)
+            {
+                WaylandSeatController::keyboardKey(&seat, nullptr, 1, 0, key, WL_KEYBOARD_KEY_STATE_PRESSED);
+                WaylandSeatController::keyboardKey(&seat, nullptr, 2, 0, key, WL_KEYBOARD_KEY_STATE_RELEASED);
+            };
+            press(KEY_A);
+            press(KEY_APOSTROPHE);
+            press(KEY_E);
+            REQUIRE(text == "a\xc3\xa9");
+            auto nested = owner.Listen(
+                [&](const AnyEvent& event)
+                {
+                    if (const auto* key = std::get_if<EventKeyDown>(&event); key && key->key == KeyCode::O)
+                    {
+                        WaylandSeatController::keyboardKey(&seat, nullptr, 3, 0, KEY_O, WL_KEYBOARD_KEY_STATE_RELEASED);
+                        WaylandSeatController::keyboardModifiers(&seat, nullptr, 4, 0, 0, 0, 0);
+                    }
+                    return EventResponse::Unhandled;
+                });
+            REQUIRE(nested.has_value());
+            const auto control = xkb_keymap_mod_get_index(seat.fXkbKeymap, XKB_MOD_NAME_CTRL);
+            WaylandSeatController::keyboardModifiers(&seat, nullptr, 5, 1u << control, 0, 0, 0);
+            press(KEY_O);
+            REQUIRE(text == "a\xc3\xa9");
+            nested->Disconnect();
+
+            WaylandSeatController::keyboardKey(&seat, nullptr, 6, 0, KEY_LEFTCTRL, WL_KEYBOARD_KEY_STATE_PRESSED);
+            REQUIRE(seat.isKeyPressed(KeyCode::Control));
+            load(WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1);
+            REQUIRE(seat.isKeyPressed(KeyCode::Control));
+            load(WL_KEYBOARD_KEYMAP_FORMAT_NO_KEYMAP);
+            REQUIRE(seat.isKeyPressed(KeyCode::Control));
+            WaylandSeatController::keyboardKey(&seat, nullptr, 7, 0, KEY_LEFTCTRL, WL_KEYBOARD_KEY_STATE_RELEASED);
+            REQUIRE_FALSE(seat.isKeyPressed(KeyCode::Control));
+            load(WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1);
+
+            auto* surface = static_cast<wl_surface*>(backend.surface());
+            platform.registerWindow(surface, backend);
+            uint32_t heldKeys[]{KEY_LEFTCTRL, KEY_102ND};
+            wl_array held{sizeof(heldKeys), sizeof(heldKeys), heldKeys};
+            WaylandSeatController::keyboardEnter(&seat, nullptr, 8, surface, &held);
+            REQUIRE(seat.isKeyPressed(KeyCode::Control));
+            REQUIRE(seat.fPressedScanCodes.contains(KEY_102ND));
+            REQUIRE_FALSE(seat.isKeyPressed(KeyCode::Unknown));
+            WaylandSeatController::keyboardLeave(&seat, nullptr, 9, surface);
+            REQUIRE(seat.fPressedScanCodes.empty());
+            platform.unregisterWindow(surface);
+            seat.fKeyboardWindow = &backend;
+
+            seat.initialize();
+            seat.fKeyRepeatRate = 25;
+            seat.fKeyRepeatDelay = 500;
+            const auto beforeRepeat = text;
+            WaylandSeatController::keyboardKey(&seat, nullptr, 10, 0, KEY_A, WL_KEYBOARD_KEY_STATE_PRESSED);
+            REQUIRE(seat.fRepeatingScanCode == KEY_A);
+            WaylandSeatController::keyboardKey(&seat, nullptr, 11, 0, KEY_102ND, WL_KEYBOARD_KEY_STATE_PRESSED);
+            REQUIRE(seat.fRepeatingScanCode == KEY_102ND);
+            seat.dispatchKeyRepeats(2);
+            REQUIRE(text == beforeRepeat + "a" + std::string(3, '\\'));
+            WaylandSeatController::keyboardKey(&seat, nullptr, 12, 0, KEY_A, WL_KEYBOARD_KEY_STATE_RELEASED);
+            REQUIRE(seat.fRepeatingScanCode == KEY_102ND);
+            WaylandSeatController::keyboardKey(&seat, nullptr, 13, 0, KEY_102ND, WL_KEYBOARD_KEY_STATE_RELEASED);
+            REQUIRE_FALSE(seat.fRepeatingScanCode.has_value());
+            seat.dispatchKeyRepeats(2);
+            REQUIRE(text == beforeRepeat + "a" + std::string(3, '\\'));
+            text = beforeRepeat;
+            press(KEY_APOSTROPHE);
+            seat.windowRemoved(backend);
+            REQUIRE(xkb_compose_state_get_status(seat.fComposeState) == XKB_COMPOSE_NOTHING);
+            seat.fKeyboardWindow = &backend;
+            load(WL_KEYBOARD_KEYMAP_FORMAT_NO_KEYMAP);
+            press(KEY_E);
+            REQUIRE(text == "a\xc3\xa9");
+            REQUIRE(seat.fXkbState == nullptr);
+            load(WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1);
+            xkb_compose_state_unref(seat.fComposeState);
+            seat.fComposeState = nullptr;
+            xkb_compose_table_unref(seat.fComposeTable);
+            seat.fComposeTable = nullptr;
+            const std::string longResult(200, 'x');
+            const auto rules = "<a> <b> : \"" + longResult + "\"\n<c> <d> : F1\n<e> <f> <g> : \"done\"\n";
+            seat.fComposeTable = xkb_compose_table_new_from_buffer(seat.fXkbContext, rules.data(), rules.size(),
+                                                                   "C.UTF-8", XKB_COMPOSE_FORMAT_TEXT_V1,
+                                                                   XKB_COMPOSE_COMPILE_NO_FLAGS);
+            REQUIRE(seat.fComposeTable);
+            seat.fComposeState = xkb_compose_state_new(seat.fComposeTable, XKB_COMPOSE_STATE_NO_FLAGS);
+            REQUIRE(seat.fComposeState);
+            press(KEY_A);
+            press(KEY_B);
+            press(KEY_C);
+            press(KEY_D);
+            REQUIRE(text == "a\xc3\xa9" + longResult);
+            press(KEY_E);
+            seat.dispatchText(KEY_E, true);
+            press(KEY_F);
+            seat.dispatchText(KEY_F, true);
+            REQUIRE(text == "a\xc3\xa9" + longResult);
+            press(KEY_G);
+            REQUIRE(text == "a\xc3\xa9" + longResult + "done");
+            unsigned repeated = 0;
+            auto destroy = owner.Listen(
+                [&](const AnyEvent& event)
+                {
+                    if (std::holds_alternative<EventTextInput>(event))
+                    {
+                        ++repeated;
+                        REQUIRE(owner.Destroy() == Result::Success);
+                    }
+                    return EventResponse::Unhandled;
+                });
+            REQUIRE(destroy.has_value());
+            seat.fPressedScanCodes.insert(KEY_A);
+            seat.fRepeatingScanCode = KEY_A;
+            seat.dispatchKeyRepeats(2);
+            REQUIRE(repeated == 1);
+            seat.windowRemoved(backend);
+            seat.reset();
+            REQUIRE(seat.inputSerial() == 0);
+        }
+    };
+}  // namespace LWS::internal
 
 TEST_CASE("Wayland is the compiled backend", "[platform][wayland]")
 {
@@ -68,6 +248,7 @@ TEST_CASE("Wayland window exposes stable typed native objects", "[window][waylan
     REQUIRE(*display != nullptr);
     REQUIRE(window.SetVisible(true) == LWS::Result::Success);
     REQUIRE(LWS::Wayland::GetSurface(window) == surface);
+    LWS::internal::WaylandTextInputTestAccess::Exercise(window);
 }
 
 TEST_CASE("Wayland top-level positions and multi-monitor fullscreen are unsupported", "[window][wayland]")
@@ -248,7 +429,10 @@ TEST_CASE("Wayland configure tolerates destruction from paint callbacks", "[wind
     bool destroyed{};
     bool destroyFromMetrics{};
     SECTION("paint") {}
-    SECTION("metrics") { destroyFromMetrics = true; }
+    SECTION("metrics")
+    {
+        destroyFromMetrics = true;
+    }
     auto connection = window.Listen(
         [&](const LWS::AnyEvent& event)
         {

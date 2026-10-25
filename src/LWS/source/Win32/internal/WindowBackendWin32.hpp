@@ -83,6 +83,7 @@ namespace LWS
         LRESULT getCorner(POINTS points) const;
         [[nodiscard]] bool dispatchPlatformEvent(const Win32::PlatformEvent& event, LRESULT& result);
 
+        wchar_t fPendingHighSurrogate = 0;
         HWND fHwnd = nullptr;
         // Coordinate conversion runs for every input event, so refresh this cache only when the window DPI changes.
         UINT fDpi = 96;

@@ -1255,9 +1255,13 @@ namespace LWS
         return doubleClick;
     }
 
-    void WindowBackendWayland::handlePointerWheel(int32_t delta, Point position)
+    void WindowBackendWayland::handlePointerWheel(int32_t delta, Point position,
+                                                  internal::WaylandSurfaceRole surfaceRole)
     {
-        dispatchEvent(EventMouseWheel{delta, position});
+        if (surfaceRole != internal::WaylandSurfaceRole::Content ||
+            frameHit(position, surfaceRole).action != internal::WaylandFrameAction::Client)
+            return;
+        dispatchEvent(EventMouseWheel{delta, position - contentOffset()});
     }
 
     void WindowBackendWayland::handleKeyboardFocus(bool focused)
@@ -1275,6 +1279,12 @@ namespace LWS
         {
             dispatchEvent(pressed ? AnyEvent{EventKeyDown{key, repeat}} : AnyEvent{EventKeyUp{key}});
         }
+    }
+
+    void WindowBackendWayland::handleText(std::string text)
+    {
+        if (!text.empty())
+            std::ignore = dispatchEvent(EventTextInput{std::move(text)});
     }
 
     void WindowBackendWayland::setAppId(const std::string& appId)

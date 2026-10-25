@@ -753,6 +753,24 @@ TEST_CASE("Portable event connections own listener registration", "[window][even
     REQUIRE(window.Create() == LWS::Result::Success);
     SendMessageW(Hwnd(window), WM_PAINT, 0, 0);
     REQUIRE(paints > 0);
+    std::string text;
+    auto input = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (auto* value = std::get_if<LWS::EventTextInput>(&event))
+                text += value->text;
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(input);
+    SendMessageW(Hwnd(window), WM_CHAR, 0xe9, 1);
+    SendMessageW(Hwnd(window), WM_CHAR, 0xd83d, 1);
+    SendMessageW(Hwnd(window), WM_CHAR, 0xde00, 1);
+    SendMessageW(Hwnd(window), WM_CHAR, L'a', 3);
+    REQUIRE(text == "é😀aaa");
+    SendMessageW(Hwnd(window), WM_CHAR, 0xd83d, 1);
+    SendMessageW(Hwnd(window), WM_KILLFOCUS, 0, 0);
+    SendMessageW(Hwnd(window), WM_CHAR, 0xde00, 1);
+    REQUIRE(text == "é😀aaa");
     connection->Disconnect();
     REQUIRE_FALSE(connection->IsConnected());
 }

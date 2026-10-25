@@ -1148,6 +1148,7 @@ namespace LWS
                 break;
 
             case WM_DESTROY:
+                fPendingHighSurrogate = 0;
                 if (fDragAndDrop != nullptr)
                 {
                     fDragAndDrop->detach();
@@ -1223,6 +1224,7 @@ namespace LWS
                 break;
 
             case WM_KILLFOCUS:
+                fPendingHighSurrogate = 0;
                 dispatchEvent(EventFocusLost{});
                 break;
 
@@ -1232,6 +1234,45 @@ namespace LWS
                     use_default = false;
                 }
                 break;
+
+            case WM_CHAR:
+            {
+                wchar_t units[2]{};
+                int count = 1;
+                wchar_t ch = static_cast<wchar_t>(wParam);
+                if (ch >= 0xd800 && ch <= 0xdbff)
+                {
+                    fPendingHighSurrogate = ch;
+                    break;
+                }
+                if (ch >= 0xdc00 && ch <= 0xdfff)
+                {
+                    if (!fPendingHighSurrogate)
+                        break;
+                    units[0] = fPendingHighSurrogate;
+                    units[1] = ch;
+                    count = 2;
+                }
+                else
+                    units[0] = ch;
+                fPendingHighSurrogate = 0;
+                if (ch < 32 || ch == 127)
+                    break;
+                char bytes[8]{};
+                int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, units, count, bytes, sizeof(bytes),
+                                               nullptr, nullptr);
+                if (size > 0)
+                {
+                    const unsigned repeats = std::max(1U, unsigned(LOWORD(lParam)));
+                    std::string text;
+                    text.reserve(size_t(size) * repeats);
+                    for (unsigned i = 0; i < repeats; ++i)
+                        text.append(bytes, size);
+                    dispatchEvent(EventTextInput{std::move(text)});
+                }
+                use_default = false;
+                break;
+            }
 
             case WM_MOUSEMOVE:
             {

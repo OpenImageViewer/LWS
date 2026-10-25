@@ -24,6 +24,7 @@ elseif(UNIX)
 
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(CaptionText REQUIRED IMPORTED_TARGET pangocairo fontconfig)
+    pkg_check_modules(TextInput REQUIRED IMPORTED_TARGET xkbcommon)
 
     find_program(WAYLAND_SCANNER_EXECUTABLE NAMES wayland-scanner REQUIRED)
     find_path(WAYLAND_PROTOCOLS_DIRECTORY
@@ -121,10 +122,9 @@ function(lws_configure_target target)
       "${CMAKE_CURRENT_SOURCE_DIR}/src/LWS/include"
   )
   target_link_libraries(${target} PUBLIC LLUtils::LLUtils)
-  target_compile_definitions(${target} PRIVATE NOMINMAX UNICODE _UNICODE)
 
   if(LWS_PLATFORM_WIN32)
-    target_compile_definitions(${target} PUBLIC LWS_PLATFORM_WIN32 LWS_HAS_WIN32_BACKEND)
+    target_compile_definitions(${target} PUBLIC LWS_PLATFORM_WIN32 LWS_HAS_WIN32_BACKEND NOMINMAX UNICODE _UNICODE)
     # Keep library names lowercase for case-sensitive MinGW builds on Linux.
     target_link_libraries(${target} PRIVATE
         ole32
@@ -175,7 +175,7 @@ if(LWS_PLATFORM_WAYLAND)
       "${LWS_VIEWPORTER_SOURCE}"
   )
   target_include_directories(LWSLib PRIVATE "${LWS_WAYLAND_GENERATED_DIR}")
-  target_link_libraries(LWSLib PRIVATE Wayland::Client PkgConfig::CaptionText)
+  target_link_libraries(LWSLib PRIVATE Wayland::Client PkgConfig::CaptionText PkgConfig::TextInput)
   if(TARGET Wayland::Cursor)
     target_link_libraries(LWSLib PRIVATE Wayland::Cursor)
     target_compile_definitions(LWSLib PRIVATE LWS_HAS_WAYLAND_CURSOR)
@@ -220,6 +220,8 @@ if(LWS_BUILD_TESTS)
     endif()
 
     if(LWS_PLATFORM_WAYLAND)
+      target_include_directories(LWSTests PRIVATE "${LWS_WAYLAND_GENERATED_DIR}")
+      target_link_libraries(LWSTests PRIVATE PkgConfig::TextInput)
       pkg_check_modules(WaylandServer QUIET IMPORTED_TARGET wayland-server)
       if(TARGET PkgConfig::WaylandServer)
         target_link_libraries(LWSTests PRIVATE PkgConfig::WaylandServer)

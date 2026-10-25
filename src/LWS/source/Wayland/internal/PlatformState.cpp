@@ -108,7 +108,8 @@ namespace LWS::internal
         if (feature == PlatformFeature::ServerSideDecorations)
             return fDecorationManager != nullptr;
         if (feature == PlatformFeature::PointerLock)
-            return fPointerConstraints != nullptr && fRelativePointerManager != nullptr;
+            return fSeatController.pointer() != nullptr && fPointerConstraints != nullptr &&
+                   fRelativePointerManager != nullptr;
         if (feature == PlatformFeature::DragAndDrop)
             return supportsDragAndDrop();
         return feature == PlatformFeature::HostWindowFrame && fHasHostWindowFrame;
