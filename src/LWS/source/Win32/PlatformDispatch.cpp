@@ -1,37 +1,19 @@
 #ifdef LWS_PLATFORM_WIN32
 
-    #define WIN32_LEAN_AND_MEAN
-    #include <Windows.h>
-
-    #include <LWS/source/Win32/internal/WindowBackendWin32.hpp>
-
-    #include "../internal/PlatformBackend.hpp"
-    #include "internal/MonitorInfo.hpp"
-
+    #include "internal/PlatformBackendWin32.hpp"
     #include <tuple>
-
-namespace LWS::internal::platform_backend
-{
-    Result init();
-    void shutdown();
-    [[nodiscard]] bool supports(PlatformFeature feature);
-    [[nodiscard]] bool isKeyPressed(KeyCode key);
-    [[nodiscard]] bool isKeyToggled(KeyCode key);
-    [[nodiscard]] Point getMousePosition();
-    void moveMouse(Point delta);
-    void refreshMonitors(MonitorInfo& monitors);
-    [[nodiscard]] LWS::MonitorDesc getMonitorInfo(MonitorInfo& monitors, uintptr_t monitorHandle, bool allowRefresh);
-    [[nodiscard]] LWS::MonitorDesc getPrimaryMonitor(MonitorInfo& monitors, bool allowRefresh);
-    [[nodiscard]] Rect getBoundingMonitorArea(MonitorInfo& monitors);
-}  // namespace LWS::internal::platform_backend
 
 namespace LWS::internal
 {
-    class Win32PlatformBackend final : public PlatformBackend
+    // Standalone applications own their message loop, so a waitable event can wake it directly without
+    // routing task delivery through the Windows message queue. This preserves the original LWS scheduling
+    // path and its lower handoff latency. It requires RunMessageLoop or ProcessMessages to service tasks.
+    // External host loops use the message-window dispatcher selected by the factory during initialization.
+    class OwnedLoopBackend final : public Win32PlatformBackendCommon
     {
       public:
 
-        ~Win32PlatformBackend() override { Shutdown(); }
+        ~OwnedLoopBackend() override { Shutdown(); }
 
         Result Initialize() override
         {
@@ -88,37 +70,6 @@ namespace LWS::internal
         Result Wake() override { return SetEvent(taskEvent_) != FALSE ? Result::Success : Result::Failure; }
         void ClearWake() override { std::ignore = ResetEvent(taskEvent_); }
 
-        bool Supports(PlatformFeature feature) const override { return platform_backend::supports(feature); }
-        bool IsKeyPressed(KeyCode key) const override { return platform_backend::isKeyPressed(key); }
-        bool IsKeyToggled(KeyCode key) const override { return platform_backend::isKeyToggled(key); }
-        Point GetMousePosition() const override { return platform_backend::getMousePosition(); }
-        Result MoveMouse(Point delta) override
-        {
-            platform_backend::moveMouse(delta);
-            return Result::Success;
-        }
-        Result RefreshMonitors() override
-        {
-            platform_backend::refreshMonitors(monitors_);
-            return Result::Success;
-        }
-        LWS::MonitorDesc GetMonitorInfo(uintptr_t handle, bool allowRefresh) override
-        {
-            return platform_backend::getMonitorInfo(monitors_, handle, allowRefresh);
-        }
-        LWS::MonitorDesc GetPrimaryMonitor(bool allowRefresh) override
-        {
-            return platform_backend::getPrimaryMonitor(monitors_, allowRefresh);
-        }
-        Rect GetBoundingMonitorArea() const override
-        {
-            return platform_backend::getBoundingMonitorArea(const_cast<MonitorInfo&>(monitors_));
-        }
-        std::unique_ptr<IWindowBackend> CreateWindowBackend(Window& owner) override
-        {
-            return std::make_unique<WindowBackendWin32>(owner, monitors_);
-        }
-
       private:
 
         static void DispatchMessages(PlatformContext& context)
@@ -137,14 +88,16 @@ namespace LWS::internal
         }
 
         HANDLE taskEvent_{};
-        MonitorInfo monitors_;
     };
 
-    std::unique_ptr<PlatformBackend> CreatePlatformBackend(BackendId backend, [[maybe_unused]] PlatformContext& context)
+    std::unique_ptr<PlatformBackend> CreateExternalLoopBackend(PlatformContext& context);
+
+    std::unique_ptr<PlatformBackend> CreatePlatformBackend(const PlatformConfig& config, PlatformContext& context)
     {
-        if (backend == BackendId::Win32)
-            return std::make_unique<Win32PlatformBackend>();
-        return nullptr;
+        if (config.backend != BackendId::Win32)
+            return nullptr;
+        return config.dispatchMode == DispatchMode::ExternalLoop ? CreateExternalLoopBackend(context)
+                                                                 : std::make_unique<OwnedLoopBackend>();
     }
 }  // namespace LWS::internal
 

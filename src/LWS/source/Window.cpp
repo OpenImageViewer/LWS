@@ -55,6 +55,9 @@ namespace LWS
         std::optional<Cursor> cursor;
         std::optional<WindowIcon> icon;
         Window* parent{};
+        // External native parents are outside the managed family, but their owned children still obey
+        // child-only operation restrictions. This records native parenting, not a second ownership mode.
+        bool externalChild{};
         std::vector<Window*> children;
         State state{State::PreCreate};
         WindowConfig config;
@@ -64,6 +67,17 @@ namespace LWS
         bool notifyingDestroy{};
         bool nativeTeardown{};
     };
+
+    void internal::WindowBackendAccess::NativeDestroying(Window& window)
+    {
+        if (window.impl_->state == Window::Impl::State::Created)
+        {
+            window.impl_->state = Window::Impl::State::Destroying;
+            window.impl_->notifyingDestroy = true;
+            std::ignore = window.DispatchEvent(EventWindowDestroying{window.platform_.IsUsable()});
+            window.impl_->notifyingDestroy = false;
+        }
+    }
 
     bool internal::WindowBackendAccess::HasNativeHandle(const Window& window)
     {
@@ -96,6 +110,11 @@ namespace LWS
     }
 
 #ifdef LWS_PLATFORM_WIN32
+    Result internal::WindowBackendAccess::CreateChild(Window& window, HWND parent, const WindowConfig& config)
+    {
+        return window.Create(config, reinterpret_cast<Handle>(parent));
+    }
+
     std::expected<EventConnection, Result> internal::WindowBackendAccess::ListenPlatform(
         Window& window, Win32::PlatformCallback callback)
     {
@@ -149,14 +168,21 @@ namespace LWS
 
     Result Window::Create(const WindowConfig& config)
     {
+        return Create(config, 0);
+    }
+
+    Result Window::Create(const WindowConfig& config, Handle externalParent)
+    {
         platform_.AssertCurrentThread();
         if (!platform_.IsUsable() || impl_->state != Impl::State::PreCreate)
             return Result::InvalidState;
+        if (externalParent != 0 && config.parent != nullptr)
+            return Result::InvalidArgument;
         if (!ValidSnappingMode(config.snappingMode) || !ValidSnappingRole(config.snappingRole))
             return Result::InvalidArgument;
         if ((config.snappingMode != WindowSnappingMode::Disabled ||
              config.snappingRole != WindowSnappingRole::Independent) &&
-            (platform_.GetBackendId() != BackendId::Win32 || config.parent != nullptr))
+            (platform_.GetBackendId() != BackendId::Win32 || config.parent != nullptr || externalParent != 0))
             return Result::NotSupported;
         if (config.clientSize.x <= 0 || config.clientSize.y <= 0 || !ValidSizeLimits(config.clientSizeLimits) ||
             (config.showState != WindowShowState::Restored && config.showState != WindowShowState::Maximized &&
@@ -204,7 +230,9 @@ namespace LWS
             .popup = config.popupPlacement,
             .snappingMode = config.snappingMode,
             .snappingRole = config.snappingRole,
+            .externalParent = externalParent,
         };
+        impl_->externalChild = externalParent != 0;
         impl_->backend->setBackgroundColor(config.backgroundColor);
         Result result = Result::Success;
         if (impl_->icon.has_value())
@@ -224,6 +252,7 @@ namespace LWS
             impl_->backend->destroy();
             impl_->backend->setParent(nullptr);
             impl_->state = Impl::State::PreCreate;
+            impl_->externalChild = false;
             return result;
         }
 
@@ -259,12 +288,9 @@ namespace LWS
 
         const internal::WindowBackendAccess::DispatchScope ownerDispatch(*this);
         const internal::PlatformContextAccess::DispatchScope contextDispatch(platform_);
-        impl_->state = Impl::State::Destroying;
-        // Parent cleanup precedes child teardown. Requests that would destroy a dependency while a parent's
-        // cleanup listeners are still running are rejected, rather than requiring deferred destruction machinery.
-        impl_->notifyingDestroy = true;
-        std::ignore = DispatchEvent(EventWindowDestroying{platform_.IsUsable()});
-        impl_->notifyingDestroy = false;
+        // Notify dependents before child teardown. Native destruction uses the same transition so the
+        // initial notification is published once whether cleanup starts in LWS or in the native parent.
+        internal::WindowBackendAccess::NativeDestroying(*this);
         const auto children = impl_->children;
         for (Window* child : children)
         {
@@ -302,7 +328,6 @@ namespace LWS
     }
     Result Window::SetTitle(const string_type& title)
     {
-        platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
         impl_->backend->setTitle(title);
@@ -318,7 +343,6 @@ namespace LWS
 
     Result Window::SetVisible(bool visible)
     {
-        platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
         if (visible == impl_->backend->getVisible())
@@ -357,7 +381,6 @@ namespace LWS
 
     Result Window::RequestPlacement(const WindowPlacementRequest& request)
     {
-        platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
         if ((!request.position.has_value() && !request.clientSize.has_value()) ||
@@ -412,7 +435,6 @@ namespace LWS
 
     Result Window::SetClientSizeLimits(ClientSizeLimits limits)
     {
-        platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
         if (impl_->config.popupPlacement.has_value())
@@ -439,7 +461,6 @@ namespace LWS
 
     Result Window::Center(CenterTarget target)
     {
-        platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
         if (impl_->config.popupPlacement.has_value())
@@ -453,10 +474,13 @@ namespace LWS
             return Result::InvalidArgument;
         if (target == CenterTarget::Parent)
         {
-            if (impl_->parent == nullptr)
+            if (impl_->parent != nullptr)
+            {
+                const LogicalSize parentSize = impl_->parent->GetClientAreaMetrics().logical;
+                area = {{0, 0}, {parentSize.x, parentSize.y}};
+            }
+            else
                 return Result::InvalidState;
-            const LogicalSize parentSize = impl_->parent->GetClientAreaMetrics().logical;
-            area = {{0, 0}, {parentSize.x, parentSize.y}};
         }
         else
         {
@@ -491,7 +515,7 @@ namespace LWS
         if (!ValidSnappingMode(mode))
             return Result::InvalidArgument;
         if (mode != WindowSnappingMode::Disabled &&
-            (platform_.GetBackendId() != BackendId::Win32 || impl_->parent != nullptr))
+            (platform_.GetBackendId() != BackendId::Win32 || impl_->parent != nullptr || impl_->externalChild))
             return Result::NotSupported;
         impl_->config.snappingMode = mode;
         impl_->backend->setSnappingMode(mode);
@@ -512,7 +536,7 @@ namespace LWS
         if (!ValidSnappingRole(role))
             return Result::InvalidArgument;
         if (role != WindowSnappingRole::Independent &&
-            (platform_.GetBackendId() != BackendId::Win32 || impl_->parent != nullptr))
+            (platform_.GetBackendId() != BackendId::Win32 || impl_->parent != nullptr || impl_->externalChild))
             return Result::NotSupported;
         impl_->config.snappingRole = role;
         impl_->backend->setSnappingRole(role);
@@ -536,9 +560,10 @@ namespace LWS
 
     Result Window::SetWindowMode(WindowMode mode)
     {
-        platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
+        if ((impl_->parent != nullptr || impl_->externalChild) && mode != WindowMode::Windowed)
+            return Result::NotSupported;
         if (impl_->config.popupPlacement.has_value())
             return Result::NotSupported;
         if (mode != WindowMode::Windowed && mode != WindowMode::Fullscreen && mode != WindowMode::FullscreenAllMonitors)
@@ -564,7 +589,6 @@ namespace LWS
 
     Result Window::RequestShowState(WindowShowState state)
     {
-        platform_.AssertCurrentThread();
         if (!IsCreated())
             return Result::InvalidState;
         if (impl_->config.popupPlacement.has_value())
@@ -576,7 +600,7 @@ namespace LWS
             return Result::NotSupported;
         if (state == WindowShowState::Maximized)
         {
-            if (impl_->parent != nullptr)
+            if (impl_->parent != nullptr || impl_->externalChild)
                 return Result::NotSupported;
             // Request the complete target even when an earlier Wayland configure is still in flight.
             impl_->backend->maximize();
@@ -604,7 +628,7 @@ namespace LWS
     {
         if (!IsCreated())
             return Result::InvalidState;
-        if (platform_.GetBackendId() != BackendId::Win32 || impl_->parent != nullptr)
+        if (platform_.GetBackendId() != BackendId::Win32 || impl_->parent != nullptr || impl_->externalChild)
             return Result::NotSupported;
         impl_->backend->setForeground();
         return Result::Success;
@@ -716,12 +740,16 @@ namespace LWS
 
     Result Window::SetPointerLocked(bool locked)
     {
-        return IsCreated() ? impl_->backend->setPointerLocked(locked) : Result::InvalidState;
+        if (!IsCreated())
+            return Result::InvalidState;
+        return impl_->backend->setPointerLocked(locked);
     }
 
     Result Window::BeginWindowDrag(WindowDragOperation operation)
     {
-        if (!IsCreated() || impl_->parent != nullptr)
+        if (!IsCreated())
+            return Result::InvalidState;
+        if (impl_->parent != nullptr || impl_->externalChild)
             return Result::InvalidState;
         if (operation != WindowDragOperation::Move && operation != WindowDragOperation::ResizeNearest)
             return Result::InvalidArgument;
@@ -730,11 +758,10 @@ namespace LWS
 
     Result Window::SetMouseCursor(Cursor cursor)
     {
-        platform_.AssertCurrentThread();
-        if (cursor.resource_ == nullptr)
-            return Result::InvalidArgument;
         if (!internal::WindowBackendAccess::CanConfigure(*this))
             return Result::InvalidState;
+        if (cursor.resource_ == nullptr)
+            return Result::InvalidArgument;
         const bool custom = cursor.IsCustom();
         if (custom && platform_.GetBackendId() == BackendId::Wayland)
             return Result::NotSupported;
@@ -769,7 +796,6 @@ namespace LWS
 
     Result Window::SetMouseCursorVisible(bool visible)
     {
-        platform_.AssertCurrentThread();
         if (!internal::WindowBackendAccess::CanConfigure(*this))
             return Result::InvalidState;
         impl_->cursorVisible = visible;
@@ -782,11 +808,10 @@ namespace LWS
 
     Result Window::SetWindowIcon(std::optional<WindowIcon> icon)
     {
-        platform_.AssertCurrentThread();
-        if (icon.has_value() && icon->bitmap_ == nullptr)
-            return Result::InvalidArgument;
         if (!internal::WindowBackendAccess::CanConfigure(*this))
             return Result::InvalidState;
+        if (icon.has_value() && icon->bitmap_ == nullptr)
+            return Result::InvalidArgument;
         if (icon.has_value() && !platform_.Supports(PlatformFeature::WindowIcon).value_or(false))
             return Result::NotSupported;
         Result result = Result::Success;
@@ -809,6 +834,45 @@ namespace LWS
             }
             if (result == Result::Success)
                 impl_->icon = std::move(icon);
+        }
+        return result;
+    }
+
+    Result Window::Reparent(Window& parent)
+    {
+        if (!IsCreated())
+            return Result::InvalidState;
+        // Owned popups retain their placement/owner contract. This operation moves native child windows only.
+        if (impl_->config.popupPlacement.has_value())
+            return Result::NotSupported;
+        if (&platform_ != &parent.platform_ || this == &parent)
+            return Result::InvalidArgument;
+        if (!parent.IsCreated() || (!impl_->parent && !impl_->externalChild) || !CanDestroy() || !parent.CanDestroy())
+            return Result::InvalidState;
+        for (Window* ancestor = &parent; ancestor; ancestor = ancestor->impl_->parent)
+            if (ancestor == this)
+                return Result::InvalidArgument;
+        if (impl_->parent == &parent)
+            return Result::Success;
+        auto* previous = impl_->parent;
+        parent.impl_->children.push_back(this);
+        if (previous != nullptr)
+            std::erase(previous->impl_->children, this);
+        impl_->parent = &parent;
+        const internal::WindowBackendAccess::DispatchScope dispatch(*this);
+        const internal::PlatformContextAccess::DispatchScope contextDispatch(platform_);
+        const auto result = impl_->backend->reparent(*parent.impl_->backend);
+        if (result != Result::Success)
+        {
+            std::erase(parent.impl_->children, this);
+            if (previous != nullptr)
+                previous->impl_->children.push_back(this);
+            impl_->parent = previous;
+        }
+        else
+        {
+            impl_->config.parent = &parent;
+            impl_->externalChild = false;
         }
         return result;
     }
@@ -837,6 +901,8 @@ namespace LWS
 
     Result Window::PresentBitmap(const BitmapBuffer& bitmap)
     {
+        if (!IsCreated())
+            return Result::InvalidState;
         if (!IsConfigured())
             return Result::InvalidState;
         if (PixelSize{static_cast<int32_t>(bitmap.width), static_cast<int32_t>(bitmap.height)} !=

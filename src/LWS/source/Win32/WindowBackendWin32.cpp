@@ -4,9 +4,10 @@
     #include <WindowsX.h>
 
     #include <LLUtils/Exception.h>
+    #include <LWS/Win32/ScopedWindowDpiContext.hpp>
+    #include "internal/SharedWindowClass.hpp"
     #include <LWS/StringDefs.hpp>
 
-    #include <mutex>
     #include <algorithm>
     #include <cmath>
     #include <cstring>
@@ -434,11 +435,20 @@ namespace LWS
     WindowBackendWin32::~WindowBackendWin32()
     {
         destroy();
+        if (fClassRegistered)
+            WindowClass().Release();
         if (fBackgroundBrush != nullptr)
         {
             DeleteObject(fBackgroundBrush);
             fBackgroundBrush = nullptr;
         }
+    }
+
+    internal::SharedWindowClass& WindowBackendWin32::WindowClass()
+    {
+        static internal::SharedWindowClass windowClass{g_windowClassName, WndProc, CS_DBLCLKS,
+                                                       LoadCursorW(nullptr, IDC_ARROW)};
+        return windowClass;
     }
 
     Result WindowBackendWin32::create(const internal::NativeWindowConfig& config)
@@ -448,24 +458,19 @@ namespace LWS
             return Result::AlreadyCreated;
         }
 
-        HINSTANCE instance = GetModuleHandle(nullptr);
-        static std::once_flag s_windowClassOnce;
-        std::call_once(s_windowClassOnce,
-                       [instance]()
-                       {
-                           WNDCLASSEX window_class{};
-                           window_class.cbSize = sizeof(window_class);
-                           window_class.style = CS_DBLCLKS;
-                           window_class.lpfnWndProc = WndProc;
-                           window_class.hInstance = instance;
-                           window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
-                           window_class.hbrBackground = nullptr;
-                           window_class.lpszClassName = g_windowClassName;
-                           if (RegisterClassEx(&window_class) == 0)
-                           {
-                               throw std::runtime_error("Failed to register Win32 window class.");
-                           }
-                       });
+        if (!fClassRegistered)
+        {
+            if (!WindowClass().Acquire())
+                return Result::Failure;
+            fClassRegistered = true;
+        }
+        if (config.externalParent != 0)
+            fParentWindow = reinterpret_cast<HWND>(config.externalParent);
+        // Adopt the external parent's DPI context only for native creation. LWS owns this child, so
+        // its normal events provide geometry and lifetime without observing or borrowing the host.
+        const LWS::Win32::ScopedWindowDpiContext dpiContext(config.externalParent != 0 ? fParentWindow : nullptr);
+
+        const HINSTANCE instance = WindowClass().Module();
 
         fEraseBackground = config.eraseBackground;
         fAlwaysOnTop = config.alwaysOnTop;
@@ -491,18 +496,12 @@ namespace LWS
         {
             ex_style |= WS_EX_TOPMOST;
         }
-        if (fTransparent && fParentBackend == nullptr)
+        if (fTransparent && fParentWindow == nullptr)
         {
             ex_style |= WS_EX_LAYERED;
         }
 
-        HWND parent_hwnd = nullptr;
-        if (fParentBackend != nullptr)
-        {
-            parent_hwnd = reinterpret_cast<HWND>(fParentBackend->getHandle());
-        }
-
-        const UINT dpi = parent_hwnd != nullptr ? windowDpi(parent_hwnd) : systemDpi();
+        const UINT dpi = fParentWindow != nullptr ? windowDpi(fParentWindow) : systemDpi();
         // Popup placement resolves before the native window exists; WM_CREATE refreshes this cache afterwards.
         fDpi = dpi;
         DWORD style = 0;
@@ -522,7 +521,7 @@ namespace LWS
             outerSize = outerSizeForLogicalClient(config.size, style, ex_style, dpi);
         }
         HWND hwnd = CreateWindowEx(ex_style, g_windowClassName, config.title.c_str(), style, position.x, position.y,
-                                   outerSize.x, outerSize.y, parent_hwnd, nullptr, instance, this);
+                                   outerSize.x, outerSize.y, fParentWindow, nullptr, instance, this);
 
         if (hwnd == nullptr || fHwnd == nullptr)
         {
@@ -538,7 +537,7 @@ namespace LWS
             setSize(config.size);
         applyWindowIcon();
 
-        if (fTransparent && fParentBackend != nullptr)
+        if (fTransparent && fParentWindow != nullptr)
         {
             // Layered child creation is rejected when the host manifest is not Windows-8-aware. Applying the style
             // after creation preserves hit-test transparency for every host and enables visual transparency when the
@@ -821,14 +820,14 @@ namespace LWS
 
         POINT position{};
         // WM_MOVE can precede WM_SIZE, so use native state rather than the last published show state.
-        if (fParentBackend != nullptr || (GetWindowLongPtrW(fHwnd, GWL_STYLE) & (WS_MINIMIZE | WS_MAXIMIZE)) == 0)
+        if (fParentWindow != nullptr || (GetWindowLongPtrW(fHwnd, GWL_STYLE) & (WS_MINIMIZE | WS_MAXIMIZE)) == 0)
         {
             // Restored top-level geometry is already in screen coordinates.
             RECT rectangle{};
             GetWindowRect(fHwnd, &rectangle);
             position = {rectangle.left, rectangle.top};
-            if (fParentBackend != nullptr)
-                ScreenToClient(reinterpret_cast<HWND>(fParentBackend->getHandle()), &position);
+            if (fParentWindow != nullptr)
+                ScreenToClient(fParentWindow, &position);
         }
         else
         {
@@ -923,9 +922,8 @@ namespace LWS
 
     Point WindowBackendWin32::resolvePopupPosition(Size outerSize) const
     {
-        const HWND parent_hwnd = reinterpret_cast<HWND>(fParentBackend->getHandle());
         POINT origin{0, 0};
-        ClientToScreen(parent_hwnd, &origin);
+        ClientToScreen(fParentWindow, &origin);
         const Point anchorPoint{fPopupPlacement->anchor.x + fPopupPlacement->offset.x,
                                 fPopupPlacement->anchor.y + fPopupPlacement->offset.y};
         const Point anchor = physicalFromLogical(anchorPoint, fDpi);
@@ -974,8 +972,8 @@ namespace LWS
 
         const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE));
         const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
-        const Size outerSize =
-            outerSizeForLogicalClient(Size{fPopupPlacement->size.x, fPopupPlacement->size.y}, style, extendedStyle, fDpi);
+        const Size outerSize = outerSizeForLogicalClient(Size{fPopupPlacement->size.x, fPopupPlacement->size.y}, style,
+                                                         extendedStyle, fDpi);
         const Point position = resolvePopupPosition(outerSize);
         internal::WindowPosHelper::setPlacement(fHwnd, position.x, position.y, outerSize.x, outerSize.y);
     }
@@ -1174,7 +1172,33 @@ namespace LWS
 
     void WindowBackendWin32::setParent(internal::IWindowBackend* parent)
     {
-        fParentBackend = parent;
+        fParentWindow = parent != nullptr ? reinterpret_cast<HWND>(parent->getHandle()) : nullptr;
+    }
+
+    Result WindowBackendWin32::ValidateExternalParent(HWND parent)
+    {
+        // Use ordinary managed parenting for LWS windows so family teardown cannot be bypassed.
+        return IsWindow(parent) && GetWindowThreadProcessId(parent, nullptr) == GetCurrentThreadId() &&
+                       GetPropW(parent, g_windowPropName) == nullptr
+                   ? Result::Success
+                   : Result::InvalidArgument;
+    }
+
+    Result WindowBackendWin32::reparent(internal::IWindowBackend& parent)
+    {
+        const HWND handle = reinterpret_cast<HWND>(parent.getHandle());
+        if (handle == fHwnd || IsChild(fHwnd, handle))
+            return Result::InvalidArgument;
+        const HWND previous = std::exchange(fParentWindow, handle);
+        SetLastError(ERROR_SUCCESS);
+        if (::SetParent(fHwnd, handle) == nullptr && GetLastError() != ERROR_SUCCESS)
+        {
+            fParentWindow = previous;
+            return Result::Failure;
+        }
+        fDpi = windowDpi(fHwnd);
+        dispatchClientAreaSizeChanged(getFramebufferSize());
+        return Result::Success;
     }
 
     void WindowBackendWin32::dispatchClientAreaSizeChanged(Size framebufferSize)
@@ -1224,11 +1248,13 @@ namespace LWS
     {
         if ((!fPresentedBitmap && !fPresentedPixels) || !dc)
             return false;
-        const auto bitmap = fPresentedPixels
-                                ? BitmapBuffer{{fPresentedPixels.get(), fPresentedPixelSize},
-                                               BitmapPixelFormat::Bgra8Premultiplied, BitmapRowOrder::TopDown,
-                                               fPresentedWidth, fPresentedHeight, fPresentedWidth * 4U}
-                                : fPresentedBitmap->GetBuffer();
+        const auto bitmap = fPresentedPixels ? BitmapBuffer{{fPresentedPixels.get(), fPresentedPixelSize},
+                                                            BitmapPixelFormat::Bgra8Premultiplied,
+                                                            BitmapRowOrder::TopDown,
+                                                            fPresentedWidth,
+                                                            fPresentedHeight,
+                                                            fPresentedWidth * 4U}
+                                             : fPresentedBitmap->GetBuffer();
         BITMAPINFO info{};
         info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         info.bmiHeader.biWidth = static_cast<LONG>(bitmap.width);
@@ -1378,7 +1404,7 @@ namespace LWS
 
     bool WindowBackendWin32::allowsWindowSnapping() const
     {
-        return !fDestroyingSnapping && owner().IsCreated() && fParentBackend == nullptr && !fPopupPlacement &&
+        return !fDestroyingSnapping && owner().IsCreated() && fParentWindow == nullptr && !fPopupPlacement &&
                fFullScreenState == internal::FullScreenState::Windowed && IsWindowVisible(fHwnd) && !IsIconic(fHwnd) &&
                !IsZoomed(fHwnd) &&
                (fSnappingMode == WindowSnappingMode::OtherWindows ||
@@ -1666,7 +1692,7 @@ namespace LWS
             case WM_KEYDOWN:
             {
                 if (dispatchPlatformEvent(Win32::KeyEvent{static_cast<uint32_t>(wParam), static_cast<uint32_t>(lParam),
-                                                          true},
+                                                          true, message},
                                           return_value))
                 {
                     use_default = false;
@@ -1679,7 +1705,7 @@ namespace LWS
             case WM_SYSKEYUP:
             case WM_KEYUP:
                 if (dispatchPlatformEvent(Win32::KeyEvent{static_cast<uint32_t>(wParam), static_cast<uint32_t>(lParam),
-                                                          false},
+                                                          false, message},
                                           return_value))
                 {
                     use_default = false;
@@ -1734,6 +1760,7 @@ namespace LWS
                 break;
 
             case WM_DESTROY:
+                internal::WindowBackendAccess::NativeDestroying(owner());
                 fSnappingDragAnchor.Reset();
                 fDestroyingSnapping = true;
                 clearAttachments();
@@ -1796,7 +1823,7 @@ namespace LWS
 
             case WM_DPICHANGED:
                 fDpi = LOWORD(wParam);
-                if (fParentBackend == nullptr)
+                if (fParentWindow == nullptr)
                 {
                     if (!fRestoringFullScreenPlacement)
                     {
@@ -1846,12 +1873,12 @@ namespace LWS
             }
 
             case WM_MOVING:
-                if (fSnappingMode != WindowSnappingMode::Disabled && fParentBackend == nullptr &&
+                if (fSnappingMode != WindowSnappingMode::Disabled && fParentWindow == nullptr &&
                     fFullScreenState == internal::FullScreenState::Windowed && lParam != 0)
                 {
                     auto& rectangle = *reinterpret_cast<RECT*>(lParam);
                     if (fInSnappingDrag && (fSnappingDragAnchor.Active() || GetCapture() == hWnd ||
-                                           (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0))
+                                            (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0))
                     {
                         POINT cursor{};
                         if (GetCursorPos(&cursor))
@@ -1869,6 +1896,11 @@ namespace LWS
                 moveSnappingFollowers();
                 if (fHwnd != nullptr)
                     dispatchEvent(EventMove{getPosition()});
+                break;
+
+            case WM_TIMER:
+                internal::dispatchWindowTimer(hWnd, wParam);
+                use_default = false;
                 break;
 
             case WM_SETFOCUS:
@@ -2107,7 +2139,7 @@ namespace LWS
         auto has_style = [window_styles](WindowStyle style)
         { return (window_styles & std::to_underlying(style)) != 0; };
 
-        if (fParentBackend != nullptr && !fPopupPlacement.has_value())
+        if (fParentWindow != nullptr && !fPopupPlacement.has_value())
             styles |= WS_CHILD;
         if (has_style(WindowStyle::Caption))
             styles |= WS_CAPTION;

@@ -31,6 +31,20 @@ stay the same. Windows builds export the compiled API automatically. `LWSUI` kee
 its existing static-library configuration. Deploy the shared library alongside the
 application, or place it on the platform's library search path.
 
+On Win32, `PlatformConfig::dispatchMode` selects `DispatchMode::OwnedLoop` by default, retaining
+event-based wakeups serviced by `RunMessageLoop()` or `ProcessMessages()`. A frontend running under a
+host loop selects `DispatchMode::ExternalLoop`. Its context-owned message-only window delivers
+coalesced task notifications through the host's normal dispatch, including native modal loops. Both
+implementations compile into the same library and are selected once during context initialization.
+External-loop contexts reject explicit LWS loop pumping. The owned-loop fast path remains unchanged,
+with shared task storage and windowing contracts. Other backends reject external-loop mode until a
+backend-specific integration is implemented.
+
+Both builds dispatch timers through their target windows, keeping DLL callback addresses out of queued
+timer messages. Destroy all bound windows and services and shut down the context on its UI thread before
+unloading the module. Quit requests affect the LWS context only. Foreign parenting and host DPI adoption
+remain explicit Win32 operations and are independent of dispatcher selection.
+
 ## Quick start
 
 ```cpp
@@ -717,6 +731,27 @@ million-row external model. Single-click mode commits checkbox toggles and custo
 progress-bar value actions immediately through normal validation and events.
 `--smoke` exercises all presets, while `--snapshot`
 also writes `grid-<preset>.ppm`. Run `LWSTests "[grid]"` for the focused tests.
+
+## External native parents
+
+`LWS::Win32::CreateChild(window, hwnd, config)` creates an owned child under a same-thread external HWND.
+The host is not wrapped or subclassed. The child uses the normal LWS lifecycle, metrics, input and timer APIs,
+and its destruction never destroys the external parent. The host sizes the child returned by the plugin.
+Native parent destruction ends the child's lifetime through its ordinary window procedure.
+
+`config.parent` must be null. For LWS-owned parents, use ordinary `WindowConfig::parent` instead so managed
+family teardown remains authoritative. `GetParent()` returns only managed LWS parents and is null for an
+external parent. Parent centering therefore requires a managed parent. Child fullscreen, activation, maximizing
+and window dragging remain restricted. An external child may be reparented into a managed LWS family.
+
+LWS deliberately has no borrowed-window ownership mode. Hosting needs an owned child, not read-only wrappers,
+rejected setters and special detachment semantics throughout the portable window API. The Win32 boundary adopts
+the external parent's DPI context during creation, while native events on the owned child provide its geometry
+and lifetime. The host must run its UI loop, and release all plugin resources before unloading their module.
+
+Linux standalone remains Wayland-based. Linux lister hosting needs a GTK/Qt frontend adapter using the host's
+existing widget contract. A borrowed Wayland surface would not supply allocation, lifetime or event dispatch by
+itself, so no generic foreign-surface attachment API is provided.
 
 ## Portal dialog integration tests
 

@@ -28,6 +28,9 @@ namespace LWS
     /// Every operation requires the bound context thread. Debug builds assert affinity; wrong-thread release use is
     /// undefined. The C++ object must survive all active native/event dispatch, including nested dispatch.
     /// Destroy() may run from a callback; deleting the executing C++ object may not.
+    /// Every Window owns its native resource. External hosting creates an owned child rather than wrapping
+    /// a foreign window with partial capabilities and special teardown rules. Native/toolkit adapters supply
+    /// the parenting boundary without imposing borrowed-window policy on ordinary Win32 or Wayland windows.
     /// Typed native handles are borrowed from Create() until native teardown begins, including orderly cleanup
     /// notification. Backend failure invalidates access immediately. Clients must not destroy the native window directly.
     class Window final
@@ -168,6 +171,9 @@ namespace LWS
         /// May be configured before Create(); an engaged moved-from icon is invalid.
         [[nodiscard]] Result SetWindowIcon(std::optional<WindowIcon> icon);
 
+        /// Reparents an owned child within the context. Backends without reparenting support return NotSupported.
+        [[nodiscard]] Result Reparent(Window& parent);
+        /// Returns only an LWS-managed parent. An external native parent has no Window wrapper and returns nullptr.
         [[nodiscard]] Window* GetParent() const;
         /// Registrations made during a listener traversal become active when its outermost traversal completes.
         /// Publication precedes retired-capture destruction, which may itself reenter dispatch.
@@ -186,6 +192,7 @@ namespace LWS
 
         [[nodiscard]] EventResponse DispatchEvent(const AnyEvent& event);
 
+        [[nodiscard]] Result Create(const WindowConfig& config, Handle externalParent);
         [[nodiscard]] bool CanDestroy() const;
 #ifndef NDEBUG
         size_t dispatchDepth_{};

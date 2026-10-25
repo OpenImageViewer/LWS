@@ -2,6 +2,7 @@
 #ifdef LWS_HAS_WIN32_BACKEND
 
     #include <LWS/Result.hpp>
+    #include <LWS/WindowTypes.hpp>
     #include <LWS/Win32/EventWin32.hpp>
 
     #include <expected>
@@ -17,6 +18,11 @@ namespace LWS::Win32
     // Context-thread only, created windows. Uses the backend DPI cache and legacy fallbacks.
     [[nodiscard]] std::expected<UINT, Result> GetDpi(const Window& window);
     [[nodiscard]] std::expected<EventConnection, Result> Listen(Window& window, PlatformCallback callback);
+    // Creates an owned child under an external same-thread HWND without subclassing or wrapping the host.
+    // config.parent must be null. GetParent() reports only managed LWS parents, not this native relationship.
+    // The host sizes the returned child and may destroy it through native parent teardown. Its UI loop must
+    // dispatch messages normally, and all plugin resources must be released before the module unloads.
+    [[nodiscard]] Result CreateChild(Window& window, HWND parent, const WindowConfig& config = {});
     [[nodiscard]] Result SetMenuChar(Window& window, bool suppress);
     /// Context-thread only; requires a created window. False releases only this window's capture.
     /// Capture loss is reported through EventMouseCaptureLost. Native callbacks may run synchronously.

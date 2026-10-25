@@ -2,6 +2,8 @@
     #define WIN32_LEAN_AND_MEAN
     #include <Windows.h>
 
+    #include "internal/SharedWindowClass.hpp"
+    #include "internal/MessageCleanup.hpp"
     #include <LWS/Timer.hpp>
     #include <LWS/source/internal/Backends.hpp>
     #include <LLUtils/Exception.h>
@@ -9,7 +11,6 @@
     #include <atomic>
     #include <map>
     #include <memory>
-    #include <mutex>
     #include <tuple>
     #include <utility>
 
@@ -43,7 +44,7 @@ namespace
 
         void UnRegisterTimer(TimerIDType timerID) { fMapTimerIdToTimer.erase(timerID); }
 
-        static void CALLBACK TimerProc(HWND hwnd, UINT message, UINT_PTR idTimer, DWORD dwTime);
+        static void Dispatch(HWND window, UINT_PTR idTimer);
 
       private:
 
@@ -91,7 +92,10 @@ namespace LWS
             {
                 if (fTimerID == 0)
                     fTimerID = TimerManager::Get().RegisterTimer(*this);
-                if (SetTimer(fWindowHandle, fTimerID, interval, TimerManager::TimerProc) == 0)
+                // A retrieved WM_TIMER with TIMERPROC retains a DLL code address even after KillTimer.
+                // Dispatch through the live target window instead, so stale messages cannot enter
+                // an unloaded module after its windows have been destroyed.
+                if (SetTimer(fWindowHandle, fTimerID, interval, nullptr) == 0)
                 {
                     Unregister();
                     fInterval = 0;
@@ -147,6 +151,7 @@ namespace LWS
         {
             Stop();
             DestroyWindow(fWindowHandle);
+            fClass.Release();
         }
 
         void SetRepeatInterval(uint32_t repeatInterval)
@@ -224,10 +229,7 @@ namespace LWS
                 std::ignore = DeleteTimerQueueTimer(nullptr, fTimerID, INVALID_HANDLE_VALUE);
                 fTimerID = nullptr;
             }
-            MSG message{};
-            while (PeekMessageW(&message, fWindowHandle, ON_TIMER_MESSAGE, ON_TIMER_MESSAGE, PM_REMOVE))
-            {
-            }
+            const internal::MessageCleanup cleanup(fWindowHandle, ON_TIMER_MESSAGE);
             fTickPending = false;
         }
 
@@ -240,8 +242,7 @@ namespace LWS
             }
             else if (msg == ON_TIMER_MESSAGE)
             {
-                auto* timer = reinterpret_cast<HighPrecisionTimerBackendWin32*>(
-                    GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+                auto* timer = reinterpret_cast<HighPrecisionTimerBackendWin32*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
                 if (timer != nullptr)
                     timer->ExecuteTimerFuncThreadSafe();
                 return 0;
@@ -249,34 +250,21 @@ namespace LWS
             return DefWindowProcW(hWnd, msg, wParam, lParam);
         }
 
-        void CreateWindowClassOnce()
-        {
-            std::call_once(fCreateClassOnceFlag,
-                           []()
-                           {
-                               WNDCLASS wc{};
-                               wc.lpfnWndProc = WindowProc;
-                               wc.hInstance = GetModuleHandle(nullptr);
-                               wc.lpszClassName = CLASS_NAME;
-                               if (RegisterClass(&wc) == 0)
-                               {
-                                   LL_EXCEPTION_SYSTEM_ERROR("Could not create window class");
-                               }
-                           });
-        }
-
         void RegisterWindow()
         {
-            CreateWindowClassOnce();
-            fWindowHandle = CreateWindowExW(0, CLASS_NAME, nullptr, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
-                                            GetModuleHandleW(nullptr), this);
+            if (!fClass.Acquire())
+                LL_EXCEPTION_SYSTEM_ERROR("Could not register timer window class");
+            fWindowHandle = CreateWindowExW(0, fClass.Name(), nullptr, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
+                                            fClass.Module(), this);
             if (fWindowHandle == nullptr)
+            {
+                fClass.Release();
                 LL_EXCEPTION_SYSTEM_ERROR("Could not create timer window");
+            }
         }
 
-        static constexpr LWS::char_type CLASS_NAME[] = L"LWS.HighPrecisionTimerWindow";
         static constexpr UINT ON_TIMER_MESSAGE = WM_USER + 1;
-        static inline std::once_flag fCreateClassOnceFlag;
+        static inline internal::SharedWindowClass fClass{L"LWS.HighPrecisionTimerWindow", WindowProc};
         std::atomic_bool fTickPending = false;
         bool fEnabled = false;
         HANDLE fTimerID = nullptr;
@@ -290,6 +278,11 @@ namespace LWS
 
 namespace LWS::internal
 {
+    void dispatchWindowTimer(HWND window, UINT_PTR id)
+    {
+        TimerManager::Dispatch(window, id);
+    }
+
     std::unique_ptr<ITimerBackend> createTimerBackend(PlatformContext&)
     {
         return std::make_unique<TimerBackendWin32>();
@@ -303,7 +296,7 @@ namespace LWS::internal
 
 namespace
 {
-    void CALLBACK TimerManager::TimerProc(HWND window, UINT, UINT_PTR idTimer, DWORD)
+    void TimerManager::Dispatch(HWND window, UINT_PTR idTimer)
     {
         TimerManager& manager = TimerManager::Get();
         const auto it = manager.fMapTimerIdToTimer.find(idTimer);

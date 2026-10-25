@@ -4,7 +4,7 @@
 
 namespace LWS::internal
 {
-    std::unique_ptr<PlatformBackend> CreatePlatformBackend(BackendId, PlatformContext&)
+    std::unique_ptr<PlatformBackend> CreatePlatformBackend(const PlatformConfig&, PlatformContext&)
     {
         return nullptr;
     }

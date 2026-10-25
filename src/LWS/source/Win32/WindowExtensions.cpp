@@ -1,20 +1,15 @@
 #ifdef LWS_PLATFORM_WIN32
-
     #include <LWS/source/Win32/internal/WindowBackendWin32.hpp>
     #include <LWS/Win32/WindowExtensions.hpp>
-
     #include "../internal/WindowBackendAccess.hpp"
-
     #include <utility>
-
 namespace LWS::Win32
 {
     std::expected<HWND, Result> GetHwnd(const Window& window)
     {
-        // HasNativeHandle enforces affinity and the native lifetime boundary.
         const bool available = internal::WindowBackendAccess::HasNativeHandle(window);
         const auto* backend = internal::WindowBackendAccess::Get(window);
-        if (backend == nullptr || backend->backend() != BackendId::Win32)
+        if (!backend || backend->backend() != BackendId::Win32)
             return std::unexpected(Result::NotSupported);
         if (!available)
             return std::unexpected(Result::InvalidState);
@@ -55,17 +50,24 @@ namespace LWS::Win32
         return Result::Success;
     }
 
+    Result CreateChild(Window& window, HWND parent, const WindowConfig& config)
+    {
+        const auto status = WindowBackendWin32::ValidateExternalParent(parent);
+        if (status != Result::Success)
+            return status;
+        if (window.GetPlatformContext().GetBackendId() != BackendId::Win32)
+            return Result::NotSupported;
+        return internal::WindowBackendAccess::CreateChild(window, parent, config);
+    }
     Result SetMenuChar(Window& window, bool suppress)
     {
-        const bool configurable = internal::WindowBackendAccess::CanConfigure(window);
-        auto* backend = internal::WindowBackendAccess::Get(window);
-        if (backend == nullptr || backend->backend() != BackendId::Win32)
-            return Result::NotSupported;
-        if (!configurable)
+        if (!internal::WindowBackendAccess::CanConfigure(window))
             return Result::InvalidState;
+        auto* backend = internal::WindowBackendAccess::Get(window);
+        if (!backend || backend->backend() != BackendId::Win32)
+            return Result::NotSupported;
         static_cast<WindowBackendWin32*>(backend)->setMenuChar(suppress);
         return Result::Success;
     }
 }  // namespace LWS::Win32
-
-#endif  // LWS_PLATFORM_WIN32
+#endif

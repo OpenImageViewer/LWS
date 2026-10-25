@@ -48,6 +48,9 @@ namespace LWS
             std::optional<PopupPlacement> popup;
             WindowSnappingMode snappingMode{WindowSnappingMode::Disabled};
             WindowSnappingRole snappingRole{WindowSnappingRole::Independent};
+
+            // Only the typed Win32 creation extension supplies this. It never denotes a borrowed Window.
+            Handle externalParent{};
         };
 
         class ICursorBackend
@@ -113,6 +116,7 @@ namespace LWS
             [[nodiscard]] virtual Result setPointerLocked(bool locked) = 0;
             virtual void setCursor(std::shared_ptr<ICursorBackend> cursor) = 0;
             virtual void setParent(IWindowBackend* parent) = 0;
+            [[nodiscard]] virtual Result reparent(IWindowBackend&) { return Result::NotSupported; }
             [[nodiscard]] virtual Result enableDragAndDrop(bool enable) = 0;
             [[nodiscard]] virtual Result presentBitmap(const BitmapBuffer&) { return Result::NotSupported; }
             [[nodiscard]] virtual Handle getHandle() const = 0;

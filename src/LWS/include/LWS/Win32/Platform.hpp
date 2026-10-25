@@ -9,7 +9,9 @@ namespace LWS::Win32
         /// Uses per-monitor-v2 awareness when available and system awareness on legacy Windows.
         ConfigurePerMonitorV2,
         /// Requires the process to already use per-monitor-v2 awareness.
-        AdoptExistingPerMonitorV2
+        AdoptExistingPerMonitorV2,
+        /// Retains the host process and thread DPI policy, including system-aware or unaware hosts.
+        AdoptHost
     };
 
     struct ProcessConfig

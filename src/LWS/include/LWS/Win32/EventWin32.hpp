@@ -41,6 +41,8 @@ namespace LWS::Win32
         uint32_t virtualKey;
         uint32_t keyData;
         bool pressed;
+        // Preserve ordinary versus system keys for native forwarding.
+        uint32_t message{};
     };
 
     struct ActivationEvent

@@ -56,9 +56,17 @@ namespace LWS
         bool primary{};
     };
 
+    // The embedding frontend chooses who dispatches UI work. External loops must not be pumped by LWS.
+    enum class DispatchMode
+    {
+        OwnedLoop,
+        ExternalLoop
+    };
+
     struct PlatformConfig
     {
         BackendId backend{BackendId::Undefined};
+        DispatchMode dispatchMode{DispatchMode::OwnedLoop};
     };
 
     enum class LoopResult
@@ -108,6 +116,8 @@ namespace LWS
 
         /// Quit is sticky. Repeated calls after quit/failure return that outcome without dispatching.
         /// Continue is returned only by nonblocking ProcessMessages(); failure takes precedence over quit.
+        // ExternalLoop contexts reject these calls with Failed without changing context usability. Their host
+        // dispatches native events and task notifications, so a second pump would consume unrelated host work.
         LoopResult RunMessageLoop();
         [[nodiscard]] LoopResult ProcessMessages();
         /// The first fatal diagnostic survives Shutdown() and is owned by this context.

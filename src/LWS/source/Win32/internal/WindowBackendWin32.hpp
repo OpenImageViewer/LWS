@@ -18,6 +18,11 @@ namespace LWS::internal
     class MonitorInfo;
 }  // namespace LWS::internal
 
+namespace LWS::internal
+{
+    class SharedWindowClass;
+}
+
 namespace LWS
 {
     class WindowBackendWin32 : public internal::IWindowBackend
@@ -78,6 +83,8 @@ namespace LWS
 
         UINT dpi() const { return fDpi; }
         void setMenuChar(bool suppress);
+        static Result ValidateExternalParent(HWND parent);
+        Result reparent(internal::IWindowBackend& parent) override;
 
       private:
 
@@ -168,7 +175,9 @@ namespace LWS
         std::optional<PopupPlacement> fPopupPlacement;
         WindowStyle fWindowStyles = WindowStyle::NoStyle;
         WindowShowState fDisplayState = WindowShowState::Restored;
-        internal::IWindowBackend* fParentBackend = nullptr;
+        HWND fParentWindow = nullptr;
+        static internal::SharedWindowClass& WindowClass();
+        bool fClassRegistered = false;
         Point fLastMousePos = {};
         bool fDndEnabled = false;
         std::shared_ptr<internal::ICursorBackend> fCursor;

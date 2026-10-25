@@ -61,10 +61,12 @@ namespace LWS
             return Result::InvalidState;
         if (activeContext != nullptr)
             return Result::InvalidState;
+        if (config.dispatchMode != DispatchMode::OwnedLoop && config.dispatchMode != DispatchMode::ExternalLoop)
+            return Result::InvalidArgument;
         if (config.backend == BackendId::Undefined)
             return Result::InvalidArgument;
 
-        auto backend = internal::CreatePlatformBackend(config.backend, *this);
+        auto backend = internal::CreatePlatformBackend(config, *this);
         if (backend == nullptr)
             return Result::NotSupported;
         const Result result = backend->Initialize();

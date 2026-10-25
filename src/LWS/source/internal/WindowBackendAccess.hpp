@@ -51,7 +51,10 @@ namespace LWS::internal
         [[nodiscard]] static IWindowBackend* Get(Window& window);
         [[nodiscard]] static const IWindowBackend* Get(const Window& window);
         [[nodiscard]] static EventResponse Dispatch(Window& window, const AnyEvent& event);
+        // Share the initial notification with explicit teardown so native destruction cannot publish it twice.
+        static void NativeDestroying(Window& window);
 #ifdef LWS_PLATFORM_WIN32
+        [[nodiscard]] static Result CreateChild(Window& window, HWND parent, const WindowConfig& config);
         [[nodiscard]] static std::expected<EventConnection, Result> ListenPlatform(Window& window,
                                                                                    Win32::PlatformCallback callback);
         [[nodiscard]] static bool DispatchPlatform(Window& window, const Win32::PlatformEvent& event, LRESULT& result);

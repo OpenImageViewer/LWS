@@ -38,7 +38,7 @@ namespace LWS::internal
         [[nodiscard]] virtual std::unique_ptr<IWindowBackend> CreateWindowBackend(Window& owner) = 0;
     };
 
-    [[nodiscard]] std::unique_ptr<PlatformBackend> CreatePlatformBackend(BackendId backend,
+    [[nodiscard]] std::unique_ptr<PlatformBackend> CreatePlatformBackend(const PlatformConfig& config,
                                                                          [[maybe_unused]] PlatformContext& context);
 
     class PlatformContextAccess final

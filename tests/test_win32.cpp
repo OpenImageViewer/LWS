@@ -1,5 +1,6 @@
 #ifdef LWS_PLATFORM_WIN32
 
+    #include "Win32TestSupport.hpp"
     #include <catch2/catch_test_macros.hpp>
     #include <catch2/generators/catch_generators.hpp>
 
@@ -35,18 +36,7 @@ namespace
         return TRUE;
     }
 
-    class Context final
-    {
-      public:
-
-        Context()
-        {
-            REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);
-            REQUIRE(value.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::Success);
-        }
-
-        LWS::PlatformContext value;
-    };
+    using LwsTest::Context;
 
     HWND Hwnd(LWS::Window& window)
     {
@@ -1120,6 +1110,7 @@ TEST_CASE("Retrieved timer messages cannot invoke a replacement timer", "[timer]
            std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     REQUIRE(tick.message == WM_TIMER);
+    REQUIRE(tick.lParam == 0);  // Retrieved messages must not retain a DLL procedure address.
     timer.reset();
     unsigned calls{};
     LWS::Timer replacement(context.value);
@@ -1251,6 +1242,31 @@ TEST_CASE("Cursor visibility stays local to the window client area", "[cursor][v
     REQUIRE(hidden.SetMouseCursorVisible(true) == LWS::Result::Success);
 }
 
+TEST_CASE("Native key events retain message kind and flags", "[window][keyboard][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.Create() == LWS::Result::Success);
+    unsigned received{};
+    auto connection = LWS::Win32::Listen(window,
+                                         [&](const LWS::Win32::PlatformEvent& event) -> std::optional<LRESULT>
+                                         {
+                                             if (const auto* key = std::get_if<LWS::Win32::KeyEvent>(&event))
+                                             {
+                                                 REQUIRE(key->virtualKey == VK_F24);
+                                                 REQUIRE(key->message == (key->pressed ? WM_SYSKEYDOWN : WM_SYSKEYUP));
+                                                 REQUIRE(key->keyData == (key->pressed ? 0x60760002U : 0xE0760001U));
+                                                 ++received;
+                                                 return 0;
+                                             }
+                                             return std::nullopt;
+                                         });
+    REQUIRE(connection.has_value());
+    SendMessageW(Hwnd(window), WM_SYSKEYDOWN, VK_F24, 0x60760002U);
+    SendMessageW(Hwnd(window), WM_SYSKEYUP, VK_F24, 0xE0760001U);
+    REQUIRE(received == 2);
+}
+
 TEST_CASE("Posted work cannot starve native window input", "[platform][task][win32]")
 {
     Context context;
@@ -1283,7 +1299,6 @@ TEST_CASE("Posted work cannot starve native window input", "[platform][task][win
     REQUIRE(keyReceived);
     REQUIRE(batches < 1000);
 }
-
 
 TEST_CASE("Presented frames retain owned pixels across reuse conversion and resize", "[window][bitmap][win32]")
 {
@@ -1327,8 +1342,8 @@ TEST_CASE("Presented frames retain owned pixels across reuse conversion and resi
                 p[3] = std::byte(alpha);
             }
     };
-    LWS::BitmapBuffer image{data, LWS::BitmapPixelFormat::Bgra8Premultiplied,
-                           LWS::BitmapRowOrder::TopDown, width, height, pitch};
+    LWS::BitmapBuffer image{
+        data, LWS::BitmapPixelFormat::Bgra8Premultiplied, LWS::BitmapRowOrder::TopDown, width, height, pitch};
     solid(5, 10, 120);
     REQUIRE(window.PresentBitmap(image) == LWS::Result::Success);
     std::fill(data.begin(), data.end(), std::byte(0));
@@ -1362,8 +1377,8 @@ TEST_CASE("Presented frames retain owned pixels across reuse conversion and resi
             p[1] = std::byte(20);
             p[2] = std::byte(30);
         }
-    REQUIRE(window.PresentBitmap({bgr, LWS::BitmapPixelFormat::Bgr8, LWS::BitmapRowOrder::TopDown,
-                                  width, height, bgrPitch}) == LWS::Result::Success);
+    REQUIRE(window.PresentBitmap({bgr, LWS::BitmapPixelFormat::Bgr8, LWS::BitmapRowOrder::TopDown, width, height,
+                                  bgrPitch}) == LWS::Result::Success);
     repaint();
     pixel(2, RGB(30, 20, 10));
     solid(80, 40, 20, 128);
@@ -1400,23 +1415,21 @@ TEST_CASE("Presented frames retain owned pixels across reuse conversion and resi
         next[x + 2] = std::byte(40);
         next[x + 3] = std::byte(255);
     }
-    REQUIRE(window.PresentBitmap({next, LWS::BitmapPixelFormat::Bgra8Premultiplied,
-                                  LWS::BitmapRowOrder::TopDown, uint32_t(resized.x), uint32_t(resized.y),
-                                  uint32_t(resized.x * 4)}) == LWS::Result::Success);
+    REQUIRE(window.PresentBitmap({next, LWS::BitmapPixelFormat::Bgra8Premultiplied, LWS::BitmapRowOrder::TopDown,
+                                  uint32_t(resized.x), uint32_t(resized.y), uint32_t(resized.x * 4)}) ==
+            LWS::Result::Success);
     repaint();
     pixel(2, RGB(40, 50, 60));
     // Zero row pitch means tightly packed rows.
-    REQUIRE(window.PresentBitmap({next, LWS::BitmapPixelFormat::Bgra8Premultiplied,
-                                  LWS::BitmapRowOrder::TopDown, uint32_t(resized.x), uint32_t(resized.y), 0}) ==
-            LWS::Result::Success);
+    REQUIRE(window.PresentBitmap({next, LWS::BitmapPixelFormat::Bgra8Premultiplied, LWS::BitmapRowOrder::TopDown,
+                                  uint32_t(resized.x), uint32_t(resized.y), 0}) == LWS::Result::Success);
     repaint();
     pixel(2, RGB(40, 50, 60));
     REQUIRE(window.RequestPlacement({.clientSize = LWS::LogicalSize{240, 140}}) == LWS::Result::Success);
     const auto larger = *window.GetClientAreaMetrics().pixels;
     std::vector<std::byte> expanded(size_t(larger.x) * larger.y * 4, std::byte{255});
-    REQUIRE(window.PresentBitmap({expanded, LWS::BitmapPixelFormat::Bgra8Premultiplied,
-                                  LWS::BitmapRowOrder::TopDown, uint32_t(larger.x), uint32_t(larger.y), 0}) ==
-            LWS::Result::Success);
+    REQUIRE(window.PresentBitmap({expanded, LWS::BitmapPixelFormat::Bgra8Premultiplied, LWS::BitmapRowOrder::TopDown,
+                                  uint32_t(larger.x), uint32_t(larger.y), 0}) == LWS::Result::Success);
     repaint();
     pixel(2, RGB(255, 255, 255));
     REQUIRE(window.Destroy() == LWS::Result::Success);
@@ -1438,6 +1451,7 @@ TEST_CASE("Destroying a timer target detaches it and invalidates retrieved ticks
            std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     REQUIRE(tick.message == WM_TIMER);
+    REQUIRE(tick.lParam == 0);  // Retrieved messages must not retain a DLL procedure address.
     REQUIRE(window.Destroy() == LWS::Result::Success);
     DispatchMessageW(&tick);
     REQUIRE(calls == 0);
@@ -1495,6 +1509,39 @@ TEST_CASE("Process bootstrap recognizes process awareness behind a thread overri
     const LWS::Result result = LWS::Win32::BootstrapProcess({LWS::Win32::DpiPolicy::AdoptExistingPerMonitorV2});
     SetThreadDpiAwarenessContext(previous);
     REQUIRE(result == LWS::Result::Success);
+}
+
+TEST_CASE("A context selects owned or host-driven task delivery without a different library",
+          "[platform][embedding][win32]")
+{
+    const auto mode = GENERATE(LWS::DispatchMode::OwnedLoop, LWS::DispatchMode::ExternalLoop);
+    REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Win32, .dispatchMode = mode}) == LWS::Result::Success);
+    if (mode == LWS::DispatchMode::ExternalLoop)
+    {
+        CHECK(context.ProcessMessages() == LWS::LoopResult::Failed);
+        CHECK(context.RunMessageLoop() == LWS::LoopResult::Failed);
+    }
+    bool delivered{};
+    REQUIRE(context.PostTask(
+                [&]
+                {
+                    delivered = true;
+                    CHECK(context.Shutdown() == LWS::Result::InvalidState);
+                }) == LWS::Result::Success);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!delivered && std::chrono::steady_clock::now() < deadline)
+    {
+        if (mode == LWS::DispatchMode::OwnedLoop)
+            std::ignore = context.ProcessMessages();
+        else
+        {
+            LwsTest::DispatchHostMessages();
+        }
+    }
+    CHECK(delivered);
+    REQUIRE(context.Shutdown() == LWS::Result::Success);
 }
 
 #endif
