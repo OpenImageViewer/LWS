@@ -194,4 +194,252 @@ namespace LWSUI
         return false;
     }
 
+    namespace
+    {
+        int TreeDepth(const Control& control)
+        {
+            int depth = 0;
+            for (auto* parent = control.Parent(); parent; parent = parent->Parent())
+                if (dynamic_cast<const TreeView::Branch*>(parent))
+                    ++depth;
+            return depth;
+        }
+        void PaintTreeRow(Control& control, Canvas& canvas)
+        {
+            auto bounds = control.Bounds();
+            auto& style = control.Style();
+            if (control.Host() && control.Host()->HasFocusWithin(control))
+                canvas.Fill(bounds.x + style.treeRowInset, bounds.y, bounds.width - 2 * style.treeRowInset,
+                            bounds.height, style.selectedRow);
+            else if (control.Host() && control.Host()->HasHoverWithin(control))
+                canvas.Fill(bounds.x + style.treeRowInset, bounds.y, bounds.width - 2 * style.treeRowInset,
+                            bounds.height, style.hoveredRow);
+            canvas.Fill(bounds.x + style.treeLineInset, bounds.y + bounds.height - style.borderWidth,
+                        bounds.width - 2 * style.treeLineInset, style.borderWidth, style.line);
+        }
+        class TreeHeading : public Button
+        {
+          public:
+
+            explicit TreeHeading(std::string text) : Button(std::move(text)) { fontRole = FontRole::Heading; }
+
+          protected:
+
+            Size OnMeasure(Size size) override
+            {
+                return {size.width, std::max(Style().treeRowHeight, Font().size * 1.4f + 2 * Style().treeRowPadding)};
+            }
+            void OnRender(Canvas& canvas) override
+            {
+                PaintTreeRow(*this, canvas);
+                auto b = Bounds();
+                const float editorLeft = std::max(Style().editorMinLeft, b.width * Style().editorFraction);
+                const float indent = std::min(std::max(0, TreeDepth(*this) - 1) * Style().treeIndent,
+                                              std::max(0.f, editorLeft - Style().editorMinLeft));
+                const float y = b.y + (b.height - Font().size * 1.4f) / 2;
+                canvas.Text(text_.substr(0, 1), b.x + Style().treeLabelInset + indent, y, Style().checkboxSize,
+                            b.height, Style().accent, Font());
+                const float left = Style().treeLabelInset + Style().checkboxSize + indent;
+                DrawText(canvas, text_.substr(3), b.x + left, y, b.width - left - Style().padding, b.height,
+                         Style().accent);
+            }
+        };
+        Control* FirstFocusable(Control& control)
+        {
+            if (!control.Visible() || !control.Enabled())
+                return nullptr;
+            if (control.Focusable())
+                return &control;
+            if (auto* parent = dynamic_cast<Container*>(&control))
+                for (auto& child : parent->Children())
+                    if (auto* found = FirstFocusable(*child))
+                        return found;
+            return nullptr;
+        }
+    }  // namespace
+    TreeView::Row::Row(std::unique_ptr<Control> name, std::unique_ptr<Control> editor, std::unique_ptr<Control> action)
+    {
+        if (!name || !editor)
+            throw std::invalid_argument("A property row needs a name and an editor");
+        Add(std::move(name));
+        Add(std::move(editor));
+        if (action)
+            Add(std::move(action));
+    }
+    TreeView::Row::Columns TreeView::Row::ColumnLayout(float available) const
+    {
+        const auto& s = Style();
+        const float width = std::max(0.f, available);
+        float actionWidth = ActionControl() ? s.resetWidth : 0;
+        if (auto* button = dynamic_cast<Button*>(ActionControl()))
+        {
+            const float caption = Host() ? Host()->MeasureText(button->Text(), 10000, false, button->Font()).width
+                                         : button->Font().size * button->Text().size();
+            actionWidth = std::max(actionWidth, caption + 2 * button->Style().textPadding);
+        }
+        // Reserve the action before applying margins. Rows without an action use that space for the value.
+        actionWidth = std::clamp(actionWidth, 0.f, width);
+        const float margin = std::clamp(s.resetRightMargin, 0.f, width - actionWidth);
+        const float actionLeft = width - margin - actionWidth;
+        const float gap = ActionControl() ? std::clamp(s.padding, 0.f, actionLeft) : 0;
+        const float editorRight = actionLeft - gap;
+        const float editorLeft = std::min(std::max(s.editorMinLeft, width * s.editorFraction), editorRight);
+        const float nameLeft = s.treeLabelInset +
+                               std::min(TreeDepth(*this) * s.treeIndent, std::max(0.f, editorLeft - s.editorMinLeft));
+        return {nameLeft - s.labelPadding,
+                std::max(0.f, editorLeft - nameLeft - s.padding),
+                editorLeft,
+                editorRight - editorLeft,
+                actionLeft,
+                actionWidth};
+    }
+    Size TreeView::Row::OnMeasure(Size available)
+    {
+        const auto columns = ColumnLayout(available.width);
+        float height = std::max(NameControl().Measure({columns.nameWidth, available.height}).height,
+                                EditorControl().Measure({columns.editorWidth, available.height}).height);
+        if (auto* action = ActionControl())
+            height = std::max(height, action->Measure({columns.actionWidth, available.height}).height);
+        return {available.width, std::max(Style().treeRowHeight, height + 2 * Style().treeRowPadding)};
+    }
+    void TreeView::Row::OnArrange()
+    {
+        const auto b = Bounds();
+        const auto columns = ColumnLayout(b.width);
+        auto arrange = [&](Control& c, float x, float width)
+        {
+            const float height = std::min(c.DesiredSize().height, b.height);
+            c.Arrange({b.x + x, b.y + (b.height - height) / 2, width, height});
+        };
+        arrange(NameControl(), columns.nameLeft, columns.nameWidth);
+        arrange(EditorControl(), columns.editorLeft, columns.editorWidth);
+        if (auto* action = ActionControl())
+            arrange(*action, columns.actionLeft, columns.actionWidth);
+    }
+    void TreeView::Row::OnRender(Canvas& canvas)
+    {
+        PaintTreeRow(*this, canvas);
+        Container::OnRender(canvas);
+    }
+    bool TreeView::Row::OnInput(const Input& input)
+    {
+        if (input.kind == InputKind::Down)
+            return true;
+        if (input.kind == InputKind::KeyDown && (input.key == LWS::KeyCode::Left || input.key == LWS::KeyCode::Right))
+            return EditorControl().Dispatch(input);
+        if (input.kind == InputKind::KeyDown && (input.key == LWS::KeyCode::Enter || input.key == LWS::KeyCode::Space))
+        {
+            if (auto* editor = FirstFocusable(EditorControl()); editor && Host() && Host()->Focus(editor))
+            {
+                if (dynamic_cast<Button*>(editor))
+                    editor->Dispatch(input);
+            }
+            return true;
+        }
+        return false;
+    }
+    TreeView::Branch::Branch(std::string label) : label_(std::move(label))
+    {
+        spacing = 0;
+        header_ = &Emplace<TreeHeading>("v  " + label_);
+        content_ = &Emplace<StackPanel>();
+        content_->spacing = 0;
+        click_ = header_->OnClick.Connect([this] { SetExpanded(!expanded_); });
+    }
+    void TreeView::Branch::SetExpanded(bool value)
+    {
+        bool changed = expanded_ != value;
+        expanded_ = value;
+        content_->SetVisible(expanded_ || searching_);
+        header_->SetText(std::string(expanded_ || searching_ ? "v  " : ">  ") + label_);
+        Invalidate(true);
+        if (changed)
+            OnExpanded.Raise(expanded_);
+    }
+    void TreeView::Branch::RevealForSearch(bool searching)
+    {
+        searching_ = searching;
+        content_->SetVisible(expanded_ || searching_);
+        header_->SetText(std::string(expanded_ || searching_ ? "v  " : ">  ") + label_);
+    }
+    void TreeView::Branch::OnArrange()
+    {
+        auto bounds = Bounds();
+        float headerHeight = header_->DesiredSize().height;
+        header_->Arrange({bounds.x, bounds.y, bounds.width, headerHeight});
+        if (content_->Visible())
+            content_->Arrange({bounds.x, bounds.y + headerHeight, bounds.width, content_->DesiredSize().height});
+    }
+    bool TreeView::Branch::OnInput(const Input& input)
+    {
+        if (input.kind == InputKind::KeyDown && Host() && Host()->IsFocused(*header_))
+        {
+            if (input.key == LWS::KeyCode::Left)
+            {
+                SetExpanded(false);
+                return true;
+            }
+            if (input.key == LWS::KeyCode::Right)
+            {
+                SetExpanded(true);
+                return true;
+            }
+        }
+        return false;
+    }
+    bool TreeView::OnInput(const Input& input)
+    {
+        if (input.kind != InputKind::KeyDown || !Host())
+            return false;
+        using Key = LWS::KeyCode;
+        if (input.key != Key::Up && input.key != Key::Down && input.key != Key::Home && input.key != Key::End &&
+            input.key != Key::Tab)
+            return false;
+        std::vector<Control*> rows;
+        auto visit = [&](auto&& self, Control& control) -> void
+        {
+            if (!control.Visible())
+                return;
+            if (auto* branch = dynamic_cast<Branch*>(&control))
+            {
+                rows.push_back(&branch->Header());
+                self(self, branch->Content());
+            }
+            else if (auto* row = dynamic_cast<Row*>(&control))
+                rows.push_back(row);
+            else if (auto* parent = dynamic_cast<Container*>(&control))
+                for (auto& child : parent->Children())
+                    self(self, *child);
+        };
+        visit(visit, *this);
+        if (rows.empty())
+            return false;
+        int current = -1;
+        for (size_t i = 0; i < rows.size(); ++i)
+            if (Host()->HasFocusWithin(*rows[i]))
+                current = int(i);
+        int next = input.key == Key::Home ? 0
+                   : input.key == Key::End
+                       ? int(rows.size() - 1)
+                       : std::clamp(current + (input.key == Key::Up || (input.key == Key::Tab && input.shift) ? -1 : 1),
+                                    0, int(rows.size() - 1));
+        if (Host()->Focus(rows[next]))
+        {
+            if (input.key == Key::Tab)
+                if (auto* row = dynamic_cast<Row*>(rows[next]))
+                    if (auto* text = dynamic_cast<TextBox*>(FirstFocusable(row->EditorControl())))
+                        Host()->Focus(text);
+            for (auto* parent = Parent(); parent; parent = parent->Parent())
+                if (auto* scroll = dynamic_cast<ScrollView*>(parent))
+                {
+                    auto row = rows[next]->Bounds(), viewport = scroll->Bounds();
+                    if (row.y < viewport.y)
+                        scroll->SetOffset(scroll->Offset() + row.y - viewport.y);
+                    else if (row.y + row.height > viewport.y + viewport.height)
+                        scroll->SetOffset(scroll->Offset() + row.y + row.height - viewport.y - viewport.height);
+                    break;
+                }
+        }
+        return true;
+    }
 }  // namespace LWSUI
