@@ -2,6 +2,8 @@
 
 #ifdef LWS_PLATFORM_WAYLAND
 
+    #include "WaylandTextClipboard.hpp"
+
     #include <cstdint>
     #include <string>
 
@@ -16,15 +18,28 @@ namespace LWS::internal
 {
     class WaylandPlatformState;
 
-    class WaylandDragAndDropController
+    class WaylandDataDeviceController
     {
       public:
 
-        explicit WaylandDragAndDropController(WaylandPlatformState& platform);
+        explicit WaylandDataDeviceController(WaylandPlatformState& platform);
 
         void bindManager(wl_registry* registry, uint32_t name, uint32_t version);
         void setSeat(wl_seat* seat);
         [[nodiscard]] bool supported() const { return fDataDevice != nullptr; }
+        ClipboardResult setClipboardText(Window& owner, std::string_view text)
+        {
+            return fClipboard.setText(owner, text);
+        }
+        void requestClipboardText(Window& owner, ClipboardTextCallback callback)
+        {
+            fClipboard.requestText(owner, std::move(callback));
+        }
+        void processClipboard() { fClipboard.process(); }
+        void appendClipboardPollDescriptors(std::vector<pollfd>& descriptors, int& timeoutMilliseconds) const
+        {
+            fClipboard.appendPollDescriptors(descriptors, timeoutMilliseconds);
+        }
         [[nodiscard]] int pollDescriptor() const { return fDropDescriptor; }
         void processEvents(short events);
         void windowRemoved(WindowBackendWayland& window);
@@ -49,6 +64,7 @@ namespace LWS::internal
         void clearDropTransfer();
 
         WaylandPlatformState& fPlatform;
+        WaylandTextClipboard fClipboard;
         wl_data_device_manager* fDataDeviceManager = nullptr;
         wl_data_device* fDataDevice = nullptr;
         wl_data_offer* fPendingDataOffer = nullptr;
@@ -58,6 +74,8 @@ namespace LWS::internal
         WindowBackendWayland* fDragWindow = nullptr;
         WindowBackendWayland* fTransferWindow = nullptr;
         bool fPendingOfferHasUriList = false;
+        bool fPendingOfferHasUtf8 = false;
+        bool fPendingOfferHasPlain = false;
         bool fDragOfferHasUriList = false;
         uint32_t fDragAction = WL_DATA_DEVICE_MANAGER_DND_ACTION_NONE;
         int fDropDescriptor = -1;

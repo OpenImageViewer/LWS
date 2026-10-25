@@ -16,7 +16,7 @@
 namespace LWS::internal
 {
     WaylandPlatformState::WaylandPlatformState(PlatformContext& context)
-        : fContext(context), fSeatController(*this), fDragAndDropController(*this), fOutputManager(*this)
+        : fContext(context), fSeatController(*this), fDataDeviceController(*this), fOutputManager(*this)
     {
     }
 
@@ -112,6 +112,8 @@ namespace LWS::internal
                    fRelativePointerManager != nullptr;
         if (feature == PlatformFeature::DragAndDrop)
             return supportsDragAndDrop();
+        if (feature == PlatformFeature::TextClipboard)
+            return fDataDeviceController.supported();
         return feature == PlatformFeature::HostWindowFrame && fHasHostWindowFrame;
     }
 
@@ -184,7 +186,7 @@ namespace LWS::internal
         if (WindowBackendWayland* window = findWindow(surface); window != nullptr)
         {
             fSeatController.windowRemoved(*window);
-            fDragAndDropController.windowRemoved(*window);
+            fDataDeviceController.windowRemoved(*window);
         }
         fWindows.erase(surface);
     }
@@ -274,7 +276,7 @@ namespace LWS::internal
         }
         else if (std::strcmp(interface, wl_data_device_manager_interface.name) == 0)
         {
-            state.fDragAndDropController.bindManager(registry, name, version);
+            state.fDataDeviceController.bindManager(registry, name, version);
         }
         else if (std::strcmp(interface, "weston_rdprail_shell") == 0)
         {
@@ -308,7 +310,7 @@ namespace LWS::internal
         state.fSeatGlobals.erase(seat);
         if (selected)
         {
-            state.fDragAndDropController.setSeat(nullptr);
+            state.fDataDeviceController.setSeat(nullptr);
             state.fSeatController.reset();
             state.fSelectedSeatName = 0;
             if (!state.fSeatGlobals.empty())
@@ -323,7 +325,7 @@ namespace LWS::internal
     {
         fSeatController.bindSeat(fRegistry, name, version);
         fSelectedSeatName = name;
-        fDragAndDropController.setSeat(fSeatController.seat());
+        fDataDeviceController.setSeat(fSeatController.seat());
     }
 
     void WaylandPlatformState::shellPing(void*, xdg_wm_base* shell, uint32_t serial)
@@ -384,12 +386,14 @@ namespace LWS::internal
              .revents = 0},
             {.fd = fWakeDescriptor, .events = POLLIN, .revents = 0},
             {.fd = fSeatController.pollDescriptor(), .events = POLLIN, .revents = 0},
-            {.fd = fDragAndDropController.pollDescriptor(), .events = POLLIN, .revents = 0},
+            {.fd = fDataDeviceController.pollDescriptor(), .events = POLLIN, .revents = 0},
         };
         const size_t timerOffset = descriptors.size();
         std::vector<std::pair<int, std::shared_ptr<std::function<void()>>>> timers(fTimers.begin(), fTimers.end());
         for (const auto& [descriptor, callback] : timers)
             descriptors.push_back({.fd = descriptor, .events = POLLIN, .revents = 0});
+        // Native callbacks may have queued transfers. Wait for their readiness or actual deadline.
+        fDataDeviceController.appendClipboardPollDescriptors(descriptors, timeoutMilliseconds);
         const int pollResult = poll(descriptors.data(), descriptors.size(), timeoutMilliseconds);
         const int pollError = errno;
         // Every successful prepare_read is paired before callbacks or early failure returns.
@@ -449,15 +453,17 @@ namespace LWS::internal
         if (context.IsUsable() && pollResult > 0 && (descriptors[KeyRepeatDescriptor].revents & POLLIN) != 0)
             fSeatController.dispatchKeyRepeats();
         if (context.IsUsable() && pollResult > 0)
-            fDragAndDropController.processEvents(descriptors[DropDescriptor].revents);
+            fDataDeviceController.processEvents(descriptors[DropDescriptor].revents);
         if (context.IsUsable() && !PlatformContextAccess::QuitRequested(context) &&
             wl_display_dispatch_pending(fDisplay) < 0)
             fail("wl_display_dispatch_pending");
+        if (context.IsUsable())
+            fDataDeviceController.processClipboard();
     }
 
     void WaylandPlatformState::releaseObjects()
     {
-        fDragAndDropController.reset();
+        fDataDeviceController.reset();
         fSeatController.reset();
         fOutputManager.reset();
         fWindows.clear();

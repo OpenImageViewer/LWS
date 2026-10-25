@@ -5,6 +5,7 @@
     #include <LWS/source/internal/WindowBackendAccess.hpp>
     #include <LWS/source/Wayland/internal/WindowBackendWayland.hpp>
     #include <LWS/source/Wayland/internal/WindowFrame.hpp>
+    #include <LWS/TextClipboard.hpp>
     #include <LWS/Wayland/WindowExtensions.hpp>
     #include <wayland-server.h>
     #include <wayland-client.h>
@@ -83,6 +84,7 @@ namespace
             wl_global_create(display_, &wl_output_interface, 2, this, BindOutput);
             if (seatFeatures)
             {
+                wl_global_create(display_, &wl_data_device_manager_interface, 3, this, BindDataDeviceManager);
                 wl_global_create(display_, &zwp_pointer_constraints_v1_interface, 1, this, BindPointerConstraints);
                 wl_global_create(display_, &zwp_relative_pointer_manager_v1_interface, 1, this, BindRelativePointer);
             }
@@ -113,6 +115,8 @@ namespace
         {
             Invoke([&] { wl_display_terminate(display_); });
             thread_.join();
+            for (int descriptor : heldOfferReads)
+                close(descriptor);
             wl_event_source_remove(source_);
             close(wake_);
             wl_display_destroy_clients(display_);
@@ -190,6 +194,57 @@ namespace
             wp_fractional_scale_v1_send_preferred_scale(surfaces.at(surface)->fractional, scale);
         }
         std::vector<std::unique_ptr<Seat>> seats;
+        std::vector<wl_resource*> dataDevices;
+        wl_resource* clipboardSource{};
+        uint32_t clipboardSerial{};
+        unsigned destroyedOffers{};
+        unsigned offerReceives{};
+        bool holdOfferReads{};
+        std::vector<int> heldOfferReads;
+        void OfferText(std::string text, const char* mime, std::optional<uint32_t> dragSurface = {})
+        {
+            auto* device = dataDevices.at(0);
+            auto* offer = wl_resource_create(wl_resource_get_client(device), &wl_data_offer_interface, 3, 0);
+            struct Payload
+            {
+                ProtocolServer& server;
+                std::string text;
+            };
+            auto* payload = new Payload{*this, std::move(text)};
+            static const struct wl_data_offer_interface implementation{
+                .accept = [](wl_client*, wl_resource*, uint32_t, const char*) {},
+                .receive =
+                    [](wl_client*, wl_resource* resource, const char*, int32_t fd)
+                {
+                    auto& payload = *static_cast<Payload*>(wl_resource_get_user_data(resource));
+                    ++payload.server.offerReceives;
+                    if (payload.server.holdOfferReads)
+                    {
+                        payload.server.heldOfferReads.push_back(fd);
+                        return;
+                    }
+                    std::ignore = write(fd, payload.text.data(), payload.text.size());
+                    close(fd);
+                },
+                .destroy = Destroy,
+                .finish = [](wl_client*, wl_resource*) {},
+                .set_actions = [](wl_client*, wl_resource* resource, uint32_t actions, uint32_t)
+                { wl_data_offer_send_action(resource, actions & WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY); }};
+            wl_resource_set_implementation(offer, &implementation, payload,
+                                           [](wl_resource* resource)
+                                           {
+                                               auto* payload = static_cast<Payload*>(
+                                                   wl_resource_get_user_data(resource));
+                                               ++payload->server.destroyedOffers;
+                                               delete payload;
+                                           });
+            wl_data_device_send_data_offer(device, offer);
+            wl_data_offer_send_offer(offer, mime);
+            if (dragSurface)
+                wl_data_device_send_enter(device, 150, surfaces.at(*dragSurface)->surface, 0, 0, offer);
+            else
+                wl_data_device_send_selection(device, offer);
+        }
         std::map<uint32_t, std::unique_ptr<Surface>> surfaces;
         bool configureOnCommit{true};
         unsigned cursorRequests{};
@@ -229,6 +284,54 @@ namespace
                 Destroy, [](wl_client*, wl_resource* resource, uint32_t, wl_resource*)
                 { wl_resource_post_error(resource, 0, "unexpected relative pointer"); }};
             wl_resource_set_implementation(manager, &implementation, nullptr, nullptr);
+        }
+        static void BindDataDeviceManager(wl_client* client, void* data, uint32_t version, uint32_t id)
+        {
+            auto* manager = wl_resource_create(client, &wl_data_device_manager_interface, version, id);
+            static const struct wl_data_device_manager_interface implementation{
+                .create_data_source =
+                    [](wl_client* client, wl_resource* manager, uint32_t id)
+                {
+                    auto* source = wl_resource_create(client, &wl_data_source_interface, 3, id);
+                    static const struct wl_data_source_interface sourceImplementation{
+                        .offer = [](wl_client*, wl_resource*, const char*) {},
+                        .destroy = Destroy,
+                        .set_actions = [](wl_client*, wl_resource*, uint32_t) {}};
+                    wl_resource_set_implementation(source, &sourceImplementation, wl_resource_get_user_data(manager),
+                                                   [](wl_resource* resource)
+                                                   {
+                                                       auto& server = *static_cast<ProtocolServer*>(
+                                                           wl_resource_get_user_data(resource));
+                                                       if (server.clipboardSource == resource)
+                                                           server.clipboardSource = nullptr;
+                                                   });
+                },
+                .get_data_device =
+                    [](wl_client* client, wl_resource* manager, uint32_t id, wl_resource*)
+                {
+                    auto& server = *static_cast<ProtocolServer*>(wl_resource_get_user_data(manager));
+                    auto* device = wl_resource_create(client, &wl_data_device_interface, 3, id);
+                    static const struct wl_data_device_interface deviceImplementation{
+                        .start_drag = [](wl_client*, wl_resource*, wl_resource*, wl_resource*, wl_resource*,
+                                         uint32_t) {},
+                        .set_selection =
+                            [](wl_client*, wl_resource* device, wl_resource* source, uint32_t serial)
+                        {
+                            auto& server = *static_cast<ProtocolServer*>(wl_resource_get_user_data(device));
+                            server.clipboardSource = source;
+                            server.clipboardSerial = serial;
+                        },
+                        .release = Destroy};
+                    server.dataDevices.push_back(device);
+                    wl_resource_set_implementation(device, &deviceImplementation, &server,
+                                                   [](wl_resource* resource)
+                                                   {
+                                                       auto& server = *static_cast<ProtocolServer*>(
+                                                           wl_resource_get_user_data(resource));
+                                                       std::erase(server.dataDevices, resource);
+                                                   });
+                }};
+            wl_resource_set_implementation(manager, &implementation, data, nullptr);
         }
         static int Commands(int fd, uint32_t, void* data)
         {
@@ -540,6 +643,279 @@ TEST_CASE("Wayland seat capability loss and deterministic promotion use real pro
     REQUIRE(firstPointers == 1);
     REQUIRE(secondBindings == 0);
     REQUIRE(context.Supports(LWS::PlatformFeature::PointerLock).value());
+    LWS::Window clipboardWindow(context);
+    auto config = Config();
+    config.dragAndDropEnabled = true;
+    REQUIRE(clipboardWindow.Create(config) == LWS::Result::Success);
+    server.Settle(context);
+    const auto surface = *LWS::Wayland::GetSurface(clipboardWindow);
+    const uint32_t surfaceId = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(surface));
+    size_t dataDevices{};
+    server.Invoke([&] { dataDevices = server.dataDevices.size(); });
+    REQUIRE(dataDevices == 1);  // Clipboard and URI drops share exactly one seat data device.
+    server.Invoke(
+        [&]
+        {
+            server.Enter(0, surfaceId, 100);
+            wl_pointer_send_button(server.seats[0]->pointers.at(0), 101, 1, 0x110, WL_POINTER_BUTTON_STATE_PRESSED);
+            wl_array keys{};
+            wl_keyboard_send_enter(server.seats[0]->keyboards.at(0), 102, server.surfaces.at(surfaceId)->surface,
+                                   &keys);
+        });
+    server.Settle(context);
+    SECTION("Existing seat and clipboard lifecycle transitions") {}
+    SECTION("Blocking clipboard receive wakes for a transfer larger than a pipe")
+    {
+        const std::string payload(256 * 1024, 'x');
+        server.Invoke([&] { server.OfferText(payload, "text/plain;charset=utf-8"); });
+        server.Settle(context);
+        LWS::ClipboardResult outcome = LWS::ClipboardResult::UnknownError;
+        std::string received;
+        LWS::RequestClipboardText(clipboardWindow,
+                                  [&](auto result, std::string text)
+                                  {
+                                      outcome = result;
+                                      received = std::move(text);
+                                      context.RequestQuit();
+                                  });
+        REQUIRE(context.RunMessageLoop() == LWS::LoopResult::Quit);
+        REQUIRE(outcome == LWS::ClipboardResult::Success);
+        REQUIRE(received == payload);
+        return;
+    }
+    SECTION("Blocking clipboard send resumes after pipe backpressure")
+    {
+        const std::string payload(256 * 1024, 'y');
+        REQUIRE(LWS::SetClipboardText(clipboardWindow, payload) == LWS::ClipboardResult::Success);
+        server.Settle(context);
+        int pipeDescriptors[2];
+        REQUIRE(pipe2(pipeDescriptors, O_CLOEXEC) == 0);
+        server.Invoke(
+            [&] { wl_data_source_send_send(server.clipboardSource, "text/plain;charset=utf-8", pipeDescriptors[1]); });
+        close(pipeDescriptors[1]);
+        std::string received;
+        LWS::Result posted = LWS::Result::Failure;
+        std::jthread reader(
+            [&]
+            {
+                char buffer[4096];
+                for (;;)
+                {
+                    const auto count = read(pipeDescriptors[0], buffer, sizeof(buffer));
+                    if (count <= 0)
+                        break;
+                    received.append(buffer, static_cast<size_t>(count));
+                }
+                close(pipeDescriptors[0]);
+                posted = context.PostTask([&] { context.RequestQuit(); });
+            });
+        REQUIRE(context.RunMessageLoop() == LWS::LoopResult::Quit);
+        reader.join();
+        REQUIRE(posted == LWS::Result::Success);
+        REQUIRE(received == payload);
+        return;
+    }
+    SECTION("Blocking clipboard read expires at its deadline without other events")
+    {
+        server.Invoke(
+            [&]
+            {
+                server.holdOfferReads = true;
+                server.OfferText("withheld", "text/plain;charset=utf-8");
+            });
+        server.Settle(context);
+        bool failed = false;
+        const auto start = std::chrono::steady_clock::now();
+        LWS::RequestClipboardText(clipboardWindow,
+                                  [&](auto result, std::string text)
+                                  {
+                                      failed = result == LWS::ClipboardResult::UnknownError && text.empty();
+                                      context.RequestQuit();
+                                  });
+        REQUIRE(context.RunMessageLoop() == LWS::LoopResult::Quit);
+        REQUIRE(failed);
+        REQUIRE(std::chrono::steady_clock::now() - start >= std::chrono::seconds(5));
+        return;
+    }
+    REQUIRE(LWS::SetClipboardText(clipboardWindow, "copied") == LWS::ClipboardResult::Success);
+    server.Settle(context);
+    uint32_t serial{};
+    int descriptors[2];
+    REQUIRE(pipe2(descriptors, O_NONBLOCK | O_CLOEXEC) == 0);
+    server.Invoke(
+        [&]
+        {
+            serial = server.clipboardSerial;
+            REQUIRE(server.clipboardSource);
+            wl_data_source_send_send(server.clipboardSource, "text/plain;charset=utf-8", descriptors[1]);
+        });
+    close(descriptors[1]);
+    server.Settle(context);
+    std::ignore = context.ProcessMessages();
+    char copied[32]{};
+    REQUIRE(read(descriptors[0], copied, sizeof(copied)) == 6);
+    close(descriptors[0]);
+    REQUIRE(std::string(copied, 6) == "copied");
+    REQUIRE(serial == 101);
+
+    auto receive = [&](std::string payload, bool valid)
+    {
+        server.Invoke([&] { server.OfferText(payload, "text/plain;charset=utf-8"); });
+        server.Settle(context);
+        bool called = false;
+        LWS::RequestClipboardText(clipboardWindow,
+                                  [&](LWS::ClipboardResult result, std::string text)
+                                  {
+                                      called = true;
+                                      REQUIRE(result == (valid ? LWS::ClipboardResult::Success
+                                                               : LWS::ClipboardResult::UnknownError));
+                                      REQUIRE(text == (valid ? payload : std::string{}));
+                                  });
+        server.Settle(context);
+        std::ignore = context.ProcessMessages();
+        REQUIRE(called);
+    };
+    receive("pasted", true);
+    receive(std::string("\xc0\xaf", 2), false);
+    receive(std::string("a\0b", 3), false);
+    receive("retained selection", true);
+
+    std::vector<std::filesystem::path> dropped;
+    auto dropConnection = clipboardWindow.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (const auto* value = std::get_if<LWS::EventDragDropFile>(&event))
+                dropped.push_back(value->fileName);
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(dropConnection.has_value());
+    server.Invoke([&] { server.OfferText("file:///tmp/lws-drop.txt\r\n", "text/uri-list", surfaceId); });
+    server.Settle(context);
+    server.Invoke([&] { wl_data_device_send_drop(server.dataDevices.at(0)); });
+    server.Settle(context);
+    std::ignore = context.ProcessMessages();
+    REQUIRE(dropped == std::vector<std::filesystem::path>{"/tmp/lws-drop.txt"});
+    bool retained = false;
+    LWS::RequestClipboardText(clipboardWindow, [&](auto result, std::string text)
+                              { retained = result == LWS::ClipboardResult::Success && text == "retained selection"; });
+    server.Settle(context);
+    std::ignore = context.ProcessMessages();
+    REQUIRE(retained);
+
+    unsigned completionErrors = 0;
+    context.SetUnhandledExceptionHandler(
+        [&](std::exception_ptr error) noexcept
+        {
+            if (error)
+                ++completionErrors;
+        });
+    bool laterCompletion = false;
+    LWS::RequestClipboardText(clipboardWindow, [](auto, auto) { throw std::runtime_error("clipboard callback"); });
+    LWS::RequestClipboardText(
+        clipboardWindow, [&](auto result, std::string text)
+        { laterCompletion = result == LWS::ClipboardResult::Success && text == "retained selection"; });
+    server.Settle(context);
+    REQUIRE_NOTHROW(std::ignore = context.ProcessMessages());
+    REQUIRE(completionErrors == 1);
+    REQUIRE(laterCompletion);
+    context.SetUnhandledExceptionHandler({});
+
+    {
+        LWS::Window otherFocus(context);
+        REQUIRE(otherFocus.Create(Config()) == LWS::Result::Success);
+        server.Settle(context);
+        const auto otherId = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*LWS::Wayland::GetSurface(otherFocus)));
+        server.Invoke(
+            [&]
+            {
+                auto* keyboard = server.seats[0]->keyboards.at(0);
+                wl_keyboard_send_leave(keyboard, 160, server.surfaces.at(surfaceId)->surface);
+                wl_array keys{};
+                wl_keyboard_send_enter(keyboard, 161, server.surfaces.at(otherId)->surface, &keys);
+            });
+        server.Settle(context);
+        bool sameClient = false;
+        LWS::RequestClipboardText(
+            clipboardWindow, [&](auto result, std::string text)
+            { sameClient = result == LWS::ClipboardResult::Success && text == "retained selection"; });
+        server.Settle(context);
+        std::ignore = context.ProcessMessages();
+        REQUIRE(sameClient);
+        server.Invoke(
+            [&]
+            { wl_keyboard_send_leave(server.seats[0]->keyboards.at(0), 162, server.surfaces.at(otherId)->surface); });
+        server.Settle(context);
+        unsigned before{}, after{};
+        server.Invoke([&] { before = server.offerReceives; });
+        bool denied = false;
+        LWS::RequestClipboardText(clipboardWindow, [&](auto result, std::string text)
+                                  { denied = result == LWS::ClipboardResult::AccessDenied && text.empty(); });
+        server.Settle(context);
+        REQUIRE(denied);
+        server.Invoke([&] { after = server.offerReceives; });
+        REQUIRE(after == before);
+
+        bool regained = false;
+        auto focusRead = clipboardWindow.Listen(
+            [&](const LWS::AnyEvent& event)
+            {
+                if (std::holds_alternative<LWS::EventFocusGained>(event))
+                    LWS::RequestClipboardText(
+                        clipboardWindow, [&](auto result, std::string text)
+                        { regained = result == LWS::ClipboardResult::Success && text == "fresh selection"; });
+                return LWS::EventResponse::Unhandled;
+            });
+        REQUIRE(focusRead.has_value());
+        server.Invoke(
+            [&]
+            {
+                wl_array keys{};
+                auto* keyboard = server.seats[0]->keyboards.at(0);
+                // WSLg can queue the replacement selection after the focus event.
+                wl_keyboard_send_enter(keyboard, 163, server.surfaces.at(surfaceId)->surface, &keys);
+                server.OfferText("fresh selection", "text/plain;charset=utf-8");
+            });
+        server.Settle(context);
+        std::ignore = context.ProcessMessages();
+        REQUIRE(regained);
+    }
+
+    {
+        LWS::Window secondOwner(context);
+        REQUIRE(secondOwner.Create(Config()) == LWS::Result::Success);
+        auto teardown = secondOwner.Listen(
+            [&](const LWS::AnyEvent& event)
+            {
+                if (std::holds_alternative<LWS::EventWindowDestroying>(event))
+                {
+                    // Earlier user cleanup may pump before a pending read's cancellation listener.
+                    std::ignore = context.ProcessMessages();
+                    return LWS::EventResponse::Handled;
+                }
+                return LWS::EventResponse::Unhandled;
+            });
+        REQUIRE(teardown.has_value());
+        bool firstCalled = false, secondCalled = false;
+        LWS::RequestClipboardText(clipboardWindow,
+                                  [&](auto result, auto)
+                                  {
+                                      REQUIRE(result == LWS::ClipboardResult::Success);
+                                      firstCalled = true;
+                                      REQUIRE(secondOwner.Destroy() == LWS::Result::Success);
+                                  });
+        LWS::RequestClipboardText(secondOwner, [&](auto, auto) { secondCalled = true; });
+        server.Settle(context);
+        std::ignore = context.ProcessMessages();
+        REQUIRE(firstCalled);
+        REQUIRE_FALSE(secondCalled);
+    }
+
+    bool cancelledCalled = false;
+    LWS::RequestClipboardText(clipboardWindow, [&](auto, auto) { cancelledCalled = true; });
+    REQUIRE(clipboardWindow.Destroy() == LWS::Result::Success);
+    server.Settle(context);
+    std::ignore = context.ProcessMessages();
+    REQUIRE_FALSE(cancelledCalled);
     server.Invoke([&] { server.Capabilities(0, 0); });
     server.Settle(context);
     size_t devices{};
@@ -567,6 +943,8 @@ TEST_CASE("Wayland seat capability loss and deterministic promotion use real pro
         });
     REQUIRE(devices == 1);
     REQUIRE(secondBindings == 1);
+    server.Invoke([&] { dataDevices = server.dataDevices.size(); });
+    REQUIRE(dataDevices == 1);
     server.Invoke([&] { server.RemoveSeat(1); });
     server.Settle(context);
     REQUIRE(context.IsUsable());

@@ -14,7 +14,7 @@ namespace LWS
     {
         enum class WaylandCaptionMode;
         enum class WaylandDecorationMode;
-        class WaylandDragAndDropController;
+        class WaylandDataDeviceController;
         class WaylandPlatformState;
         struct WaylandFrameHit;
         enum class WaylandResizeEdge : uint32_t;
@@ -96,7 +96,7 @@ namespace LWS
       private:
 
         friend class CursorBackendWayland;
-        friend class internal::WaylandDragAndDropController;
+        friend class internal::WaylandDataDeviceController;
 
         class NativeState;
         internal::WaylandPlatformState& fPlatform;

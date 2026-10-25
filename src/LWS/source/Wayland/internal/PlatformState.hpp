@@ -6,7 +6,7 @@
 
     #include "../../internal/PlatformBackend.hpp"
 
-    #include "WaylandDragAndDropController.hpp"
+    #include "WaylandDataDeviceController.hpp"
     #include "WaylandOutputManager.hpp"
     #include "WaylandSeatController.hpp"
     #include "WindowFrame.hpp"
@@ -73,6 +73,9 @@ namespace LWS::internal
 
         [[nodiscard]] wl_display* display() const { return fDisplay; }
         [[nodiscard]] PlatformContext& context() const { return fContext; }
+        [[nodiscard]] WaylandDataDeviceController& dataDevice() { return fDataDeviceController; }
+        [[nodiscard]] uint32_t inputSerial() const { return fSeatController.inputSerial(); }
+        [[nodiscard]] bool hasKeyboardFocus() const { return fSeatController.hasKeyboardFocus(); }
         [[nodiscard]] wl_compositor* compositor() const { return fCompositor; }
         [[nodiscard]] wl_subcompositor* subcompositor() const { return fSubcompositor; }
         [[nodiscard]] wl_shm* sharedMemory() const { return fSharedMemory; }
@@ -89,7 +92,7 @@ namespace LWS::internal
         [[nodiscard]] wl_pointer* pointer() const { return fSeatController.pointer(); }
         [[nodiscard]] wl_seat* seat() const { return fSeatController.seat(); }
         [[nodiscard]] uint32_t pointerButtonSerial() const { return fSeatController.pointerButtonSerial(); }
-        [[nodiscard]] bool supportsDragAndDrop() const { return fDragAndDropController.supported(); }
+        [[nodiscard]] bool supportsDragAndDrop() const { return fDataDeviceController.supported(); }
         [[nodiscard]] int32_t outputScale(wl_output* output) const { return fOutputManager.scale(output); }
 
       private:
@@ -121,7 +124,7 @@ namespace LWS::internal
         // Registration identity prevents an old poll result from reaching a reused descriptor.
         std::unordered_map<int, std::shared_ptr<std::function<void()>>> fTimers;
         WaylandSeatController fSeatController;
-        WaylandDragAndDropController fDragAndDropController;
+        WaylandDataDeviceController fDataDeviceController;
         WaylandOutputManager fOutputManager;
         std::unordered_map<wl_surface*, WaylandWindowRegistration> fWindows;
         struct SeatGlobal

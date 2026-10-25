@@ -328,6 +328,12 @@ Wayland retains implicit button-drag capture. The existing EventResponse and non
 keep their upstream semantics. Windows retained bitmap presentation borrows caller
 pixels only for the call and copies them for repaint.
 
+TextClipboard.hpp provides UI-thread SetClipboardText/RequestClipboardText helpers
+using a Window's context. Text is valid UTF-8 without embedded NUL. Reads may complete
+immediately and are cancelled when the native owner or context becomes unavailable.
+Wayland uses the context's data device alongside URI drag/drop and requires an input
+serial for writing.
+
 The Windows LWSLib target exports `UNICODE`, `_UNICODE`, and `NOMINMAX` as public
 usage requirements, so core-only consumers see the same string ABI and compatible
 Windows headers as the library.

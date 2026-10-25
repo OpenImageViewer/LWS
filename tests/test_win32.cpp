@@ -4,6 +4,7 @@
     #include <catch2/generators/catch_generators.hpp>
 
     #include <LWS/Clipboard.hpp>
+    #include <LWS/TextClipboard.hpp>
     #include <LWS/Cursor.hpp>
     #include <LWS/FileDialog.hpp>
     #include <LWS/Platform.hpp>
@@ -952,6 +953,87 @@ TEST_CASE("Clipboard operations require an owned window", "[clipboard][win32]")
     const std::array<std::byte, 1> data{};
     REQUIRE(clipboard.SetClipboardData(uncreated, 1, data.data(), data.size()) != LWS::ClipboardResult::Success);
     REQUIRE(clipboard.SetClipboardData(window, 0, data.data(), data.size()) != LWS::ClipboardResult::Success);
+
+    REQUIRE(LWS::SetClipboardText(uncreated, "invalid owner") != LWS::ClipboardResult::Success);
+    REQUIRE(context.value.Supports(LWS::PlatformFeature::TextClipboard).value_or(false));
+    REQUIRE(LWS::SetClipboardText(window, "café 日本語 😀") == LWS::ClipboardResult::Success);
+    REQUIRE(LWS::SetClipboardText(window, "\xff") == LWS::ClipboardResult::UnknownError);
+    REQUIRE(LWS::SetClipboardText(window, std::string_view("a\0b", 3)) == LWS::ClipboardResult::UnknownError);
+    bool called = false;
+    LWS::RequestClipboardText(window,
+                              [&](auto result, auto text)
+                              {
+                                  called = true;
+                                  REQUIRE(result == LWS::ClipboardResult::Success);
+                                  REQUIRE(text == "café 日本語 😀");
+                              });
+    REQUIRE(called);
+    unsigned exceptions = 0;
+    context.value.SetUnhandledExceptionHandler([&](std::exception_ptr) noexcept { ++exceptions; });
+    LWS::RequestClipboardText(window, [](auto, auto) { throw std::runtime_error("clipboard callback"); });
+    REQUIRE(exceptions == 1);
+    called = false;
+    LWS::RequestClipboardText(window, [&](auto, auto) { called = true; });
+    REQUIRE(called);
+
+    // Delayed native rendering is a reentrancy point, even for a synchronous read.
+    LWS::Window requester(context.value);
+    REQUIRE(requester.Create() == LWS::Result::Success);
+    struct RenderState
+    {
+        LWS::Window* requester;
+        bool rendered = false;
+        LWS::Result destroyed{};
+    } renderState{&requester};
+    WNDCLASSW cls{};
+    cls.hInstance = GetModuleHandleW(nullptr);
+    cls.lpszClassName = L"LWS.DelayedClipboard.Test";
+    cls.lpfnWndProc = [](HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) -> LRESULT
+    {
+        if (message == WM_NCCREATE)
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                              reinterpret_cast<LONG_PTR>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams));
+        if (message == WM_RENDERFORMAT && wparam == CF_UNICODETEXT)
+        {
+            auto* state = reinterpret_cast<RenderState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+            state->rendered = true;
+            state->destroyed = state->requester->Destroy();
+            constexpr wchar_t value[] = L"delayed";
+            auto memory = GlobalAlloc(GMEM_MOVEABLE, sizeof(value));
+            if (auto* data = GlobalLock(memory))
+            {
+                std::copy(std::begin(value), std::end(value), static_cast<wchar_t*>(data));
+                GlobalUnlock(memory);
+                if (!SetClipboardData(CF_UNICODETEXT, memory))
+                    GlobalFree(memory);
+            }
+            return 0;
+        }
+        return DefWindowProcW(hwnd, message, wparam, lparam);
+    };
+    REQUIRE(RegisterClassW(&cls));
+    auto renderer = CreateWindowExW(0, cls.lpszClassName, L"", 0, 0, 0, 0, 0, nullptr, nullptr, cls.hInstance,
+                                    &renderState);
+    REQUIRE(renderer);
+    struct CleanupRenderer
+    {
+        HWND hwnd;
+        HINSTANCE instance;
+        ~CleanupRenderer()
+        {
+            DestroyWindow(hwnd);
+            UnregisterClassW(L"LWS.DelayedClipboard.Test", instance);
+        }
+    } cleanup{renderer, cls.hInstance};
+    REQUIRE(OpenClipboard(renderer));
+    REQUIRE(EmptyClipboard());
+    SetClipboardData(CF_UNICODETEXT, nullptr);
+    REQUIRE(CloseClipboard());
+    bool completed = false;
+    LWS::RequestClipboardText(requester, [&](auto, auto) { completed = true; });
+    REQUIRE(renderState.rendered);
+    REQUIRE(renderState.destroyed == LWS::Result::Success);
+    REQUIRE_FALSE(completed);
 
     LWS::ListFileDialogFileNames files;
     REQUIRE(LWS::FileDialog::Show(LWS::FileDialogType::OpenFile, {}, {}, uncreated, {}, 1, {}, files) ==

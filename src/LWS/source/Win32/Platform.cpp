@@ -56,11 +56,13 @@ namespace
         bool processIsPerMonitorV2 = false;
         try
         {
-            std::thread probe([&]
-            {
-                processIsPerMonitorV2 = areDpiAwarenessContextsEqual(getThreadDpiAwarenessContext(),
-                                                                     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) != FALSE;
-            });
+            std::thread probe(
+                [&]
+                {
+                    processIsPerMonitorV2 = areDpiAwarenessContextsEqual(getThreadDpiAwarenessContext(),
+                                                                         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) !=
+                                            FALSE;
+                });
             probe.join();
         }
         catch (const std::system_error&)
@@ -420,6 +422,7 @@ namespace LWS::internal::platform_backend
             case Feature::MultiMonitorFullscreen:
             case Feature::WindowIcon:
             case Feature::Clipboard:
+            case Feature::TextClipboard:
             case Feature::NotificationIcon:
             case Feature::NotificationIconGeometry:
             case Feature::ServerSideDecorations:

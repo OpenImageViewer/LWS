@@ -1,6 +1,6 @@
 #ifdef LWS_PLATFORM_WAYLAND
 
-    #include "WaylandDragAndDropController.hpp"
+    #include "WaylandDataDeviceController.hpp"
 
     #include "PlatformState.hpp"
     #include "UriList.hpp"
@@ -18,9 +18,12 @@
 
 namespace LWS::internal
 {
-    WaylandDragAndDropController::WaylandDragAndDropController(WaylandPlatformState& platform) : fPlatform(platform) {}
+    WaylandDataDeviceController::WaylandDataDeviceController(WaylandPlatformState& platform)
+        : fPlatform(platform), fClipboard(platform)
+    {
+    }
 
-    void WaylandDragAndDropController::bindManager(wl_registry* registry, uint32_t name, uint32_t version)
+    void WaylandDataDeviceController::bindManager(wl_registry* registry, uint32_t name, uint32_t version)
     {
         if (fDataDeviceManager != nullptr)
             return;
@@ -30,7 +33,7 @@ namespace LWS::internal
         createDataDevice();
     }
 
-    void WaylandDragAndDropController::setSeat(wl_seat* seat)
+    void WaylandDataDeviceController::setSeat(wl_seat* seat)
     {
         if (fSeat == seat)
             return;
@@ -39,13 +42,15 @@ namespace LWS::internal
         createDataDevice();
     }
 
-    void WaylandDragAndDropController::dataOffer(void* data, wl_data_device*, wl_data_offer* offer)
+    void WaylandDataDeviceController::dataOffer(void* data, wl_data_device*, wl_data_offer* offer)
     {
-        auto& controller = *static_cast<WaylandDragAndDropController*>(data);
+        auto& controller = *static_cast<WaylandDataDeviceController*>(data);
         if (controller.fPendingDataOffer != nullptr)
             wl_data_offer_destroy(controller.fPendingDataOffer);
         controller.fPendingDataOffer = offer;
         controller.fPendingOfferHasUriList = false;
+        controller.fPendingOfferHasUtf8 = false;
+        controller.fPendingOfferHasPlain = false;
         static constexpr wl_data_offer_listener offerListener{
             .offer = dataOfferMimeType,
             .source_actions = dataOfferSourceActions,
@@ -54,27 +59,30 @@ namespace LWS::internal
         wl_data_offer_add_listener(offer, &offerListener, &controller);
     }
 
-    void WaylandDragAndDropController::dataOfferMimeType(void* data, wl_data_offer* offer, const char* mimeType)
+    void WaylandDataDeviceController::dataOfferMimeType(void* data, wl_data_offer* offer, const char* mimeType)
     {
-        auto& controller = *static_cast<WaylandDragAndDropController*>(data);
-        if (offer == controller.fPendingDataOffer && std::strcmp(mimeType, "text/uri-list") == 0)
-            controller.fPendingOfferHasUriList = true;
+        auto& controller = *static_cast<WaylandDataDeviceController*>(data);
+        if (offer == controller.fPendingDataOffer)
+        {
+            controller.fPendingOfferHasUriList |= std::strcmp(mimeType, "text/uri-list") == 0;
+            controller.fPendingOfferHasUtf8 |= std::strcmp(mimeType, "text/plain;charset=utf-8") == 0;
+            controller.fPendingOfferHasPlain |= std::strcmp(mimeType, "text/plain") == 0;
+        }
     }
 
-    void WaylandDragAndDropController::dataOfferSourceActions(void*, wl_data_offer*, uint32_t) {}
+    void WaylandDataDeviceController::dataOfferSourceActions(void*, wl_data_offer*, uint32_t) {}
 
-    void WaylandDragAndDropController::dataOfferAction(void* data, wl_data_offer* offer, uint32_t action)
+    void WaylandDataDeviceController::dataOfferAction(void* data, wl_data_offer* offer, uint32_t action)
     {
-        auto& controller = *static_cast<WaylandDragAndDropController*>(data);
+        auto& controller = *static_cast<WaylandDataDeviceController*>(data);
         if (offer == controller.fDragDataOffer)
             controller.fDragAction = action;
     }
 
-    void WaylandDragAndDropController::dataDeviceEnter(void* data, wl_data_device*, uint32_t serial,
-                                                       wl_surface* surface, wl_fixed_t, wl_fixed_t,
-                                                       wl_data_offer* offer)
+    void WaylandDataDeviceController::dataDeviceEnter(void* data, wl_data_device*, uint32_t serial, wl_surface* surface,
+                                                      wl_fixed_t, wl_fixed_t, wl_data_offer* offer)
     {
-        auto& controller = *static_cast<WaylandDragAndDropController*>(data);
+        auto& controller = *static_cast<WaylandDataDeviceController*>(data);
         controller.clearDragOffer();
         controller.fDragDataOffer = offer;
         controller.fDragOfferHasUriList = offer == controller.fPendingDataOffer && controller.fPendingOfferHasUriList;
@@ -101,16 +109,16 @@ namespace LWS::internal
         }
     }
 
-    void WaylandDragAndDropController::dataDeviceLeave(void* data, wl_data_device*)
+    void WaylandDataDeviceController::dataDeviceLeave(void* data, wl_data_device*)
     {
-        static_cast<WaylandDragAndDropController*>(data)->clearDragOffer();
+        static_cast<WaylandDataDeviceController*>(data)->clearDragOffer();
     }
 
-    void WaylandDragAndDropController::dataDeviceMotion(void*, wl_data_device*, uint32_t, wl_fixed_t, wl_fixed_t) {}
+    void WaylandDataDeviceController::dataDeviceMotion(void*, wl_data_device*, uint32_t, wl_fixed_t, wl_fixed_t) {}
 
-    void WaylandDragAndDropController::dataDeviceDrop(void* data, wl_data_device*)
+    void WaylandDataDeviceController::dataDeviceDrop(void* data, wl_data_device*)
     {
-        auto& controller = *static_cast<WaylandDragAndDropController*>(data);
+        auto& controller = *static_cast<WaylandDataDeviceController*>(data);
         const bool accepted = controller.fDragDataOffer != nullptr && controller.fDragWindow != nullptr &&
                               controller.fDragOfferHasUriList &&
                               controller.fDragAction == WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY;
@@ -139,11 +147,12 @@ namespace LWS::internal
         controller.fDragOfferHasUriList = false;
     }
 
-    void WaylandDragAndDropController::dataDeviceSelection(void* data, wl_data_device*, wl_data_offer* offer)
+    void WaylandDataDeviceController::dataDeviceSelection(void* data, wl_data_device*, wl_data_offer* offer)
     {
-        auto& controller = *static_cast<WaylandDragAndDropController*>(data);
-        if (offer != nullptr)
-            wl_data_offer_destroy(offer);
+        auto& controller = *static_cast<WaylandDataDeviceController*>(data);
+        controller.fClipboard.setSelection(offer,
+                                           offer == controller.fPendingDataOffer && controller.fPendingOfferHasUtf8,
+                                           offer == controller.fPendingDataOffer && controller.fPendingOfferHasPlain);
         if (offer == controller.fPendingDataOffer)
         {
             controller.fPendingDataOffer = nullptr;
@@ -151,7 +160,7 @@ namespace LWS::internal
         }
     }
 
-    void WaylandDragAndDropController::createDataDevice()
+    void WaylandDataDeviceController::createDataDevice()
     {
         if (fDataDevice == nullptr && fDataDeviceManager != nullptr && fSeat != nullptr)
         {
@@ -165,10 +174,11 @@ namespace LWS::internal
                 .selection = dataDeviceSelection,
             };
             wl_data_device_add_listener(fDataDevice, &deviceListener, this);
+            fClipboard.setDevice(fDataDeviceManager, fDataDevice);
         }
     }
 
-    void WaylandDragAndDropController::clearDragOffer()
+    void WaylandDataDeviceController::clearDragOffer()
     {
         if (fDragDataOffer != nullptr)
             wl_data_offer_destroy(fDragDataOffer);
@@ -178,8 +188,9 @@ namespace LWS::internal
         fDragAction = WL_DATA_DEVICE_MANAGER_DND_ACTION_NONE;
     }
 
-    void WaylandDragAndDropController::releaseDataDevice()
+    void WaylandDataDeviceController::releaseDataDevice()
     {
+        fClipboard.reset();
         clearDragOffer();
         clearDropTransfer();
         if (fPendingDataOffer != nullptr)
@@ -195,9 +206,11 @@ namespace LWS::internal
         fDataDevice = nullptr;
         fSeat = nullptr;
         fPendingOfferHasUriList = false;
+        fPendingOfferHasUtf8 = false;
+        fPendingOfferHasPlain = false;
     }
 
-    void WaylandDragAndDropController::clearDropTransfer()
+    void WaylandDataDeviceController::clearDropTransfer()
     {
         if (fDropDescriptor >= 0)
             close(fDropDescriptor);
@@ -209,7 +222,7 @@ namespace LWS::internal
         fDropData.clear();
     }
 
-    void WaylandDragAndDropController::processEvents(short events)
+    void WaylandDataDeviceController::processEvents(short events)
     {
         constexpr size_t MaxDropDataSize = 1024 * 1024;
         constexpr size_t MaxReadPerDispatch = 64 * 1024;
@@ -259,7 +272,7 @@ namespace LWS::internal
         }
     }
 
-    void WaylandDragAndDropController::windowRemoved(WindowBackendWayland& window)
+    void WaylandDataDeviceController::windowRemoved(WindowBackendWayland& window)
     {
         if (fDragWindow == &window)
             clearDragOffer();
@@ -267,7 +280,7 @@ namespace LWS::internal
             clearDropTransfer();
     }
 
-    void WaylandDragAndDropController::reset()
+    void WaylandDataDeviceController::reset()
     {
         releaseDataDevice();
         if (fDataDeviceManager != nullptr)
