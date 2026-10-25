@@ -26,6 +26,28 @@ namespace LWS::Win32
         return internal::WindowBackendAccess::ListenPlatform(window, std::move(callback));
     }
 
+    Result SetMouseCapture(Window& window, bool capture)
+    {
+        const auto handle = GetHwnd(window);
+        if (!handle)
+            return handle.error();
+        if (!window.IsCreated())
+            return Result::InvalidState;
+        const internal::WindowBackendAccess::DispatchScope ownerDispatch(window);
+        const internal::PlatformContextAccess::DispatchScope contextDispatch(window.GetPlatformContext());
+        if (capture)
+        {
+            ::SetCapture(*handle);
+            // The previous capture owner's notification can destroy this native window.
+            if (!window.IsCreated())
+                return Result::InvalidState;
+            return ::GetCapture() == *handle ? Result::Success : Result::Failure;
+        }
+        if (::GetCapture() == *handle && !::ReleaseCapture())
+            return Result::Failure;
+        return Result::Success;
+    }
+
     Result SetMenuChar(Window& window, bool suppress)
     {
         const bool configurable = internal::WindowBackendAccess::CanConfigure(window);

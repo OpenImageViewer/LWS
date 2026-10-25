@@ -145,6 +145,7 @@ namespace LWS
         bool fFullScreen = false;
         bool fFocused = false;
         bool fMouseInside = false;
+        uint32_t fClientPointerButtons = 0;
         bool fPointerLockRequested = false;
         bool fPointerLockActive = false;
         bool fDragAndDropEnabled = false;

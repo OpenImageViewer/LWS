@@ -741,6 +741,8 @@ TEST_CASE("Portable event connections own listener registration", "[window][even
 {
     Context context;
     LWS::Window window(context.value);
+    REQUIRE(LWS::Win32::SetMouseCapture(window, true) == LWS::Result::InvalidState);
+    REQUIRE(LWS::Win32::SetMouseCapture(window, false) == LWS::Result::InvalidState);
     unsigned paints{};
     auto connection = window.Listen(
         [&](const LWS::AnyEvent& event)
@@ -754,11 +756,14 @@ TEST_CASE("Portable event connections own listener registration", "[window][even
     SendMessageW(Hwnd(window), WM_PAINT, 0, 0);
     REQUIRE(paints > 0);
     std::string text;
+    bool leave = false, captureLost = false;
     auto input = window.Listen(
         [&](const LWS::AnyEvent& event)
         {
             if (auto* value = std::get_if<LWS::EventTextInput>(&event))
                 text += value->text;
+            leave |= std::holds_alternative<LWS::EventMouseLeave>(event);
+            captureLost |= std::holds_alternative<LWS::EventMouseCaptureLost>(event);
             return LWS::EventResponse::Unhandled;
         });
     REQUIRE(input);
@@ -771,6 +776,46 @@ TEST_CASE("Portable event connections own listener registration", "[window][even
     SendMessageW(Hwnd(window), WM_KILLFOCUS, 0, 0);
     SendMessageW(Hwnd(window), WM_CHAR, 0xde00, 1);
     REQUIRE(text == "é😀aaa");
+    SendMessageW(Hwnd(window), WM_MOUSELEAVE, 0, 0);
+    REQUIRE(leave);
+    REQUIRE(LWS::Win32::SetMouseCapture(window, true) == LWS::Result::Success);
+    REQUIRE(GetCapture() == Hwnd(window));
+    REQUIRE(LWS::Win32::SetMouseCapture(window, false) == LWS::Result::Success);
+    REQUIRE(captureLost);
+    LWS::Window other(context.value);
+    REQUIRE(other.Create() == LWS::Result::Success);
+    REQUIRE(LWS::Win32::SetMouseCapture(window, true) == LWS::Result::Success);
+    REQUIRE(LWS::Win32::SetMouseCapture(other, false) == LWS::Result::Success);
+    REQUIRE(GetCapture() == Hwnd(window));
+    REQUIRE(LWS::Win32::SetMouseCapture(other, true) == LWS::Result::Success);
+    REQUIRE(GetCapture() == Hwnd(other));
+    REQUIRE(LWS::Win32::SetMouseCapture(window, false) == LWS::Result::Success);
+    REQUIRE(GetCapture() == Hwnd(other));
+    REQUIRE(LWS::Win32::SetMouseCapture(other, false) == LWS::Result::Success);
+    REQUIRE(GetCapture() == nullptr);
+
+    LWS::Result duringDestroy = LWS::Result::Success;
+    auto cleanup = other.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (std::holds_alternative<LWS::EventWindowDestroying>(event))
+                duringDestroy = LWS::Win32::SetMouseCapture(other, true);
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(cleanup);
+    auto destroyTarget = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (std::holds_alternative<LWS::EventMouseCaptureLost>(event))
+                std::ignore = other.Destroy();
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(destroyTarget);
+    REQUIRE(LWS::Win32::SetMouseCapture(window, true) == LWS::Result::Success);
+    REQUIRE(LWS::Win32::SetMouseCapture(other, true) == LWS::Result::InvalidState);
+    REQUIRE_FALSE(other.IsCreated());
+    REQUIRE(duringDestroy == LWS::Result::InvalidState);
+    REQUIRE(LWS::Win32::SetMouseCapture(other, false) == LWS::Result::InvalidState);
     connection->Disconnect();
     REQUIRE_FALSE(connection->IsConnected());
 }

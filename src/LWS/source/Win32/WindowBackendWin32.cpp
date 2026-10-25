@@ -1235,6 +1235,15 @@ namespace LWS
                 }
                 break;
 
+            case WM_CAPTURECHANGED:
+                if (reinterpret_cast<HWND>(lParam) != fHwnd)
+                    dispatchEvent(EventMouseCaptureLost{});
+                break;
+
+            case WM_MOUSELEAVE:
+                dispatchEvent(EventMouseLeave{});
+                break;
+
             case WM_CHAR:
             {
                 wchar_t units[2]{};
@@ -1276,6 +1285,8 @@ namespace LWS
 
             case WM_MOUSEMOVE:
             {
+                TRACKMOUSEEVENT tracking{sizeof(TRACKMOUSEEVENT), TME_LEAVE, hWnd, 0};
+                TrackMouseEvent(&tracking);
                 const Point position = logicalFromPhysical(Point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}, fDpi);
                 Point delta{position.x - fLastMousePos.x, position.y - fLastMousePos.y};
                 fLastMousePos = position;

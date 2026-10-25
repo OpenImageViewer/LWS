@@ -1135,9 +1135,9 @@ namespace LWS
 
     void WindowBackendWayland::handlePointerEnter(Point position, internal::WaylandSurfaceRole surfaceRole)
     {
-        fMouseInside = true;
-        fMousePosition = position;
         const internal::WaylandFrameHit hit = frameHit(position, surfaceRole);
+        fMouseInside = hit.action == internal::WaylandFrameAction::Client;
+        fMousePosition = position - contentOffset();
         if (hit.action == internal::WaylandFrameAction::Client)
             applyClientCursor();
         else
@@ -1149,6 +1149,14 @@ namespace LWS
         fMouseInside = false;
         if (fNativeState != nullptr)
             fNativeState->frameCursorShape.reset();
+        const bool captured = std::exchange(fClientPointerButtons, 0) != 0;
+        auto* platform = &fPlatform;
+        auto* nativeSurface = static_cast<wl_surface*>(surface());
+        if (captured)
+            std::ignore = dispatchEvent(EventMouseCaptureLost{});
+        // Capture-loss callbacks may destroy the backend or establish new pointer focus.
+        if (auto* window = platform->findWindow(nativeSurface); window && !window->fMouseInside)
+            window->dispatchEvent(EventMouseLeave{});
     }
 
     void WindowBackendWayland::handlePointerMotion(Point position, Point delta,
@@ -1159,9 +1167,13 @@ namespace LWS
         fMousePosition = position;
         const internal::WaylandFrameHit hit = frameHit(position, surfaceRole);
         applyFrameCursor(hit);
-        if (hit.action != internal::WaylandFrameAction::Client)
+        if (hit.action != internal::WaylandFrameAction::Client && !fClientPointerButtons)
+        {
+            if (std::exchange(fMouseInside, false))
+                dispatchEvent(EventMouseLeave{});
             return;
-
+        }
+        fMouseInside = hit.action == internal::WaylandFrameAction::Client;
         position -= contentOffset();
         fMousePosition = position;
         dispatchEvent(EventMouseMove{position, delta});
@@ -1200,7 +1212,7 @@ namespace LWS
                                                    internal::WaylandSurfaceRole surfaceRole, uint32_t time)
     {
         const internal::WaylandFrameHit hit = frameHit(position, surfaceRole);
-        if (hit.action != internal::WaylandFrameAction::Client)
+        if (hit.action != internal::WaylandFrameAction::Client && !fClientPointerButtons)
         {
             if (button == MouseButton::Left && pressed)
             {
@@ -1238,9 +1250,22 @@ namespace LWS
 
         if (button == MouseButton::Left && pressed)
             fCaptionClickPending = false;
+        const uint32_t bit = uint32_t{1} << static_cast<unsigned>(button);
+        if (pressed)
+            fClientPointerButtons |= bit;
+        else
+            fClientPointerButtons &= ~bit;
+        fMouseInside = hit.action == internal::WaylandFrameAction::Client;
+        const bool leave = !pressed && !fClientPointerButtons && !fMouseInside;
+        auto* platform = &fPlatform;
+        auto* nativeSurface = static_cast<wl_surface*>(surface());
         position -= contentOffset();
         fMousePosition = position;
         dispatchEvent(EventMouseButton{button, pressed, position});
+        if (leave)
+            if (auto* window = platform->findWindow(nativeSurface);
+                window && !window->fMouseInside && !window->fClientPointerButtons)
+                window->dispatchEvent(EventMouseLeave{});
     }
 
     bool WindowBackendWayland::isCaptionDoubleClick(uint32_t time, Point position)
@@ -1269,6 +1294,8 @@ namespace LWS
         if (fFocused != focused)
         {
             fFocused = focused;
+            if (!focused)
+                fClientPointerButtons = 0;
             dispatchEvent(focused ? AnyEvent{EventFocusGained{}} : AnyEvent{EventFocusLost{}});
         }
     }

@@ -320,7 +320,10 @@ DPI scenarios run in separate child processes because process DPI initialization
 ## UI platform services
 
 AnyEvent additionally carries EventTextInput (committed UTF-8), EventMouseLeave and
-EventMouseCaptureLost.
+EventMouseCaptureLost. Explicit capture is a Win32 extension:
+`LWS::Win32::SetMouseCapture(window, capture)` in `LWS/Win32/WindowExtensions.hpp`.
+Wayland retains implicit button-drag capture. The existing EventResponse and non-cancellable cleanup events
+keep their upstream semantics.
 
 The Windows LWSLib target exports `UNICODE`, `_UNICODE`, and `NOMINMAX` as public
 usage requirements, so core-only consumers see the same string ABI and compatible

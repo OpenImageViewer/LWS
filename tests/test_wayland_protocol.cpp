@@ -2,12 +2,17 @@
     #include <catch2/catch_test_macros.hpp>
     #include <LWS/Platform.hpp>
     #include <LWS/Window.hpp>
+    #include <LWS/source/internal/WindowBackendAccess.hpp>
+    #include <LWS/source/Wayland/internal/WindowBackendWayland.hpp>
+    #include <LWS/source/Wayland/internal/WindowFrame.hpp>
     #include <LWS/Wayland/WindowExtensions.hpp>
     #include <wayland-server.h>
     #include <wayland-client.h>
     #include <test-XDG_SHELL-server.h>
     #include <test-FRACTIONAL_SCALE-server.h>
     #include <test-VIEWPORTER-server.h>
+    #include <pointer-constraints-client-protocol.h>
+    #include <relative-pointer-client-protocol.h>
     #include <algorithm>
     #include <array>
     #include <cstdlib>
@@ -55,7 +60,7 @@ namespace
             std::vector<uint32_t> submittedBuffers;
             std::vector<std::string> stateRequests;
         };
-        ProtocolServer(bool fractional = false, bool hostFrame = false)
+        ProtocolServer(bool fractional = false, bool hostFrame = false, bool seatFeatures = false)
         {
             if (const auto* value = std::getenv("WAYLAND_DISPLAY"))
                 oldDisplay_ = value;
@@ -76,6 +81,11 @@ namespace
             wl_global_create(display_, &wl_compositor_interface, 4, this, BindCompositor);
             wl_global_create(display_, &xdg_wm_base_interface, 1, this, BindShell);
             wl_global_create(display_, &wl_output_interface, 2, this, BindOutput);
+            if (seatFeatures)
+            {
+                wl_global_create(display_, &zwp_pointer_constraints_v1_interface, 1, this, BindPointerConstraints);
+                wl_global_create(display_, &zwp_relative_pointer_manager_v1_interface, 1, this, BindRelativePointer);
+            }
             if (hostFrame)
             {
                 // LWS recognizes this advertised host-frame capability without binding the private interface.
@@ -189,6 +199,37 @@ namespace
       private:
 
         static void Destroy(wl_client*, wl_resource* resource) { wl_resource_destroy(resource); }
+        static void BindPointerConstraints(wl_client* client, void*, uint32_t version, uint32_t id)
+        {
+            auto* manager = wl_resource_create(client, &zwp_pointer_constraints_v1_interface, version, id);
+            // This fixture exercises availability, not pointer locking. Unexpected lock requests fail explicitly.
+            struct Implementation
+            {
+                void (*destroy)(wl_client*, wl_resource*);
+                void (*lock)(wl_client*, wl_resource*, uint32_t, wl_resource*, wl_resource*, wl_resource*, uint32_t);
+                void (*confine)(wl_client*, wl_resource*, uint32_t, wl_resource*, wl_resource*, wl_resource*, uint32_t);
+            };
+            static const Implementation implementation{
+                Destroy,
+                [](wl_client*, wl_resource* resource, uint32_t, wl_resource*, wl_resource*, wl_resource*, uint32_t)
+                { wl_resource_post_error(resource, 0, "unexpected pointer lock"); },
+                [](wl_client*, wl_resource* resource, uint32_t, wl_resource*, wl_resource*, wl_resource*, uint32_t)
+                { wl_resource_post_error(resource, 0, "unexpected pointer confinement"); }};
+            wl_resource_set_implementation(manager, &implementation, nullptr, nullptr);
+        }
+        static void BindRelativePointer(wl_client* client, void*, uint32_t version, uint32_t id)
+        {
+            auto* manager = wl_resource_create(client, &zwp_relative_pointer_manager_v1_interface, version, id);
+            struct Implementation
+            {
+                void (*destroy)(wl_client*, wl_resource*);
+                void (*get)(wl_client*, wl_resource*, uint32_t, wl_resource*);
+            };
+            static const Implementation implementation{
+                Destroy, [](wl_client*, wl_resource* resource, uint32_t, wl_resource*)
+                { wl_resource_post_error(resource, 0, "unexpected relative pointer"); }};
+            wl_resource_set_implementation(manager, &implementation, nullptr, nullptr);
+        }
         static int Commands(int fd, uint32_t, void* data)
         {
             auto& self = *static_cast<ProtocolServer*>(data);
@@ -485,7 +526,7 @@ namespace
 TEST_CASE("Wayland seat capability loss and deterministic promotion use real protocol events",
           "[wayland][protocol][seat]")
 {
-    ProtocolServer server;
+    ProtocolServer server(false, false, true);
     LWS::PlatformContext context;
     REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
     server.Settle(context);
@@ -498,16 +539,24 @@ TEST_CASE("Wayland seat capability loss and deterministic promotion use real pro
         });
     REQUIRE(firstPointers == 1);
     REQUIRE(secondBindings == 0);
+    REQUIRE(context.Supports(LWS::PlatformFeature::PointerLock).value());
     server.Invoke([&] { server.Capabilities(0, 0); });
     server.Settle(context);
     size_t devices{};
     server.Invoke([&] { devices = server.seats[0]->pointers.size() + server.seats[0]->keyboards.size(); });
     REQUIRE(devices == 0);
     REQUIRE(context.IsUsable());
+    REQUIRE_FALSE(context.Supports(LWS::PlatformFeature::PointerLock).value());
+    {
+        LWS::Window lockWindow(context);
+        REQUIRE(lockWindow.Create(Config()) == LWS::Result::Success);
+        REQUIRE(lockWindow.SetPointerLocked(true) == LWS::Result::NotSupported);
+    }
     server.Invoke([&] { server.Capabilities(0, WL_SEAT_CAPABILITY_POINTER); });
     server.Settle(context);
     server.Invoke([&] { devices = server.seats[0]->pointers.size(); });
     REQUIRE(devices == 1);
+    REQUIRE(context.Supports(LWS::PlatformFeature::PointerLock).value());
     server.Invoke([&] { server.RemoveSeat(0); });
     server.Settle(context);
     server.Invoke(
@@ -522,10 +571,72 @@ TEST_CASE("Wayland seat capability loss and deterministic promotion use real pro
     server.Settle(context);
     REQUIRE(context.IsUsable());
     REQUIRE_FALSE(context.IsKeyPressed(LWS::KeyCode::A).value());
+    REQUIRE_FALSE(context.Supports(LWS::PlatformFeature::PointerLock).value());
     server.Invoke([&] { server.AddSeat(); });
     server.Settle(context);
     server.Invoke([&] { devices = server.seats[2]->pointers.size(); });
     REQUIRE(devices == 1);
+    LWS::Window decorated(context);
+    auto framed = Config();
+    framed.styles = LWS::WindowStyle::Caption | LWS::WindowStyle::ResizableBorder;
+    framed.visible = true;
+    REQUIRE(decorated.Create(framed) == LWS::Result::Success);
+    server.Settle(context);
+    auto* backend = static_cast<LWS::WindowBackendWayland*>(LWS::internal::WindowBackendAccess::Get(decorated));
+    using Role = LWS::internal::WaylandSurfaceRole;
+    std::vector<LWS::EventMouseButton> buttons;
+    std::vector<LWS::EventMouseMove> moves;
+    std::vector<LWS::EventMouseWheel> wheels;
+    unsigned captureLost = 0, leaves = 0;
+    auto input = decorated.Listen(
+        [&](const LWS::AnyEvent& e)
+        {
+            if (auto* b = std::get_if<LWS::EventMouseButton>(&e))
+                buttons.push_back(*b);
+            if (auto* m = std::get_if<LWS::EventMouseMove>(&e))
+                moves.push_back(*m);
+            if (auto* w = std::get_if<LWS::EventMouseWheel>(&e))
+                wheels.push_back(*w);
+            if (std::holds_alternative<LWS::EventMouseCaptureLost>(e))
+                ++captureLost;
+            if (std::holds_alternative<LWS::EventMouseLeave>(e))
+                ++leaves;
+            return LWS::EventResponse::Unhandled;
+        });
+    backend->handlePointerEnter({30, 42}, Role::Content);
+    backend->handlePointerWheel(120, {30, 42}, Role::Content);
+    REQUIRE(wheels.size() == 1);
+    REQUIRE(wheels[0].position == LWS::Point{30, 10});
+    backend->handlePointerWheel(120, {30, 10}, Role::Content);
+    backend->handlePointerWheel(120, {30, 10}, Role::Caption);
+    REQUIRE(wheels.size() == 1);
+    backend->handlePointerButton(LWS::MouseButton::Left, true, {30, 42}, Role::Content, 1);
+    backend->handlePointerMotion({30, 10}, {0, -32}, Role::Content);
+    backend->handlePointerButton(LWS::MouseButton::Left, false, {30, 10}, Role::Content, 2);
+    REQUIRE(buttons.size() == 2);
+    REQUIRE_FALSE(buttons.back().pressed);
+    REQUIRE(buttons.back().position == LWS::Point{30, -22});
+    REQUIRE(moves.size() == 1);
+    REQUIRE(leaves == 1);  // Releasing over decorations also retires the captured control's hover.
+    backend->handlePointerMotion({30, 10}, {}, Role::Content);
+    REQUIRE(moves.size() == 1);
+    backend->handlePointerEnter({30, 42}, Role::Content);
+    backend->handlePointerMotion({30, 10}, {}, Role::Content);
+    REQUIRE(leaves == 2);
+    backend->handlePointerButton(LWS::MouseButton::Left, true, {30, 42}, Role::Content, 3);
+    backend->handlePointerLeave();
+    REQUIRE(captureLost == 1);
+    auto destroyOnLoss = decorated.Listen(
+        [&](const LWS::AnyEvent& e)
+        {
+            if (std::holds_alternative<LWS::EventMouseCaptureLost>(e))
+                REQUIRE(decorated.Destroy() == LWS::Result::Success);
+            return LWS::EventResponse::Unhandled;
+        });
+    backend->handlePointerEnter({30, 42}, Role::Content);
+    backend->handlePointerButton(LWS::MouseButton::Left, true, {30, 42}, Role::Content, 4);
+    backend->handlePointerLeave();
+    REQUIRE_FALSE(decorated.IsCreated());
 }
 
 TEST_CASE("Wayland cursor selection stays local through focus and capability transitions",
@@ -543,6 +654,27 @@ TEST_CASE("Wayland cursor selection stays local through focus and capability tra
     const auto cursor = LWS::Cursor::FromShape(LWS::CursorShape::Hand);
     REQUIRE(first.SetMouseCursor(cursor) == LWS::Result::Success);
     REQUIRE(second.SetMouseCursor(cursor) == LWS::Result::Success);
+    bool nestedLeave = false;
+    unsigned motions = 0;
+    auto leaveListener = first.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (std::holds_alternative<LWS::EventMouseLeave>(event) && !nestedLeave)
+            {
+                nestedLeave = true;
+                std::ignore = context.ProcessMessages();
+            }
+            return LWS::EventResponse::Unhandled;
+        });
+    auto motionListener = second.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (std::holds_alternative<LWS::EventMouseMove>(event))
+                ++motions;
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(leaveListener.has_value());
+    REQUIRE(motionListener.has_value());
     server.Invoke([&] { server.Enter(0, a, 11); });
     server.Settle(context);
     REQUIRE(first.IsMouseInClientRect());
@@ -555,6 +687,12 @@ TEST_CASE("Wayland cursor selection stays local through focus and capability tra
     server.Settle(context);
     REQUIRE_FALSE(first.IsMouseInClientRect());
     REQUIRE(second.IsMouseInClientRect());
+    REQUIRE(nestedLeave);
+    server.Invoke(
+        [&]
+        { wl_pointer_send_motion(server.seats[0]->pointers.at(0), 1, wl_fixed_from_int(25), wl_fixed_from_int(33)); });
+    server.Settle(context);
+    REQUIRE(motions == 1);
     server.Invoke(
         [&]
         {
@@ -603,6 +741,36 @@ TEST_CASE("Wayland cursor selection stays local through focus and capability tra
     server.Settle(context);
     server.Invoke([&] { serial = server.cursorSerial; });
     REQUIRE(serial == 99);
+    bool removedDuringLeave = false;
+    auto removalListener = second.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (std::holds_alternative<LWS::EventMouseLeave>(event) && !removedDuringLeave)
+            {
+                removedDuringLeave = true;
+                server.Invoke([&] { server.RemoveSeat(0); });
+                server.Invoke([] {});  // Ensure global_remove is flushed before nested dispatch.
+                std::ignore = context.ProcessMessages();
+            }
+            return LWS::EventResponse::Unhandled;
+        });
+    REQUIRE(removalListener.has_value());
+    server.Invoke([&] { server.Capabilities(0, 0); });
+    server.Settle(context);
+    REQUIRE(removedDuringLeave);
+    REQUIRE_FALSE(second.IsMouseInClientRect());
+    size_t promotedPointers{};
+    server.Invoke([&] { promotedPointers = server.seats[1]->pointers.size(); });
+    REQUIRE(promotedPointers == 1);
+    server.Invoke(
+        [&]
+        {
+            server.Enter(1, b, 120);
+            wl_pointer_send_motion(server.seats[1]->pointers.at(0), 2, wl_fixed_from_int(40), wl_fixed_from_int(50));
+        });
+    server.Settle(context);
+    REQUIRE(second.IsMouseInClientRect());
+    REQUIRE(motions == 2);
 }
 
 TEST_CASE("Wayland resize and scale wait for native configuration", "[wayland][protocol][metrics]")
