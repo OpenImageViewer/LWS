@@ -129,7 +129,7 @@ namespace LWS
                 wl_subsurface_destroy(captionSubsurface);
             if (captionSurface != nullptr)
                 wl_surface_destroy(captionSurface);
-            releaseToplevelRole();
+            releaseShellRole();
             if (surface != nullptr)
                 wl_surface_destroy(surface);
         }
@@ -252,18 +252,27 @@ namespace LWS
                 static constexpr zxdg_toplevel_decoration_v1_listener decorationListener{
                     .configure = decorationConfigure};
                 zxdg_toplevel_decoration_v1_add_listener(decoration, &decorationListener, this);
+                const bool wantsCaption = (std::to_underlying(owner.fWindowStyles) &
+                                           std::to_underlying(WindowStyle::Caption)) != 0;
+                zxdg_toplevel_decoration_v1_set_mode(
+                    decoration, wantsCaption ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+                                             : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
             }
             return true;
         }
 
-        void releaseToplevelRole()
+        void releaseShellRole()
         {
             if (decoration)
                 zxdg_toplevel_decoration_v1_destroy(decoration);
             if (toplevel)
                 xdg_toplevel_destroy(toplevel);
+            if (popup)
+                xdg_popup_destroy(popup);
             if (shellSurface)
                 xdg_surface_destroy(shellSurface);
+            popup = nullptr;
+            pendingPopupConfigure.reset();
             decoration = nullptr;
             toplevel = nullptr;
             shellSurface = nullptr;
@@ -271,6 +280,83 @@ namespace LWS
             configured = false;
             owner.fIconApplied = false;
         }
+
+        bool createPopupRole(const PopupPlacement& placement, xdg_surface* parent)
+        {
+            auto& platform = owner.fPlatform;
+            if (parent == nullptr)
+                return false;
+            shellSurface = xdg_wm_base_get_xdg_surface(platform.shell(), surface);
+            if (shellSurface == nullptr)
+                return false;
+            xdg_positioner* positioner = xdg_wm_base_create_positioner(platform.shell());
+            if (positioner == nullptr)
+                return false;
+
+            uint32_t gravity = XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT;
+            switch (placement.gravity)
+            {
+                case PopupGravity::DownRight:
+                    gravity = XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT;
+                    break;
+                case PopupGravity::DownLeft:
+                    gravity = XDG_POSITIONER_GRAVITY_BOTTOM_LEFT;
+                    break;
+                case PopupGravity::UpRight:
+                    gravity = XDG_POSITIONER_GRAVITY_TOP_RIGHT;
+                    break;
+                case PopupGravity::UpLeft:
+                    gravity = XDG_POSITIONER_GRAVITY_TOP_LEFT;
+                    break;
+            }
+
+            // The anchor is client-area relative; the positioner works in parent surface coordinates. The 1x1 anchor
+            // rect is pinned by its top-left corner so the derived anchor point equals the LWS anchor exactly, the
+            // gravity names the direction the popup extends from it, and the offset shifts that anchor point.
+            const Point parentOffset = owner.fParentBackend != nullptr ? owner.fParentBackend->contentOffset() : Point{};
+            xdg_positioner_set_size(positioner, placement.size.x, placement.size.y);
+            xdg_positioner_set_anchor_rect(positioner, placement.anchor.x + parentOffset.x,
+                                           placement.anchor.y + parentOffset.y, 1, 1);
+            xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_TOP_LEFT);
+            xdg_positioner_set_gravity(positioner, gravity);
+            xdg_positioner_set_offset(positioner, placement.offset.x, placement.offset.y);
+            if (placement.adjustToScreen)
+            {
+                xdg_positioner_set_constraint_adjustment(positioner,
+                                                         XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X |
+                                                             XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y |
+                                                             XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_X |
+                                                             XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y);
+            }
+            popup = xdg_surface_get_popup(shellSurface, parent, positioner);
+            xdg_positioner_destroy(positioner);
+            if (popup == nullptr)
+                return false;
+
+            static constexpr xdg_surface_listener surfaceListener{.configure = surfaceConfigure};
+            static constexpr xdg_popup_listener popupListener{
+                .configure = popupConfigure,
+                .popup_done = popupDone,
+                .repositioned = popupRepositioned,
+            };
+            xdg_surface_add_listener(shellSurface, &surfaceListener, this);
+            xdg_popup_add_listener(popup, &popupListener, this);
+            return true;
+        }
+
+        static void popupConfigure(void* data, xdg_popup*, int32_t, int32_t, int32_t width, int32_t height)
+        {
+            auto& state = *static_cast<NativeState*>(data);
+            if (width > 0 && height > 0)
+                state.pendingPopupConfigure = Size{width, height};
+        }
+
+        static void popupDone(void* data, xdg_popup*)
+        {
+            static_cast<NativeState*>(data)->owner.handlePopupDismissed();
+        }
+
+        static void popupRepositioned(void*, xdg_popup*, uint32_t) {}
 
         static void surfaceConfigure(void* data, xdg_surface* surface, uint32_t serial)
         {
@@ -283,6 +369,21 @@ namespace LWS
                 const ToplevelConfigure configure = *state.pendingToplevelConfigure;
                 state.pendingToplevelConfigure.reset();
                 state.owner.handleToplevelConfigure(configure.size, configure.maximized, configure.fullscreen);
+            }
+            else if (state.pendingPopupConfigure.has_value())
+            {
+                const Size size = *state.pendingPopupConfigure;
+                state.pendingPopupConfigure.reset();
+                const bool resized = size != owner.fSize;
+                owner.setSize(size);
+                if (!resized)
+                {
+                    // The compositor echoed the requested popup size. Mirror the toplevel path so the first
+                    // configure still publishes metrics and marks the client window configured.
+                    const Size framebuffer = owner.getFramebufferSize();
+                    std::ignore = owner.dispatchEvent(
+                        EventClientAreaSizeChanged{{{size.x, size.y}, PixelSize{framebuffer.x, framebuffer.y}}});
+                }
             }
             if (owner.fNativeState == nullptr)
                 return;
@@ -381,6 +482,7 @@ namespace LWS
         wl_surface* surface = nullptr;
         xdg_surface* shellSurface = nullptr;
         xdg_toplevel* toplevel = nullptr;
+        xdg_popup* popup = nullptr;
         wl_subsurface* subsurface = nullptr;
         wl_surface* captionSurface = nullptr;
         wl_subsurface* captionSubsurface = nullptr;
@@ -399,6 +501,7 @@ namespace LWS
         // Borrows one idle entry in presentedBuffers; it has not been submitted to the compositor.
         PresentedBuffer* pendingBitmap = nullptr;
         std::optional<ToplevelConfigure> pendingToplevelConfigure;
+        std::optional<Size> pendingPopupConfigure;
         std::vector<std::unique_ptr<CaptionBuffer>> captionBuffers;
         std::vector<std::unique_ptr<PresentedBuffer>> presentedBuffers;
         std::optional<CursorShape> frameCursorShape;
@@ -444,11 +547,21 @@ namespace LWS
         fSize = config.size;
         fMinSize = config.minSize;
         fMaxSize = config.maxSize;
-        fVisible = config.visible;
+        fPopupPlacement = config.popup;
+        fVisible = isPopup() ? false : config.visible;
         fAlwaysOnTop = config.alwaysOnTop;
         fTransparent = config.transparent;
         fEraseBackground = config.eraseBackground;
         fDisplayState = config.displayState;
+
+        if (isPopup())
+        {
+            // An xdg_popup anchors to a parent xdg_surface role; subsurface children have none.
+            if (fParentBackend == nullptr || fParentBackend->fNativeState == nullptr)
+                return Result::InvalidState;
+            if (fParentBackend->isChildWindow())
+                return Result::NotSupported;
+        }
 
         auto native = std::make_unique<NativeState>(*this);
         native->surface = wl_compositor_create_surface(platform.compositor());
@@ -482,7 +595,7 @@ namespace LWS
             if (result != Result::Success)
                 return result;
         }
-        else
+        else if (!isPopup())
         {
             if (!native->createToplevelRole())
                 return Result::Failure;
@@ -516,7 +629,7 @@ namespace LWS
         if (fNativeState->decoration)
             setWindowStyles(fWindowStyles);
 
-        if (fWindowIcon)
+        if (fWindowIcon && !isPopup())
         {
             const auto result = applyWindowIcon(fWindowIcon.get());
             if (result != Result::Success)
@@ -543,7 +656,7 @@ namespace LWS
             }
             wl_surface_commit(fParentBackend->fNativeState->surface);
         }
-        else
+        else if (!isPopup())
         {
             setTitle(fTitle);
             if (!fAppId.empty())
@@ -552,6 +665,9 @@ namespace LWS
             setDisplayState(fDisplayState);
             wl_surface_commit(fNativeState->surface);
         }
+        // Popups create their role and map on the first show().
+        if (isPopup() && config.visible)
+            show();
         return Result::Success;
     }
 
@@ -588,6 +704,29 @@ namespace LWS
     {
         if (fNativeState != nullptr && !fVisible)
         {
+            if (isPopup())
+            {
+                if (fNativeState->popup == nullptr)
+                {
+                    xdg_surface* parentSurface =
+                        fParentBackend != nullptr && fParentBackend->fNativeState != nullptr
+                            ? fParentBackend->fNativeState->shellSurface
+                            : nullptr;
+                    if (parentSurface == nullptr || !fNativeState->createPopupRole(*fPopupPlacement, parentSurface))
+                    {
+                        fNativeState->releaseShellRole();
+                        internal::PlatformContextAccess::Fail(fPlatform.context(), ENOMEM, "xdg popup creation");
+                        return;
+                    }
+                }
+                fVisible = true;
+                updateWindowGeometry();
+                // The empty commit maps the popup and starts its configure handshake; the grab follows so the
+                // compositor dismisses the popup on outside interaction.
+                wl_surface_commit(fNativeState->surface);
+                grabPopup();
+                return;
+            }
             if (!isChildWindow() && !fNativeState->toplevel)
             {
                 if (fPlatform.hasHostWindowFrame())
@@ -607,7 +746,7 @@ namespace LWS
                 }
                 if (!fNativeState->createToplevelRole())
                 {
-                    fNativeState->releaseToplevelRole();
+                    fNativeState->releaseShellRole();
                     internal::PlatformContextAccess::Fail(fPlatform.context(), ENOMEM, "xdg toplevel remap");
                     return;
                 }
@@ -657,10 +796,19 @@ namespace LWS
 
     void WindowBackendWayland::hide()
     {
+        fClientClicks.Reset();
+        fCaptionClicks.Reset();
         if (fNativeState != nullptr && fVisible)
         {
             fVisible = false;
             fNativeState->pendingBitmap = nullptr;
+            if (isPopup())
+            {
+                // Releasing the role unmaps the popup outright. A null-buffer commit would instead leave a
+                // compositor popup_done in flight, and a direct show() would race that dismissal.
+                fNativeState->releaseShellRole();
+                return;
+            }
             const bool hostFramedChild = fNativeState->subsurface != nullptr && fPlatform.hasHostWindowFrame();
             // WSLg keeps the last host buffer visible after a null-buffer commit. Keep the borrowed wl_surface
             // stable, but replace its visible content and input with one transparent pixel until show().
@@ -686,12 +834,12 @@ namespace LWS
                 updateSubsurfaceInputRegion();
                 wl_surface_commit(fParentBackend->fNativeState->surface);
             }
-            if (!isChildWindow())
+            if (!isChildWindow() && !isPopup())
             {
                 // Recreate only the private xdg role on show. This starts a fresh configure
                 // handshake on compositors which do not reconfigure an existing unmapped role.
                 // The borrowed wl_surface and its renderer/buffer resources remain stable.
-                fNativeState->releaseToplevelRole();
+                fNativeState->releaseShellRole();
             }
         }
     }
@@ -887,6 +1035,8 @@ namespace LWS
         if (size.x > 0 && size.y > 0 && size != fSize)
         {
             fSize = size;
+            if (fPopupPlacement.has_value())
+                fPopupPlacement->size = {size.x, size.y};
             if (fNativeState != nullptr)
                 fNativeState->pendingBitmap = nullptr;
             updateWindowGeometry();
@@ -965,7 +1115,8 @@ namespace LWS
             }
             else
             {
-                zxdg_toplevel_decoration_v1_unset_mode(fNativeState->decoration);
+                zxdg_toplevel_decoration_v1_set_mode(fNativeState->decoration,
+                                                     ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
             }
         }
         updateWindowGeometry();
@@ -1106,7 +1257,18 @@ namespace LWS
     {
         return fMousePosition;
     }
-    void WindowBackendWayland::setLockMouseToWindowMode(internal::LockMouseToWindowMode) {}
+    Result WindowBackendWayland::beginWindowDrag(WindowDragOperation operation)
+    {
+        if (operation != WindowDragOperation::Move)
+            return Result::NotSupported;
+        if (fNativeState == nullptr || fNativeState->toplevel == nullptr)
+            return Result::InvalidState;
+        auto& platform = fPlatform;
+        if (platform.seat() == nullptr || platform.pointerButtonSerial() == 0)
+            return Result::InvalidState;
+        xdg_toplevel_move(fNativeState->toplevel, platform.seat(), platform.pointerButtonSerial());
+        return Result::Success;
+    }
     Result WindowBackendWayland::setPointerLocked(bool locked)
     {
         if (fNativeState == nullptr)
@@ -1395,7 +1557,7 @@ namespace LWS
             if (button == MouseButton::Left && pressed)
             {
                 if (hit.action != internal::WaylandFrameAction::Move)
-                    fCaptionClickPending = false;
+                    fCaptionClicks.Reset();
                 switch (hit.action)
                 {
                     case internal::WaylandFrameAction::Close:
@@ -1427,7 +1589,7 @@ namespace LWS
         }
 
         if (button == MouseButton::Left && pressed)
-            fCaptionClickPending = false;
+            fCaptionClicks.Reset();
         const uint32_t bit = uint32_t{1} << static_cast<unsigned>(button);
         if (pressed)
             fClientPointerButtons |= bit;
@@ -1439,7 +1601,8 @@ namespace LWS
         auto* nativeSurface = static_cast<wl_surface*>(surface());
         position -= contentOffset();
         fMousePosition = position;
-        dispatchEvent(EventMouseButton{button, pressed, position});
+        const unsigned clicks = pressed ? fClientClicks.Press(button, time, position) : 1U;
+        dispatchEvent(EventMouseButton{button, pressed, position, clicks});
         if (leave)
             if (auto* window = platform->findWindow(nativeSurface);
                 window && !window->fMouseInside && !window->fClientPointerButtons)
@@ -1448,14 +1611,7 @@ namespace LWS
 
     bool WindowBackendWayland::isCaptionDoubleClick(uint32_t time, Point position)
     {
-        constexpr uint32_t DoubleClickTimeMilliseconds = 500;
-        constexpr int32_t DoubleClickRadiusSquared = 25;
-        const bool doubleClick = fCaptionClickPending && time - fLastCaptionClickTime <= DoubleClickTimeMilliseconds &&
-                                 position.DistanceSquared(fLastCaptionClickPosition) <= DoubleClickRadiusSquared;
-        fCaptionClickPending = !doubleClick;
-        fLastCaptionClickTime = time;
-        fLastCaptionClickPosition = position;
-        return doubleClick;
+        return fCaptionClicks.Press(MouseButton::Left, time, position) == 2;
     }
 
     void WindowBackendWayland::handlePointerWheel(int32_t delta, Point position,
@@ -1473,7 +1629,11 @@ namespace LWS
         {
             fFocused = focused;
             if (!focused)
+            {
                 fClientPointerButtons = 0;
+                fClientClicks.Reset();
+                fCaptionClicks.Reset();
+            }
             dispatchEvent(focused ? AnyEvent{EventFocusGained{}} : AnyEvent{EventFocusLost{}});
         }
     }
@@ -1668,7 +1828,32 @@ namespace LWS
 
     bool WindowBackendWayland::isChildWindow() const
     {
-        return fParentBackend != nullptr;
+        return fParentBackend != nullptr && !isPopup();
+    }
+
+    void WindowBackendWayland::grabPopup()
+    {
+        if (fNativeState == nullptr || fNativeState->popup == nullptr)
+            return;
+        auto& platform = fPlatform;
+        if (platform.seat() == nullptr || xdg_popup_get_version(fNativeState->popup) < XDG_POPUP_GRAB_SINCE_VERSION)
+            return;
+        // Only a pointer-button serial is a grab the compositor accepts; menus opened from the keyboard stay
+        // application-closed instead of risking a protocol error from a rejected serial.
+        const uint32_t serial = platform.pointerButtonSerial();
+        if (serial == 0)
+            return;
+        xdg_popup_grab(fNativeState->popup, platform.seat(), serial);
+    }
+
+    void WindowBackendWayland::handlePopupDismissed()
+    {
+        if (fNativeState == nullptr)
+            return;
+        // The popup role is inert after popup_done; release it before any further surface commit.
+        fNativeState->releaseShellRole();
+        dispatchEvent(EventPopupDismissed{});
+        destroy();
     }
 
     void WindowBackendWayland::updateSubsurfacePosition()

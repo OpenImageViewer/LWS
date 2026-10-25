@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 
 namespace LWS
 {
@@ -17,13 +18,6 @@ namespace LWS
 
     namespace internal
     {
-        enum class LockMouseToWindowMode
-        {
-            NoLock,
-            LockResize,
-            LockMove
-        };
-
         enum class FullScreenState
         {
             None,
@@ -51,6 +45,7 @@ namespace LWS
             bool transparent{};
             Size minSize{};
             Size maxSize{};
+            std::optional<PopupPlacement> popup;
         };
 
         class ICursorBackend
@@ -108,7 +103,7 @@ namespace LWS
             [[nodiscard]] virtual FullScreenState getFullScreenState() const = 0;
             [[nodiscard]] virtual bool isMouseInClientRect() const = 0;
             [[nodiscard]] virtual Point getMousePosition() const = 0;
-            virtual void setLockMouseToWindowMode(LockMouseToWindowMode mode) = 0;
+            virtual Result beginWindowDrag(WindowDragOperation operation) = 0;
             [[nodiscard]] virtual Result setPointerLocked(bool locked) = 0;
             virtual void setCursor(std::shared_ptr<ICursorBackend> cursor) = 0;
             virtual void setParent(IWindowBackend* parent) = 0;

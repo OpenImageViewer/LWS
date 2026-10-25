@@ -4,6 +4,8 @@
     #include <Windows.h>
     #include <LWS/Bitmap.hpp>
 
+    #include <optional>
+
     #include <LWS/source/internal/Backends.hpp>
     #include <LWS/Win32/EventWin32.hpp>
 
@@ -57,7 +59,7 @@ namespace LWS
         internal::FullScreenState getFullScreenState() const override;
         bool isMouseInClientRect() const override;
         Point getMousePosition() const override;
-        void setLockMouseToWindowMode(internal::LockMouseToWindowMode mode) override;
+        Result beginWindowDrag(WindowDragOperation operation) override;
         Result setPointerLocked(bool locked) override;
         Result presentBitmap(const BitmapBuffer& bitmap) override;
         void setCursor(std::shared_ptr<internal::ICursorBackend> cursor) override;
@@ -81,6 +83,8 @@ namespace LWS
         void updateBackgroundBrush();
         void dispatchClientAreaSizeChanged(Size framebufferSize);
         [[nodiscard]] Size getWindowSize() const;
+        [[nodiscard]] Point resolvePopupPosition(Size outerSize) const;
+        void applyPopupPlacement();
         void setWindowed();
         void setFullScreen(bool multiMonitor);
         LRESULT getCorner(POINTS points) const;
@@ -110,6 +114,8 @@ namespace LWS
         bool fVisible = false;
         bool fAlwaysOnTop = false;
         bool fTransparent = false;
+        // Popups are owned top-level windows that never activate; geometry is resolved from the anchor.
+        std::optional<PopupPlacement> fPopupPlacement;
         WindowStyle fWindowStyles = WindowStyle::NoStyle;
         WindowShowState fDisplayState = WindowShowState::Restored;
         internal::IWindowBackend* fParentBackend = nullptr;
