@@ -268,7 +268,7 @@ option(LWS_BUILD_UI "Build the reusable LWSUI library" ${LWS_UI_SUPPORTED})
 option(LWSUI_BUILD_DEMO "Build the controls-only demo" ${PROJECT_IS_TOP_LEVEL})
 if(LWS_BUILD_UI)
     add_library(LWSUI STATIC
-        src/LWSUI/source/Control.cpp src/LWSUI/source/GridModel.cpp src/LWSUI/source/UIHost.cpp
+        src/LWSUI/source/Control.cpp src/LWSUI/source/GridModel.cpp src/LWSUI/source/GridView.cpp src/LWSUI/source/GridEditors.cpp src/LWSUI/source/GridViewRender.cpp src/LWSUI/source/GridViewInput.cpp src/LWSUI/source/UIHost.cpp
         src/LWSUI/source/Primitives.cpp src/LWSUI/source/TextBox.cpp src/LWSUI/source/Slider.cpp src/LWSUI/source/Containers.cpp src/LWSUI/source/Layout.cpp src/LWSUI/source/Composites.cpp src/LWSUI/source/Menu.cpp src/LWSUI/source/MenuWindowControls.cpp src/LWSUI/source/MenuContent.cpp)
     # Keep core-only consumers from building unused controls. Linking LWSUI still
     # builds it normally; standalone builds continue to include the library.
@@ -304,6 +304,13 @@ if(LWS_BUILD_UI)
                 endif()
             endif()
         endfunction()
+        add_executable(LWSUIGridDemo src/LWSUI/demo/GridDemo.cpp)
+        target_link_libraries(LWSUIGridDemo PRIVATE LWSUI::LWSUI)
+        lwsui_configure_demo_executable(LWSUIGridDemo)
+        if(TARGET LWSTests)
+            add_test(NAME LWSUIGridDemoSmoke COMMAND $<TARGET_FILE:LWSUIGridDemo> --smoke)
+            set_tests_properties(LWSUIGridDemoSmoke PROPERTIES TIMEOUT 20 RUN_SERIAL TRUE)
+        endif()
         add_executable(LWSUIScrollDemo src/LWSUI/demo/ScrollDemo.cpp)
         target_link_libraries(LWSUIScrollDemo PRIVATE LWSUI::LWSUI)
         lwsui_configure_demo_executable(LWSUIScrollDemo)
