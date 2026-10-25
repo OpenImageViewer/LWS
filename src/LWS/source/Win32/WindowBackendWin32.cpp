@@ -8,6 +8,8 @@
 
     #include <mutex>
     #include <cmath>
+    #include <cstring>
+    #include <limits>
     #include <optional>
     #include <stdexcept>
     #include <utility>
@@ -995,6 +997,82 @@ namespace LWS
         return Result::Success;
     }
 
+    bool WindowBackendWin32::drawBitmap(HDC dc) const
+    {
+        if ((!fPresentedBitmap && !fPresentedPixels) || !dc)
+            return false;
+        const auto bitmap = fPresentedPixels
+                                ? BitmapBuffer{{fPresentedPixels.get(), fPresentedPixelSize},
+                                               BitmapPixelFormat::Bgra8Premultiplied, BitmapRowOrder::TopDown,
+                                               fPresentedWidth, fPresentedHeight, fPresentedWidth * 4U}
+                                : fPresentedBitmap->GetBuffer();
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = static_cast<LONG>(bitmap.width);
+        info.bmiHeader.biHeight = -static_cast<LONG>(bitmap.height);
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        RECT rect{};
+        GetClientRect(fHwnd, &rect);
+        const int result = StretchDIBits(dc, 0, 0, rect.right, rect.bottom, 0, 0, bitmap.width, bitmap.height,
+                                         bitmap.pixels.data(), &info, DIB_RGB_COLORS, SRCCOPY);
+        return result != GDI_ERROR && result != 0;
+    }
+
+    Result WindowBackendWin32::presentBitmap(const BitmapBuffer& bitmap)
+    {
+        if (!fHwnd)
+            return Result::InvalidState;
+        const auto layout = internal::validateBitmapBuffer(bitmap);
+        if (!layout || bitmap.width > LONG_MAX / 4 || bitmap.height > LONG_MAX)
+            return Result::Failure;
+        try
+        {
+            // Keep an owned snapshot for WM_PAINT. The common UI format can reuse
+            // its storage, while other formats retain Bitmap's conversion behavior.
+            if (bitmap.format == BitmapPixelFormat::Bgra8Premultiplied)
+            {
+                if (static_cast<size_t>(bitmap.width) > std::numeric_limits<size_t>::max() / 4U / bitmap.height)
+                    return Result::Failure;
+                const size_t rowSize = static_cast<size_t>(bitmap.width) * 4U;
+                const size_t bytes = rowSize * bitmap.height;
+                if (bytes != fPresentedPixelSize)
+                    fPresentedPixels = std::make_unique_for_overwrite<std::byte[]>(bytes);
+                for (uint32_t y = 0; y < bitmap.height; ++y)
+                {
+                    const uint32_t sourceY = bitmap.rowOrder == BitmapRowOrder::TopDown ? y : bitmap.height - y - 1;
+                    std::memcpy(fPresentedPixels.get() + static_cast<size_t>(y) * rowSize,
+                                bitmap.pixels.data() + static_cast<size_t>(sourceY) * layout->rowPitch, rowSize);
+                }
+                fPresentedPixelSize = bytes;
+                fPresentedWidth = bitmap.width;
+                fPresentedHeight = bitmap.height;
+                fPresentedBitmap.reset();
+            }
+            else
+            {
+                auto converted = std::make_unique<Bitmap>(bitmap);
+                fPresentedBitmap = std::move(converted);
+                fPresentedPixels.reset();
+                fPresentedPixelSize = 0;
+            }
+        }
+        catch (const std::invalid_argument&)
+        {
+            return Result::Failure;
+        }
+        catch (const std::bad_alloc&)
+        {
+            return Result::Failure;
+        }
+        HDC dc = GetDC(fHwnd);
+        bool drawn = drawBitmap(dc);
+        if (dc)
+            ReleaseDC(fHwnd, dc);
+        return drawn ? Result::Success : Result::Failure;
+    }
+
     Handle WindowBackendWin32::getHandle() const
     {
         return reinterpret_cast<Handle>(fHwnd);
@@ -1148,6 +1226,9 @@ namespace LWS
                 break;
 
             case WM_DESTROY:
+                fPresentedBitmap.reset();
+                fPresentedPixels.reset();
+                fPresentedPixelSize = 0;
                 fPendingHighSurrogate = 0;
                 if (fDragAndDrop != nullptr)
                 {
@@ -1345,6 +1426,8 @@ namespace LWS
                                       {{paint_struct.rcPaint.left, paint_struct.rcPaint.top},
                                        {paint_struct.rcPaint.right, paint_struct.rcPaint.bottom}}},
                     return_value);
+                if (fHwnd)
+                    std::ignore = drawBitmap(paint_struct.hdc);
                 EndPaint(hWnd, &paint_struct);
                 dispatchEvent(EventPaint{});
                 break;

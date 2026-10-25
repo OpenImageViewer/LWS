@@ -1054,6 +1054,7 @@ namespace LWS
         }
         else
         {
+            auto newPresented = std::make_unique<NativeState::PresentedBuffer>(*fNativeState);
             const int fd = createAnonymousFile();
             if (fd < 0 || bufferSize > static_cast<size_t>(std::numeric_limits<off_t>::max()) ||
                 bufferSize > static_cast<size_t>(std::numeric_limits<int32_t>::max()) ||
@@ -1085,7 +1086,6 @@ namespace LWS
                 return Result::Failure;
             }
 
-            auto newPresented = std::make_unique<NativeState::PresentedBuffer>(*fNativeState);
             newPresented->buffer = buffer;
             newPresented->mapping = mapping;
             newPresented->mappingSize = bufferSize;
@@ -1800,6 +1800,7 @@ namespace LWS
             caption = available->get();
         else
         {
+            auto created = std::make_unique<NativeState::CaptionBuffer>(*fNativeState);
             const int fd = createAnonymousFile();
             if (fd < 0 || bufferSize > static_cast<size_t>(std::numeric_limits<off_t>::max()) ||
                 ftruncate(fd, static_cast<off_t>(bufferSize)) != 0)
@@ -1830,7 +1831,6 @@ namespace LWS
                 return;
             }
 
-            auto created = std::make_unique<NativeState::CaptionBuffer>(*fNativeState);
             created->buffer = buffer;
             created->mapping = mapping;
             created->mappingSize = bufferSize;

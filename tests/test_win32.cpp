@@ -782,6 +782,13 @@ TEST_CASE("Portable event connections own listener registration", "[window][even
     REQUIRE(GetCapture() == Hwnd(window));
     REQUIRE(LWS::Win32::SetMouseCapture(window, false) == LWS::Result::Success);
     REQUIRE(captureLost);
+    const auto extent = *window.GetClientAreaMetrics().pixels;
+    const std::vector<std::byte> pixels(size_t(extent.x) * extent.y * 4, std::byte{255});
+    REQUIRE(window.PresentBitmap({pixels, LWS::BitmapPixelFormat::Bgra8Premultiplied, LWS::BitmapRowOrder::TopDown,
+                                  uint32_t(extent.x), uint32_t(extent.y), uint32_t(extent.x * 4)}) ==
+            LWS::Result::Success);
+    SendMessageW(Hwnd(window), WM_PAINT, 0, 0);
+    REQUIRE(window.PresentBitmap({}) != LWS::Result::Success);
     LWS::Window other(context.value);
     REQUIRE(other.Create() == LWS::Result::Success);
     REQUIRE(LWS::Win32::SetMouseCapture(window, true) == LWS::Result::Success);
@@ -1173,6 +1180,144 @@ TEST_CASE("Posted work cannot starve native window input", "[platform][task][win
     context.value.RunMessageLoop();
     REQUIRE(keyReceived);
     REQUIRE(batches < 1000);
+}
+
+
+TEST_CASE("Presented frames retain owned pixels across reuse conversion and resize", "[window][bitmap][win32]")
+{
+    Context context;
+    LWS::Window window(context.value);
+    REQUIRE(window.Create({.clientSize = {120, 100}, .visible = true}) == LWS::Result::Success);
+    const auto hwnd = Hwnd(window);
+    const auto repaint = [&]
+    {
+        const auto dc = GetDC(hwnd);
+        REQUIRE(dc != nullptr);
+        RECT rect{};
+        REQUIRE(GetClientRect(hwnd, &rect));
+        REQUIRE(PatBlt(dc, 0, 0, rect.right, rect.bottom, BLACKNESS));
+        REQUIRE(ReleaseDC(hwnd, dc));
+        REQUIRE(InvalidateRect(hwnd, nullptr, FALSE));
+        UpdateWindow(hwnd);
+    };
+    const auto pixel = [&](int row, COLORREF expected)
+    {
+        RECT rect{};
+        REQUIRE(GetClientRect(hwnd, &rect));
+        const auto dc = GetDC(hwnd);
+        REQUIRE(dc != nullptr);
+        const auto actual = GetPixel(dc, rect.right / 2, row * rect.bottom / 4);
+        REQUIRE(ReleaseDC(hwnd, dc));
+        REQUIRE(actual == expected);
+    };
+    const auto extent = *window.GetClientAreaMetrics().pixels;
+    const auto width = uint32_t(extent.x), height = uint32_t(extent.y), pitch = width * 4 + 8;
+    std::vector<std::byte> data(size_t(height) * pitch);
+    const auto solid = [&](int blue, int green, int red, int alpha = 255)
+    {
+        for (uint32_t y = 0; y < height; ++y)
+            for (uint32_t x = 0; x < width; ++x)
+            {
+                auto* p = data.data() + size_t(y) * pitch + x * 4;
+                p[0] = std::byte(blue);
+                p[1] = std::byte(green);
+                p[2] = std::byte(red);
+                p[3] = std::byte(alpha);
+            }
+    };
+    LWS::BitmapBuffer image{data, LWS::BitmapPixelFormat::Bgra8Premultiplied,
+                           LWS::BitmapRowOrder::TopDown, width, height, pitch};
+    solid(5, 10, 120);
+    REQUIRE(window.PresentBitmap(image) == LWS::Result::Success);
+    std::fill(data.begin(), data.end(), std::byte(0));
+    repaint();
+    pixel(2, RGB(120, 10, 5));
+    solid(120, 10, 5);
+    REQUIRE(window.PresentBitmap(image) == LWS::Result::Success);
+    repaint();
+    pixel(2, RGB(5, 10, 120));
+    for (uint32_t y = 0; y < height; ++y)
+        for (uint32_t x = 0; x < width; ++x)
+        {
+            auto* p = data.data() + size_t(y) * pitch + x * 4;
+            p[0] = std::byte(y < height / 2 ? 120 : 0);
+            p[1] = std::byte(0);
+            p[2] = std::byte(y < height / 2 ? 0 : 120);
+            p[3] = std::byte(255);
+        }
+    image.rowOrder = LWS::BitmapRowOrder::BottomUp;
+    REQUIRE(window.PresentBitmap(image) == LWS::Result::Success);
+    repaint();
+    pixel(1, RGB(120, 0, 0));
+    pixel(3, RGB(0, 0, 120));
+    const auto bgrPitch = width * 3 + 8;
+    std::vector<std::byte> bgr(size_t(height) * bgrPitch);
+    for (uint32_t y = 0; y < height; ++y)
+        for (uint32_t x = 0; x < width; ++x)
+        {
+            auto* p = bgr.data() + size_t(y) * bgrPitch + x * 3;
+            p[0] = std::byte(10);
+            p[1] = std::byte(20);
+            p[2] = std::byte(30);
+        }
+    REQUIRE(window.PresentBitmap({bgr, LWS::BitmapPixelFormat::Bgr8, LWS::BitmapRowOrder::TopDown,
+                                  width, height, bgrPitch}) == LWS::Result::Success);
+    repaint();
+    pixel(2, RGB(30, 20, 10));
+    solid(80, 40, 20, 128);
+    image.format = LWS::BitmapPixelFormat::Bgra8;
+    image.rowOrder = LWS::BitmapRowOrder::TopDown;
+    REQUIRE(window.PresentBitmap(image) == LWS::Result::Success);
+    repaint();
+    pixel(2, RGB(10, 20, 40));
+    solid(15, 25, 35);
+    image.format = LWS::BitmapPixelFormat::Bgra8Premultiplied;
+    REQUIRE(window.PresentBitmap(image) == LWS::Result::Success);
+    auto invalid = image;
+    invalid.pixels = {};
+    REQUIRE(window.PresentBitmap(invalid) != LWS::Result::Success);
+    invalid = image;
+    invalid.rowPitch = width * 4 - 1;
+    REQUIRE(window.PresentBitmap(invalid) != LWS::Result::Success);
+    invalid = image;
+    invalid.format = static_cast<LWS::BitmapPixelFormat>(-1);
+    REQUIRE(window.PresentBitmap(invalid) != LWS::Result::Success);
+    repaint();
+    pixel(2, RGB(35, 25, 15));
+    REQUIRE(window.RequestPlacement({.clientSize = LWS::LogicalSize{200, 60}}) == LWS::Result::Success);
+    repaint();
+    pixel(2, RGB(35, 25, 15));
+    const auto resized = *window.GetClientAreaMetrics().pixels;
+    // Equal pixel counts reuse storage but must still publish the new dimensions.
+    REQUIRE(uint64_t(resized.x) * resized.y == uint64_t(extent.x) * extent.y);
+    std::vector<std::byte> next(size_t(resized.x) * resized.y * 4);
+    for (size_t x = 0; x < next.size(); x += 4)
+    {
+        next[x] = std::byte(60);
+        next[x + 1] = std::byte(50);
+        next[x + 2] = std::byte(40);
+        next[x + 3] = std::byte(255);
+    }
+    REQUIRE(window.PresentBitmap({next, LWS::BitmapPixelFormat::Bgra8Premultiplied,
+                                  LWS::BitmapRowOrder::TopDown, uint32_t(resized.x), uint32_t(resized.y),
+                                  uint32_t(resized.x * 4)}) == LWS::Result::Success);
+    repaint();
+    pixel(2, RGB(40, 50, 60));
+    // Zero row pitch means tightly packed rows.
+    REQUIRE(window.PresentBitmap({next, LWS::BitmapPixelFormat::Bgra8Premultiplied,
+                                  LWS::BitmapRowOrder::TopDown, uint32_t(resized.x), uint32_t(resized.y), 0}) ==
+            LWS::Result::Success);
+    repaint();
+    pixel(2, RGB(40, 50, 60));
+    REQUIRE(window.RequestPlacement({.clientSize = LWS::LogicalSize{240, 140}}) == LWS::Result::Success);
+    const auto larger = *window.GetClientAreaMetrics().pixels;
+    std::vector<std::byte> expanded(size_t(larger.x) * larger.y * 4, std::byte{255});
+    REQUIRE(window.PresentBitmap({expanded, LWS::BitmapPixelFormat::Bgra8Premultiplied,
+                                  LWS::BitmapRowOrder::TopDown, uint32_t(larger.x), uint32_t(larger.y), 0}) ==
+            LWS::Result::Success);
+    repaint();
+    pixel(2, RGB(255, 255, 255));
+    REQUIRE(window.Destroy() == LWS::Result::Success);
 }
 
 TEST_CASE("Destroying a timer target detaches it and invalidates retrieved ticks", "[timer][lifetime][win32]")

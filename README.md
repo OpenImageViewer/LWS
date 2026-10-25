@@ -323,7 +323,8 @@ AnyEvent additionally carries EventTextInput (committed UTF-8), EventMouseLeave 
 EventMouseCaptureLost. Explicit capture is a Win32 extension:
 `LWS::Win32::SetMouseCapture(window, capture)` in `LWS/Win32/WindowExtensions.hpp`.
 Wayland retains implicit button-drag capture. The existing EventResponse and non-cancellable cleanup events
-keep their upstream semantics.
+keep their upstream semantics. Windows retained bitmap presentation borrows caller
+pixels only for the call and copies them for repaint.
 
 The Windows LWSLib target exports `UNICODE`, `_UNICODE`, and `NOMINMAX` as public
 usage requirements, so core-only consumers see the same string ABI and compatible
