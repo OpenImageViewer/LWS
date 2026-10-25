@@ -8,6 +8,10 @@
     #include "internal/PlatformState.hpp"
     #include "internal/CaptionRenderer.hpp"
     #include "internal/WindowFrame.hpp"
+    #include "internal/IconPixels.hpp"
+    #ifdef LWS_HAS_TOPLEVEL_ICON
+        #include "xdg-toplevel-icon-v1-client-protocol.h"
+    #endif
 
     #include <algorithm>
     #include <cerrno>
@@ -265,6 +269,7 @@ namespace LWS
             shellSurface = nullptr;
             pendingToplevelConfigure.reset();
             configured = false;
+            owner.fIconApplied = false;
         }
 
         static void surfaceConfigure(void* data, xdg_surface* surface, uint32_t serial)
@@ -511,6 +516,16 @@ namespace LWS
         if (fNativeState->decoration)
             setWindowStyles(fWindowStyles);
 
+        if (fWindowIcon)
+        {
+            const auto result = applyWindowIcon(fWindowIcon.get());
+            if (result != Result::Success)
+            {
+                destroy();
+                return result;
+            }
+        }
+
         if (isChildWindow())
         {
             updateSubsurfacePosition();
@@ -543,6 +558,8 @@ namespace LWS
     void WindowBackendWayland::destroy()
     {
         fModalInputDepth = 0;
+        fIconApplied = false;
+        fWindowIcon.reset();
         if (fParentBackend != nullptr)
         {
             std::erase(fParentBackend->fChildBackends, this);
@@ -619,6 +636,8 @@ namespace LWS
                 setMinMaxSize(fMinSize, fMaxSize);
                 setFullScreenState(fFullScreenState);
                 setDisplayState(fDisplayState);
+                if (fWindowIcon)
+                    std::ignore = applyWindowIcon(fWindowIcon.get());
             }
             updateWindowGeometry();
             if (fNativeState->configured)
@@ -743,9 +762,111 @@ namespace LWS
     {
         return fTitle;
     }
-    Result WindowBackendWayland::setWindowIcon(const BitmapBuffer*, bool)
+    Result WindowBackendWayland::setWindowIcon(const BitmapBuffer* source, bool reuseResource)
     {
+        try
+        {
+            if (source && reuseResource && fWindowIcon && fIconApplied)
+                return Result::Success;
+            std::shared_ptr<const Bitmap> retained = source ? std::make_shared<Bitmap>(*source) : nullptr;
+            const auto result = applyWindowIcon(retained.get());
+            if (result == Result::Success)
+                fWindowIcon = std::move(retained);
+            return result;
+        }
+        catch (const std::exception&)
+        {
+            return Result::Failure;
+        }
+    }
+    Result WindowBackendWayland::applyWindowIcon(const Bitmap* bitmap)
+    {
+    #ifdef LWS_HAS_TOPLEVEL_ICON
+        auto& platform = fPlatform;
+        if (!platform.iconManager())
+            return Result::NotSupported;
+        if (!bitmap && !fIconApplied)
+            return Result::Success;
+        // Retain pre-create and hidden top-level updates until a role exists again.
+        if (!fNativeState || (!isChildWindow() && !fNativeState->toplevel))
+            return Result::Success;
+        if (!fNativeState->toplevel)
+            return Result::NotSupported;
+        if (!bitmap)
+        {
+            xdg_toplevel_icon_manager_v1_set_icon(platform.iconManager(), fNativeState->toplevel, nullptr);
+            wl_surface_commit(fNativeState->surface);
+            fIconApplied = false;
+            return Result::Success;
+        }
+        struct Buffer
+        {
+            void* mapping = MAP_FAILED;
+            size_t bytes = 0;
+            wl_buffer* buffer = nullptr;
+            ~Buffer()
+            {
+                if (buffer)
+                    wl_buffer_destroy(buffer);
+                if (mapping != MAP_FAILED)
+                    munmap(mapping, bytes);
+            }
+        };
+        try
+        {
+            // Buffers are immutable and never receive release events for icons.
+            std::vector<std::unique_ptr<Buffer>> buffers;
+            using Icon = std::unique_ptr<xdg_toplevel_icon_v1, decltype(&xdg_toplevel_icon_v1_destroy)>;
+            Icon icon(xdg_toplevel_icon_manager_v1_create_icon(platform.iconManager()), xdg_toplevel_icon_v1_destroy);
+            if (!icon)
+                return Result::Failure;
+            auto sizes = platform.iconSizes();
+            if (sizes.empty())
+                sizes = {32, 64, 128};
+            for (int size : sizes)
+            {
+                auto pixels = internal::ScaleIcon(*bitmap, size);
+                auto buffer = std::make_unique<Buffer>();
+                buffer->bytes = pixels.size();
+                const int fd = createAnonymousFile();
+                if (fd < 0)
+                    return Result::Failure;
+                if (ftruncate(fd, off_t(buffer->bytes)) != 0)
+                {
+                    close(fd);
+                    return Result::Failure;
+                }
+                buffer->mapping = mmap(nullptr, buffer->bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                if (buffer->mapping == MAP_FAILED)
+                {
+                    close(fd);
+                    return Result::Failure;
+                }
+                auto* pool = wl_shm_create_pool(platform.sharedMemory(), fd, int(buffer->bytes));
+                close(fd);
+                if (!pool)
+                    return Result::Failure;
+                buffer->buffer = wl_shm_pool_create_buffer(pool, 0, size, size, size * 4, WL_SHM_FORMAT_ARGB8888);
+                wl_shm_pool_destroy(pool);
+                if (!buffer->buffer)
+                    return Result::Failure;
+                std::memcpy(buffer->mapping, pixels.data(), buffer->bytes);
+                buffers.push_back(std::move(buffer));
+                xdg_toplevel_icon_v1_add_buffer(icon.get(), buffers.back()->buffer, 1);
+            }
+            xdg_toplevel_icon_manager_v1_set_icon(platform.iconManager(), fNativeState->toplevel, icon.get());
+            wl_surface_commit(fNativeState->surface);
+            fIconApplied = true;
+            // Declaration order destroys the icon before its referenced buffers.
+            return Result::Success;
+        }
+        catch (const std::exception&)
+        {
+            return Result::Failure;
+        }
+    #else
         return Result::NotSupported;
+    #endif
     }
     void WindowBackendWayland::setPosition(Point position)
     {

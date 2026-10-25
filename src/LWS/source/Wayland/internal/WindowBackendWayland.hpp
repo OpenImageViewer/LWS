@@ -107,6 +107,9 @@ namespace LWS
         class NativeState;
         EventResponse dispatchEvent(const AnyEvent& event);
         bool inputBlocked() const { return fModalInputDepth || (fParentBackend && fParentBackend->inputBlocked()); }
+        Result applyWindowIcon(const Bitmap* bitmap);
+        std::shared_ptr<const Bitmap> fWindowIcon;
+        bool fIconApplied = false;
         uint32_t fModalInputDepth = 0;
         internal::WaylandPlatformState& fPlatform;
         std::unique_ptr<NativeState> fNativeState;

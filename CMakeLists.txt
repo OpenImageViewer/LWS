@@ -174,6 +174,20 @@ if(LWS_PLATFORM_WAYLAND)
       "${LWS_VIEWPORTER_HEADER}"
       "${LWS_VIEWPORTER_SOURCE}"
   )
+  # Optional: older wayland-protocols packages still build with header icons only.
+  set(LWS_TOPLEVEL_ICON_XML "${WAYLAND_PROTOCOLS_DIRECTORY}/staging/xdg-toplevel-icon/xdg-toplevel-icon-v1.xml")
+  if(EXISTS "${LWS_TOPLEVEL_ICON_XML}")
+    set(LWS_TOPLEVEL_ICON_HEADER "${LWS_WAYLAND_GENERATED_DIR}/xdg-toplevel-icon-v1-client-protocol.h")
+    set(LWS_TOPLEVEL_ICON_SOURCE "${LWS_WAYLAND_GENERATED_DIR}/xdg-toplevel-icon-v1-protocol.c")
+    add_custom_command(OUTPUT "${LWS_TOPLEVEL_ICON_HEADER}"
+      COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" client-header "${LWS_TOPLEVEL_ICON_XML}" "${LWS_TOPLEVEL_ICON_HEADER}"
+      DEPENDS "${LWS_TOPLEVEL_ICON_XML}" VERBATIM)
+    add_custom_command(OUTPUT "${LWS_TOPLEVEL_ICON_SOURCE}"
+      COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" private-code "${LWS_TOPLEVEL_ICON_XML}" "${LWS_TOPLEVEL_ICON_SOURCE}"
+      DEPENDS "${LWS_TOPLEVEL_ICON_XML}" VERBATIM)
+    target_sources(LWSLib PRIVATE "${LWS_TOPLEVEL_ICON_HEADER}" "${LWS_TOPLEVEL_ICON_SOURCE}")
+    target_compile_definitions(LWSLib PRIVATE LWS_HAS_TOPLEVEL_ICON)
+  endif()
   target_include_directories(LWSLib PRIVATE "${LWS_WAYLAND_GENERATED_DIR}")
   target_link_libraries(LWSLib PRIVATE Wayland::Client PkgConfig::CaptionText PkgConfig::TextInput)
   if(TARGET Wayland::Cursor)

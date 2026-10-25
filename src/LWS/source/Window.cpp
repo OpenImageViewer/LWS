@@ -667,7 +667,7 @@ namespace LWS
             return Result::InvalidArgument;
         if (!internal::WindowBackendAccess::CanConfigure(*this))
             return Result::InvalidState;
-        if (icon.has_value() && platform_.GetBackendId() != BackendId::Win32)
+        if (icon.has_value() && !platform_.Supports(PlatformFeature::WindowIcon).value_or(false))
             return Result::NotSupported;
         Result result = Result::Success;
         if (impl_->state == Impl::State::PreCreate)

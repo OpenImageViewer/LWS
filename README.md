@@ -337,6 +337,10 @@ serial for writing.
 Portal dialogs retain the existing Window& owner and filter APIs;
 until xdg-foreign parenting exists they enforce owner modality within LWS.
 
+Wayland SetWindowIcon uses upstream WindowIcon values and the optional
+xdg-toplevel-icon-v1 protocol. Unsupported compositors still return NotSupported;
+No public bitmap enlargement API is added.
+
 The Windows LWSLib target exports `UNICODE`, `_UNICODE`, and `NOMINMAX` as public
 usage requirements, so core-only consumers see the same string ABI and compatible
 Windows headers as the library.
