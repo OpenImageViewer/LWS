@@ -418,3 +418,24 @@ input cannot reach that unavailable subtree, and Focus rejects foreign-host cont
 When LWSUI is enabled, LWSTests also covers event connection mutation and lifetime,
 UTF-8 editing and validation, popup cancellation, deferred context-menu commands,
 and scrolling without losing editor drafts. Core-only builds omit these UI tests.
+
+### Multiline text
+
+TextBox remains single-line by default. Use the same control for wrapped notes:
+
+```cpp
+auto& notes = panel.Emplace<LWSUI::TextBox>("First line\nSecond line", LWSUI::TextBoxMode::Multiline);
+notes.SetVisibleLines(4);
+```
+
+The mode is fixed at construction. Visible lines set the preferred height; the
+parent supplies the actual allocation. Multiline text wraps and gets a vertical
+scrollbar when needed. Enter inserts a newline, Ctrl+Enter commits, Escape cancels
+the current edit, and Tab changes focus. Home/End navigate visual lines;
+Ctrl+Home/End navigate the document. Up/Down retain the preferred caret column,
+and PageUp/PageDown move by the viewport. Shift extends selection.
+
+Assigned and pasted multiline text normalizes CRLF/CR to LF. Existing OnEdit,
+validation, read-only, clipboard, placeholder, borderless, and highlighting APIs
+apply. Scrollbar interaction keeps the draft and does not add a Tab stop. These
+are plain-text notes, without rich text, syntax highlighting, or undo history.

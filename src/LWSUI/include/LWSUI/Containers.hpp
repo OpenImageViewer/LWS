@@ -45,6 +45,7 @@ namespace LWSUI
         Control* Content() const { return content_; }
         void SetOffset(float offset);
         float Offset() const { return offset_; }
+        Rect Viewport() const { return viewport_; }
         bool overlayScrollBar = false;
         Control* HitTest(float x, float y) override;
 
@@ -66,6 +67,7 @@ namespace LWSUI
         Control* content_ = nullptr;
         ScrollBar* bar_;
         float offset_ = 0, extent_ = 0;
+        Rect viewport_;
         LWSUI::Event<void(double, EditPhase)>::Connection connection_;
     };
     class TreeView : public StackPanel

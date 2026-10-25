@@ -31,6 +31,10 @@ namespace LWSUI
         // Returns a UTF-8 insertion offset using native direction/cluster hit testing.
         size_t HitTestText(std::string_view text, float x, const FontSpec& font = {});
         float Caret(std::string_view text, size_t byteOffset, const FontSpec& font = {});
+        // Wrapped, multiline layout queries. Coordinates are relative to the text origin.
+        std::vector<TextLine> TextLines(std::string_view text, float width, const FontSpec& font = {});
+        TextPosition HitTestText(std::string_view text, float x, float y, float width, const FontSpec& font = {});
+        TextCaret CaretBounds(std::string_view text, TextPosition position, float width, const FontSpec& font = {});
         float TextHeight(std::string_view text, float width, const FontSpec& font = {}, bool wrap = true);
         void Clip(float x, float y, float width, float height);
         void Unclip();

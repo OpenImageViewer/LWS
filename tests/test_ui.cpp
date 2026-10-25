@@ -1,4 +1,6 @@
 #ifdef LWS_TEST_UI
+#include <thread>
+#include <chrono>
     #include <catch2/catch_test_macros.hpp>
     #include <LWSUI/Containers.hpp>
     #include <LWSUI/UIHost.hpp>
@@ -170,4 +172,77 @@ TEST_CASE("Scrolling preserves child edits and clips hit testing", "[ui][scroll]
     REQUIRE(editor.Text() == "original");
 }
 
+
+
+TEST_CASE("Content-sized multiline text uses its enclosing viewport", "[ui][textbox][scrollview]")
+{
+    using namespace LWSUI;
+    #ifdef LWS_HAS_WIN32_BACKEND
+    REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);
+    #endif
+    LWS::PlatformContext platform;
+    #ifdef LWS_HAS_WIN32_BACKEND
+    REQUIRE(platform.Init({LWS::BackendId::Win32}) == LWS::Result::Success);
+    #else
+    REQUIRE(platform.Init({LWS::BackendId::Wayland}) == LWS::Result::Success);
+    #endif
+    LWS::Window window(platform);
+    REQUIRE(window.Create({.clientSize = {400, 200}, .visible = true}) == LWS::Result::Success);
+    for (int i = 0; i < 500 && !window.IsConfigured(); ++i)
+    {
+        REQUIRE(platform.ProcessMessages() == LWS::LoopResult::Continue);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    REQUIRE(window.IsConfigured());
+    UIHost host(window);
+    auto root = std::make_unique<ScrollView>();
+    auto& scroll = *root;
+    std::string content;
+    for (int i = 0; i < 100; ++i) content += "Wrapped selectable content. ";
+    auto ownedText = std::make_unique<TextBox>(content, TextBoxMode::Multiline);
+    auto& text = *ownedText;
+    text.sizeToContent = true;
+    text.SetReadOnly(true);
+    scroll.SetContent(std::move(ownedText));
+    host.SetRoot(std::move(root));
+    host.Update();
+    REQUIRE(text.Bounds().height > scroll.Viewport().height);
+    REQUIRE(host.Focus(&text));
+    REQUIRE(host.Route({.kind = InputKind::KeyDown, .key = LWS::KeyCode::End, .control = true}));
+    REQUIRE(scroll.Offset() > 0);
+    REQUIRE(host.Route({.kind = InputKind::KeyDown, .key = LWS::KeyCode::Home, .control = true}));
+    REQUIRE(scroll.Offset() == 0);
+    const auto visible = scroll.Viewport();
+    const float x = visible.x + 20, y = visible.y + 12;
+    REQUIRE(host.Route({.kind = InputKind::Down, .x = x, .y = y}));
+    REQUIRE(host.Route({.kind = InputKind::Move, .x = x, .y = visible.y + visible.height + 25}));
+    const float initial = scroll.Offset();
+    REQUIRE(initial > 0);
+    for (int i = 0; i < 10; ++i)
+    {
+        REQUIRE(platform.ProcessMessages() == LWS::LoopResult::Continue);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    REQUIRE(scroll.Offset() > initial);
+    host.Route({.kind = InputKind::Up, .x = x, .y = y});
+    scroll.SetOffset(0);
+    REQUIRE(host.Route({.kind = InputKind::Wheel, .x = x, .y = y, .wheel = -1}));
+    REQUIRE(scroll.Offset() > 0);
+    const float beforeLeave = scroll.Offset();
+    REQUIRE(platform.ProcessMessages() == LWS::LoopResult::Continue);
+    REQUIRE(scroll.Offset() == beforeLeave);
+    for (auto& child : text.Children()) REQUIRE_FALSE(child->Visible());
+    text.SetReadOnly(false);
+    host.Route({.kind = InputKind::KeyDown, .key = LWS::KeyCode::A, .control = true});
+    REQUIRE(host.Route({.kind = InputKind::Text, .text = content + content}));
+    host.Update();
+    REQUIRE(scroll.Offset() > beforeLeave);
+    const float editedOffset = scroll.Offset();
+    const auto bottom = scroll.Viewport();
+    REQUIRE(host.Route({.kind = InputKind::Wheel, .x = x, .y = bottom.y + 12, .wheel = 1}));
+    REQUIRE(scroll.Offset() < editedOffset);
+    REQUIRE(text.Finish(EditPhase::Cancel));
+    host.Update();
+    REQUIRE(text.Text() == content);
+}
 #endif

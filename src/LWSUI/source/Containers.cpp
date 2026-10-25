@@ -147,6 +147,7 @@ namespace LWSUI
     void ScrollView::OnArrange()
     {
         auto b = Bounds();
+        viewport_ = {b.x, b.y, std::max(0.f, b.width - (overlayScrollBar ? 0 : Style().scrollbarWidth + Style().scrollbarMargin)), b.height};
         offset_ = std::clamp(offset_, 0.f, std::max(0.f, extent_ - b.height));
         if (content_)
             content_->Arrange(
@@ -177,13 +178,12 @@ namespace LWSUI
     }
     void ScrollView::SetOffset(float offset)
     {
-        // Reuse the ordinary layout pass for scrolling. Separate arrange-only
-        // invalidation is deferred with the host's finer layout caching policy.
         const float next = std::clamp(offset, 0.f, std::max(0.f, extent_ - Bounds().height));
         if (next == offset_)
             return;
         offset_ = next;
-        Invalidate(true);
+        OnArrange();
+        Invalidate();
     }
     bool ScrollView::OnInput(const Input& e)
     {
