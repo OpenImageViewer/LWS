@@ -3,134 +3,125 @@
     #include <LWS/Timer.hpp>
     #include <LWS/source/internal/Backends.hpp>
 
-    #include <atomic>
-    #include <chrono>
-    #include <condition_variable>
+    #include "internal/PlatformState.hpp"
+
+    #include <cerrno>
     #include <limits>
-    #include <mutex>
-    #include <thread>
+    #include <system_error>
+    #include <sys/timerfd.h>
+    #include <unistd.h>
+    #include <utility>
 
 namespace LWS
 {
     namespace
     {
-        struct CallbackState
+        class NativeTimer
         {
-            PlatformContext* platform = nullptr;
-            std::shared_ptr<Timer::Callback> callback;
-            std::atomic_bool enabled = false;
-            std::atomic_bool pending = false;
-            std::atomic_uint64_t generation = 0;
+          public:
+
+            explicit NativeTimer(PlatformContext& platform)
+                : platform_(*static_cast<internal::WaylandPlatformState*>(
+                      internal::PlatformContextAccess::GetBackend(platform)))
+            {
+            }
+            ~NativeTimer() { stop(); }
+            NativeTimer(const NativeTimer&) = delete;
+            NativeTimer& operator=(const NativeTimer&) = delete;
+
+            void setCallback(Timer::Callback callback)
+            {
+                callback_ = callback ? std::make_shared<Timer::Callback>(std::move(callback)) : nullptr;
+            }
+
+            void start(uint32_t dueTime, uint32_t repeatInterval)
+            {
+                stop();
+                if (dueTime == std::numeric_limits<uint32_t>::max())
+                    return;
+                descriptor_ = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+                if (descriptor_ < 0)
+                    throw std::system_error(errno, std::generic_category(), "timerfd_create");
+                try
+                {
+                    itimerspec interval{};
+                    interval.it_value = duration(dueTime);
+                    // A zero timerfd deadline disarms it; the public API means fire immediately.
+                    if (dueTime == 0)
+                        interval.it_value.tv_nsec = 1;
+                    if (repeatInterval != std::numeric_limits<uint32_t>::max())
+                        interval.it_interval = duration(repeatInterval);
+                    if (timerfd_settime(descriptor_, 0, &interval, nullptr) < 0)
+                        throw std::system_error(errno, std::generic_category(), "timerfd_settime");
+                    platform_.registerTimer(descriptor_,
+                                            [this]
+                                            {
+                                                // The callback may replace itself or destroy its timer.
+                                                const auto callback = callback_;
+                                                if (callback)
+                                                    (*callback)();
+                                            });
+                }
+                catch (...)
+                {
+                    stop();
+                    throw;
+                }
+            }
+
+            void stop()
+            {
+                if (descriptor_ >= 0)
+                {
+                    platform_.unregisterTimer(descriptor_);
+                    close(std::exchange(descriptor_, -1));
+                }
+            }
+
+          private:
+
+            static timespec duration(uint32_t milliseconds)
+            {
+                return {.tv_sec = milliseconds / 1000, .tv_nsec = long(milliseconds % 1000) * 1'000'000};
+            }
+            internal::WaylandPlatformState& platform_;
+            std::shared_ptr<Timer::Callback> callback_;
+            int descriptor_ = -1;
         };
-
-        void postCallback(const std::shared_ptr<CallbackState>& state)
-        {
-            if (state->pending.exchange(true))
-                return;
-            const uint64_t generation = state->generation;
-            const Result result = state->platform->PostTask(
-                [weakState = std::weak_ptr(state), generation]
-                {
-                    const auto locked = weakState.lock();
-                    if (locked == nullptr || locked->generation != generation)
-                        return;
-                    locked->pending = false;
-                    if (!locked->enabled)
-                        return;
-                    const auto callback = locked->callback;
-                    if (callback != nullptr)
-                        (*callback)();
-                });
-            if (result != Result::Success)
-                state->pending = false;
-        }
-
-        void cancelCallbacks(const std::shared_ptr<CallbackState>& state)
-        {
-            ++state->generation;
-            state->pending = false;
-        }
-
-        std::jthread startTimerThread(const std::shared_ptr<CallbackState>& state, uint32_t dueTime,
-                                      uint32_t repeatInterval)
-        {
-            return std::jthread(
-                [state, dueTime, repeatInterval](std::stop_token stopToken)
-                {
-                    std::condition_variable_any wake;
-                    std::mutex waitMutex;
-                    auto wait = [&](uint32_t milliseconds)
-                    {
-                        std::unique_lock lock(waitMutex);
-                        return !wake.wait_for(lock, stopToken, std::chrono::milliseconds(milliseconds),
-                                              [] { return false; });
-                    };
-
-                    bool fire = dueTime != std::numeric_limits<uint32_t>::max() && wait(dueTime);
-                    while (fire && state->enabled && !stopToken.stop_requested())
-                    {
-                        postCallback(state);
-                        fire = repeatInterval != 0 && repeatInterval != std::numeric_limits<uint32_t>::max() &&
-                               wait(repeatInterval);
-                    }
-                });
-        }
     }  // namespace
 
     class TimerBackendWayland final : public internal::ITimerBackend
     {
       public:
 
-        explicit TimerBackendWayland(PlatformContext& platform) : fState(std::make_shared<CallbackState>())
-        {
-            fState->platform = &platform;
-        }
-
-        ~TimerBackendWayland() override { stop(); }
+        explicit TimerBackendWayland(PlatformContext& platform) : fTimer(platform) {}
 
         void setTargetWindow(Handle handle) override
         {
-            stop();
+            fTimer.stop();
+            const auto interval = std::exchange(fInterval, 0);
             fDetached = handle == 0;
-            if (!fDetached && fInterval != 0)
-            {
-                fState->enabled = true;
-                fThread = startTimerThread(fState, fInterval, fInterval);
-            }
+            if (!fDetached && interval != 0)
+                fTimer.start(interval, interval);
+            fInterval = interval;
         }
         uint32_t getInterval() const override { return fInterval; }
-        void setCallback(Callback callback) override
-        {
-            fState->callback = callback ? std::make_shared<Callback>(std::move(callback)) : nullptr;
-        }
+        void setCallback(Callback callback) override { fTimer.setCallback(std::move(callback)); }
 
         void setInterval(uint32_t interval) override
         {
-            if (fInterval != interval)
-            {
-                stop();
-                fInterval = interval;
-                if (interval != 0 && !fDetached)
-                {
-                    fState->enabled = true;
-                    fThread = startTimerThread(fState, interval, interval);
-                }
-            }
+            if (fInterval == interval)
+                return;
+            fTimer.stop();
+            fInterval = 0;
+            if (interval != 0 && !fDetached)
+                fTimer.start(interval, interval);
+            fInterval = interval;
         }
 
-        void stop()
-        {
-            fState->enabled = false;
-            if (fThread.joinable())
-            {
-                fThread.request_stop();
-                fThread.join();
-            }
-            cancelCallbacks(fState);
-        }
+      private:
 
-        std::shared_ptr<CallbackState> fState;
-        std::jthread fThread;
+        NativeTimer fTimer;
         uint32_t fInterval = 0;
         bool fDetached = false;
     };
@@ -140,31 +131,21 @@ namespace LWS
       public:
 
         HighPrecisionTimerBackendWayland(PlatformContext& platform, internal::ITimerBackend::Callback callback)
-            : fState(std::make_shared<CallbackState>())
+            : fTimer(platform)
         {
-            fState->platform = &platform;
-            fState->callback = callback ? std::make_shared<Timer::Callback>(std::move(callback)) : nullptr;
+            fTimer.setCallback(std::move(callback));
         }
-
-        ~HighPrecisionTimerBackendWayland() override { enable(false); }
 
         void enable(bool enabled) override
         {
-            if (enabled == fState->enabled)
-            {
+            if (enabled == fEnabled)
                 return;
-            }
-            fState->enabled = false;
-            if (fThread.joinable())
-            {
-                fThread.request_stop();
-                fThread.join();
-            }
-            cancelCallbacks(fState);
+            fTimer.stop();
+            fEnabled = false;
             if (enabled)
             {
-                fState->enabled = true;
-                fThread = startTimerThread(fState, fDueTime, fRepeatInterval);
+                fTimer.start(fDueTime, fRepeatInterval);
+                fEnabled = true;
             }
         }
 
@@ -186,19 +167,21 @@ namespace LWS
             }
         }
 
-        bool getEnabled() const override { return fState->enabled; }
+        bool getEnabled() const override { return fEnabled; }
+
+      private:
 
         void restartIfEnabled()
         {
-            if (fState->enabled)
+            if (fEnabled)
             {
                 enable(false);
                 enable(true);
             }
         }
 
-        std::shared_ptr<CallbackState> fState;
-        std::jthread fThread;
+        NativeTimer fTimer;
+        bool fEnabled = false;
         uint32_t fDueTime = std::numeric_limits<uint32_t>::max();
         uint32_t fRepeatInterval = std::numeric_limits<uint32_t>::max();
     };
