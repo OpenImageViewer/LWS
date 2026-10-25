@@ -251,6 +251,8 @@ TEST_CASE("Wayland URI lists ignore unsupported entries", "[input][wayland][drag
         "file:///tmp/bad%00.png\nfile:///tmp/good.png");
 
     REQUIRE(paths == std::vector<std::filesystem::path>{"/tmp/good.png"});
+    REQUIRE(LWS::internal::parseFileUri("FILE://LOCALHOST/tmp/a%20b") == "/tmp/a b");
+    REQUIRE_FALSE(LWS::internal::parseFileUri(std::string("file:///tmp/a\0b", 15)).has_value());
 }
 #endif
 

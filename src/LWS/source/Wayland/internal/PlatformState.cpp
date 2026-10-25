@@ -114,6 +114,8 @@ namespace LWS::internal
             return supportsDragAndDrop();
         if (feature == PlatformFeature::TextClipboard)
             return fDataDeviceController.supported();
+        if (feature == PlatformFeature::FileDialog)
+            return true;
         return feature == PlatformFeature::HostWindowFrame && fHasHostWindowFrame;
     }
 
