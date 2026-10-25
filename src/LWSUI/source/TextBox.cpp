@@ -232,9 +232,40 @@ namespace LWSUI
         if (caret < scroll_)
             scroll_ = caret;
     }
-
-
-
+    const FontSpec& TextBox::Font() const
+    {
+        const auto& inherited = Control::Font();
+        if (!fontWeight_ && minimumFontSize_ == 0) return inherited;
+        if (!fontResolved_ || inheritedFont_ != inherited)
+        {
+            inheritedFont_ = inherited;
+            effectiveFont_ = inherited;
+            effectiveFont_.size = std::max(inherited.size, minimumFontSize_);
+            if (fontWeight_) effectiveFont_.weight = *fontWeight_;
+            fontResolved_ = true;
+        }
+        return effectiveFont_;
+    }
+    void TextBox::SetFontWeight(std::optional<int> weight)
+    {
+        if (weight && (*weight < 1 || *weight > 999)) throw std::invalid_argument("Invalid text font weight");
+        if (fontWeight_ == weight) return;
+        fontWeight_ = weight;
+        fontResolved_ = false;
+        geometryDirty_ = true;
+        UpdateGeometry(true);
+        Invalidate(true);
+    }
+    void TextBox::SetMinimumFontSize(float size)
+    {
+        if (!std::isfinite(size) || size < 0) throw std::invalid_argument("Invalid minimum text font size");
+        if (minimumFontSize_ == size) return;
+        minimumFontSize_ = size;
+        fontResolved_ = false;
+        geometryDirty_ = true;
+        UpdateGeometry(true);
+        Invalidate(true);
+    }
     void TextBox::SetInputFilter(InputFilter filter)
     {
         ++pasteGeneration_;
@@ -441,9 +472,18 @@ namespace LWSUI
         auto b = Bounds();
         const float p = Style().textPadding;
         const bool focused = Host() && Host()->IsFocused(*this);
-        if (!borderless_)
-            c.Fill(b.x, b.y, b.width, b.height, focused ? Style().line : Style().surface);
-        auto spans = HighlightSpans(text_);
+        if (background_ || !borderless_)
+            c.Fill(b.x, b.y, b.width, b.height, background_.value_or(focused ? Style().line : Style().surface));
+        auto spans = textSpanProvider_ ? textSpanProvider_(text_) : std::vector<TextSpan>{};
+        auto boundary = [&](size_t offset)
+        { return offset == text_.size() || (static_cast<unsigned char>(text_[offset]) & 0xc0) != 0x80; };
+        std::erase_if(spans, [&](const TextSpan& span)
+        {
+            return !span.length || span.offset > text_.size() || span.length > text_.size() - span.offset ||
+                   !boundary(span.offset) || !boundary(span.offset + span.length);
+        });
+        auto highlights = HighlightSpans(text_);
+        spans.insert(spans.end(), highlights.begin(), highlights.end());
         if (focused && caret_ != anchor_)
             spans.push_back({{std::min(caret_, anchor_), std::max(caret_, anchor_) - std::min(caret_, anchor_)},
                              Style().selectionForeground,
@@ -473,8 +513,19 @@ namespace LWSUI
             if (focused)
                 c.Fill(b.x + p + caretX_ - scroll_, b.y + p, Style().borderWidth, b.height - 2 * p, Style().accent);
         }
+        if (focused && focusOutline_)
+        {
+            const float width = std::max(0.f, std::min({Style().focusWidth, b.width / 2, b.height / 2}));
+            c.Fill(b.x, b.y, b.width, width, Style().accent);
+            c.Fill(b.x, b.y + b.height - width, b.width, width, Style().accent);
+            c.Fill(b.x, b.y + width, width, b.height - 2 * width, Style().accent);
+            c.Fill(b.x + b.width - width, b.y + width, width, b.height - 2 * width, Style().accent);
+        }
         if (!validation_.empty() || !inputError_.empty())
-            c.Fill(b.x, b.y + b.height - Style().focusWidth, b.width, Style().focusWidth, Style().error);
+        {
+            const float width = std::min(b.height, std::max(3.f, Style().focusWidth));
+            c.Fill(b.x, b.y + b.height - width, b.width, width, Style().error);
+        }
     }
     bool TextBox::OnInput(const Input& e)
     {
@@ -491,7 +542,12 @@ namespace LWSUI
             ++pasteGeneration_;
         if (e.kind == InputKind::Down)
         {
-
+            if (e.button == LWS::MouseButton::Left && e.clickCount == 2 && doubleClickAction_)
+            {
+                StopSelecting();
+                const auto action = doubleClickAction_;
+                if (action()) return true;
+            }
             preferredX_.reset();
             SetCaret(Position(e.x, e.y), e.shift);
             selecting_ = true;

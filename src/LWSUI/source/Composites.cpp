@@ -1,12 +1,59 @@
+#include "ColorPanel.hpp"
+#include "MenuRows.hpp"
 #include <LWSUI/Composites.hpp>
 #include <LWSUI/UIHost.hpp>
-#include "MenuRows.hpp"
-#include <algorithm>
 #include <LWS/FileDialog.hpp>
 #include <filesystem>
 #include <cstdio>
 namespace LWSUI
 {
+    RadioGroup::RadioGroup(std::vector<Choice> choices) : choices_(std::move(choices))
+    {
+        spacing = 0;
+        for (const auto& choice : choices_)
+        {
+            auto& button = Emplace<RadioButton>(choice.label);
+            buttons_.push_back(&button);
+            connections_.push_back(button.OnChange.Connect(
+                [this, value = choice.value](bool)
+                {
+                    SetValue(value);
+                    OnChange.Raise(value_);
+                }));
+        }
+    }
+    void RadioGroup::SetValue(std::string value)
+    {
+        value_ = std::move(value);
+        for (size_t i = 0; i < buttons_.size(); ++i)
+            buttons_[i]->SetValue(choices_[i].value == value_);
+    }
+    bool RadioGroup::OnInput(const Input& input)
+    {
+        if (input.kind != InputKind::KeyDown || choices_.empty() ||
+            (input.key != LWS::KeyCode::Left && input.key != LWS::KeyCode::Right))
+            return false;
+        size_t selected = 0;
+        for (size_t i = 0; i < choices_.size(); ++i)
+            if (choices_[i].value == value_)
+                selected = i;
+        selected = (selected + (input.key == LWS::KeyCode::Left ? choices_.size() - 1 : 1)) % choices_.size();
+        SetValue(choices_[selected].value);
+        OnChange.Raise(value_);
+        return true;
+    }
+    ComboBox::ComboBox(std::vector<Choice> choices) : choices_(std::move(choices))
+    {
+        if (!choices_.empty())
+            SetValue(choices_[0].value);
+    }
+    void ComboBox::SetValue(std::string value)
+    {
+        value_ = std::move(value);
+        for (const auto& c : choices_)
+            if (c.value == value_)
+                SetText(c.label);
+    }
     namespace
     {
         class MenuOption : public Button
@@ -84,54 +131,7 @@ namespace LWSUI
             size_t selected_;
             std::function<void(size_t)> changed_;
         };
-    }
-    RadioGroup::RadioGroup(std::vector<Choice> choices) : choices_(std::move(choices))
-    {
-        spacing = 0;
-        for (const auto& choice : choices_)
-        {
-            auto& button = Emplace<RadioButton>(choice.label);
-            buttons_.push_back(&button);
-            connections_.push_back(button.OnChange.Connect(
-                [this, value = choice.value](bool)
-                {
-                    SetValue(value);
-                    OnChange.Raise(value_);
-                }));
-        }
-    }
-    void RadioGroup::SetValue(std::string value)
-    {
-        value_ = std::move(value);
-        for (size_t i = 0; i < buttons_.size(); ++i)
-            buttons_[i]->SetValue(choices_[i].value == value_);
-    }
-    bool RadioGroup::OnInput(const Input& input)
-    {
-        if (input.kind != InputKind::KeyDown || choices_.empty() ||
-            (input.key != LWS::KeyCode::Left && input.key != LWS::KeyCode::Right))
-            return false;
-        size_t selected = 0;
-        for (size_t i = 0; i < choices_.size(); ++i)
-            if (choices_[i].value == value_)
-                selected = i;
-        selected = (selected + (input.key == LWS::KeyCode::Left ? choices_.size() - 1 : 1)) % choices_.size();
-        SetValue(choices_[selected].value);
-        OnChange.Raise(value_);
-        return true;
-    }
-    ComboBox::ComboBox(std::vector<Choice> choices) : choices_(std::move(choices))
-    {
-        if (!choices_.empty())
-            SetValue(choices_[0].value);
-    }
-    void ComboBox::SetValue(std::string value)
-    {
-        value_ = std::move(value);
-        for (const auto& c : choices_)
-            if (c.value == value_)
-                SetText(c.label);
-    }
+    }  // namespace
     void ComboBox::Activate()
     {
         if (!Host())
@@ -201,6 +201,90 @@ namespace LWSUI
         }
         return Button::OnInput(e);
     }
+    ColorPicker::ColorPicker()
+    {
+        columns = {-1, Style().swatchWidth};
+        spacing = Style().swatchGap;
+        text_ = &Emplace<TextBox>();
+        (void) text_->SetInputMask(internal::ColorInputMask());
+        internal::ConfigureColorTextBox(*text_, std::nullopt,
+            [this] { return internal::ToggleColorTextBox(*text_, preferredHexFormat_); });
+        text_->SetPlaceholder("#RR-GG-BB-AA or R,G,B,A");
+        swatch_ = &Emplace<ColorSwatch>();
+        open_ = swatch_->OnClick.Connect([this] { Open(); });
+        textConnection_ = text_->OnEdit.Connect(
+            [this](const std::string& text, EditPhase phase)
+            {
+                const auto draft = internal::ReadColorDraft(text);
+                if (!draft || !draft->complete)
+                {
+                    if (draft) swatch_->SetValue(draft->value);
+                    text_->SetValidation(internal::ColorInputMessage);
+                    return;
+                }
+                format_ = internal::DetectColorFormat(text);
+                if (format_ != internal::ColorTextFormat::DecimalRgba) preferredHexFormat_ = format_;
+                value_ = draft->value;
+                swatch_->SetValue(value_);
+                if (phase != EditPhase::Preview) Refresh();
+                OnEdit.Raise(value_, phase);
+            });
+        Refresh();
+    }
+    void ColorPicker::SetValue(LLUtils::Color value)
+    {
+        value_ = value;
+        Refresh();
+    }
+    void ColorPicker::Refresh()
+    {
+        swatch_->SetValue(value_);
+        text_->SetText(internal::ColorText(value_, format_));
+    }
+    void ColorPicker::Open()
+    {
+        if (!Host() || !text_->Finish(EditPhase::Commit))
+            return;
+        start_ = value_;
+        startFormat_ = format_;
+        const auto& popupStyle = Host()->PopupStyle();
+        auto panel = std::make_unique<internal::ColorPanel>(
+            value_,
+            [handle = Handle()](LLUtils::Color color, bool complete)
+            {
+                if (auto* control = handle.Get())
+                {
+                    auto& picker = static_cast<ColorPicker&>(*control);
+                    if (!complete) { picker.swatch_->SetValue(color); return; }
+                    picker.SetValue(color);
+                    picker.OnEdit.Raise(color, EditPhase::Preview);
+                }
+            },
+            popupStyle, format_);
+        auto* initialFocus = &panel->InitialFocus();
+        auto size = Host()->Window().GetClientAreaMetrics().logical;
+        const auto fitted = panel->Fit(*Host(), {std::min(float(size.x), popupStyle.popupWidth), float(size.y)});
+        if (!fitted)
+        {
+            Host()->ReportError("The color picker needs a larger window or smaller popup fonts.");
+            return;
+        }
+        if (Host()->OpenPopup(
+                *this, std::move(panel),
+                {(float(size.x) - fitted->width) / 2, (float(size.y) - fitted->height) / 2, fitted->width,
+                 fitted->height},
+                [this](EditPhase phase)
+                {
+                    if (phase == EditPhase::Cancel)
+                    {
+                        format_ = startFormat_;
+                        SetValue(start_);
+                    }
+                    OnEdit.Raise(value_, phase);
+                },
+                true))
+            Host()->Focus(initialFocus);
+    }
     namespace
     {
         std::string FilePathError(std::string_view text)
@@ -266,7 +350,7 @@ namespace LWSUI
             bool edited_ = false;
             Event<void(const std::string&, EditPhase)>::Connection edit_;
         };
-    }
+    }  // namespace
     FilePicker::FilePicker()
     {
         columns = {-1, Style().browseWidth};

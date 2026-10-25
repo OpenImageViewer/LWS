@@ -1,7 +1,7 @@
 #include <LWSUI/Primitives.hpp>
-#include <LWSUI/internal/TextPresentation.hpp>
 #include <LWSUI/UIHost.hpp>
 #include <LWSUI/TextEditing.hpp>
+#include <LWSUI/internal/TextPresentation.hpp>
 #include <LWS/TextClipboard.hpp>
 #include <algorithm>
 #include <cmath>
@@ -48,6 +48,42 @@ namespace LWSUI
                                                    : available.width;
         return {width, std::max(Style().rowHeight, height + 2 * p)};
     }
+    Size Label::OnMeasureContent(Size available)
+    {
+        auto size = OnMeasure(available);
+        const auto width = [&](std::string_view value)
+        { return Host() ? Host()->MeasureText(value, 100000, false, Font()).width : value.size() * Font().size * .6f; };
+        size.width = std::max(width(text_), width(minimumText)) + 2 * Style().labelPadding;
+        return size;
+    }
+    Size Button::OnMeasureContent(Size available)
+    {
+        auto size = Control::OnMeasure(available);
+        size.width = (Host() ? Host()->MeasureText(text_, 100000, false, Font()).width
+                             : text_.size() * Font().size * .6f) +
+                     2 * Style().padding;
+        return size;
+    }
+    Size Button::OnMeasure(Size available)
+    {
+        auto size = Control::OnMeasure(available);
+        if (sizeToContent)
+            size.width = (Host() ? Host()->MeasureText(text_, 100000, false, Font()).width
+                                 : text_.size() * Font().size * .6f) +
+                         2 * Style().padding;
+        return size;
+    }
+    void Button::RenderBackground(Canvas& c) const
+    {
+        auto b = Bounds();
+        const bool enabled = Enabled();
+        if (!flat || (enabled && (pressed_ || Hovered())))
+            c.Fill(b.x, b.y, b.width, b.height,
+                   !enabled    ? Style().surface
+                   : pressed_  ? Style().selectedRow
+                   : Hovered() ? Style().hoverSurface
+                               : Style().line);
+    }
     void Button::OnRender(Canvas& c)
     {
         RenderBackground(c);
@@ -58,6 +94,41 @@ namespace LWSUI
                        Font(), enabled ? HighlightSpans(text_) : std::vector<TextSpan>{});
         if (enabled && Host() && Host()->IsFocused(*this))
             c.Fill(b.x, b.y + b.height - Style().focusWidth, b.width, Style().focusWidth, Style().accent);
+    }
+    Size GlyphButton::OnMeasure(Size available)
+    {
+        const auto height = Control::OnMeasure(available).height;
+        return {height, height};
+    }
+    void GlyphButton::OnRender(Canvas& canvas)
+    {
+        RenderBackground(canvas);
+        const auto b = Bounds();
+        const auto color = Enabled() ? Foreground() : Style().muted;
+        const float side = std::min(b.width, b.height) * .45f, left = b.x + (b.width - side) / 2;
+        const bool up = glyph_ == Glyph::ChevronUp || glyph_ == Glyph::DoubleChevronUp;
+        const bool twice = glyph_ == Glyph::DoubleChevronUp || glyph_ == Glyph::DoubleChevronDown;
+        for (int i = 0; i < (twice ? 2 : 1); ++i)
+        {
+            const float y = b.y + b.height / 2 + (twice ? (i ? .23f : -.23f) * side : 0);
+            const float direction = up ? -1.f : 1.f;
+            canvas.Line(left, y - direction * .18f * side, left + side / 2, y + direction * .18f * side,
+                        std::max(1.f, Style().borderWidth), color);
+            canvas.Line(left + side / 2, y + direction * .18f * side, left + side, y - direction * .18f * side,
+                        std::max(1.f, Style().borderWidth), color);
+        }
+    }
+    void Image::OnRender(Canvas& canvas)
+    {
+        if (!bitmap_)
+            return;
+        const auto b = Bounds();
+        const auto pixels = bitmap_->GetBuffer();
+        if (!pixels.width || !pixels.height)
+            return;
+        const float scale = std::min(b.width / pixels.width, b.height / pixels.height);
+        const float width = pixels.width * scale, height = pixels.height * scale;
+        canvas.Image(pixels, b.x + (b.width - width) / 2, b.y + (b.height - height) / 2, width, height);
     }
     bool Button::Finish(EditPhase phase)
     {
@@ -147,114 +218,6 @@ namespace LWSUI
             Alignment::Start, Alignment::Center, /*wrap=*/false, /*constrainHeight=*/false);
         DrawText(canvas, text_, textBounds.x, textBounds.y, textBounds.width, textBounds.height,
                  Enabled() ? Foreground() : Style().muted);
-    }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    void ColorSwatch::OnRender(Canvas& c)
-    {
-        auto b = Bounds();
-        // Standalone controls can receive styles without settings validation. Bound
-        // work to logical pixels and use relative offsets so float addition progresses.
-        const double cell = std::isfinite(Style().checkerSize) ? std::max(1.f, Style().checkerSize) : 1.f;
-        bool darkRow = false;
-        for (double y = 0; y < b.height; y += cell, darkRow = !darkRow)
-        {
-            bool dark = darkRow;
-            for (double x = 0; x < b.width; x += cell, dark = !dark)
-                c.Fill(float(b.x + x), float(b.y + y), float(cell), float(cell),
-                       dark ? Style().checkerDark : Style().checkerLight);
-        }
-        c.Fill(b.x, b.y, b.width, b.height, value_);
-    }
-    Size Label::OnMeasureContent(Size available)
-    {
-        auto size = OnMeasure(available);
-        const auto width = [&](std::string_view value)
-        { return Host() ? Host()->MeasureText(value, 100000, false, Font()).width : value.size() * Font().size * .6f; };
-        size.width = std::max(width(text_), width(minimumText)) + 2 * Style().labelPadding;
-        return size;
-    }
-    Size Button::OnMeasureContent(Size available)
-    {
-        auto size = Control::OnMeasure(available);
-        size.width = (Host() ? Host()->MeasureText(text_, 100000, false, Font()).width
-                             : text_.size() * Font().size * .6f) +
-                     2 * Style().padding;
-        return size;
-    }
-    Size Button::OnMeasure(Size available)
-    {
-        auto size = Control::OnMeasure(available);
-        if (sizeToContent)
-            size.width = (Host() ? Host()->MeasureText(text_, 100000, false, Font()).width
-                                 : text_.size() * Font().size * .6f) +
-                         2 * Style().padding;
-        return size;
-    }
-    void Button::RenderBackground(Canvas& c) const
-    {
-        auto b = Bounds();
-        const bool enabled = Enabled();
-        if (!flat || (enabled && (pressed_ || Hovered())))
-            c.Fill(b.x, b.y, b.width, b.height,
-                   !enabled    ? Style().surface
-                   : pressed_  ? Style().selectedRow
-                   : Hovered() ? Style().hoverSurface
-                               : Style().line);
-    }
-    Size GlyphButton::OnMeasure(Size available)
-    {
-        const auto height = Control::OnMeasure(available).height;
-        return {height, height};
-    }
-    void GlyphButton::OnRender(Canvas& canvas)
-    {
-        RenderBackground(canvas);
-        const auto b = Bounds();
-        const auto color = Enabled() ? Foreground() : Style().muted;
-        const float side = std::min(b.width, b.height) * .45f, left = b.x + (b.width - side) / 2;
-        const bool up = glyph_ == Glyph::ChevronUp || glyph_ == Glyph::DoubleChevronUp;
-        const bool twice = glyph_ == Glyph::DoubleChevronUp || glyph_ == Glyph::DoubleChevronDown;
-        for (int i = 0; i < (twice ? 2 : 1); ++i)
-        {
-            const float y = b.y + b.height / 2 + (twice ? (i ? .23f : -.23f) * side : 0);
-            const float direction = up ? -1.f : 1.f;
-            canvas.Line(left, y - direction * .18f * side, left + side / 2, y + direction * .18f * side,
-                        std::max(1.f, Style().borderWidth), color);
-            canvas.Line(left + side / 2, y + direction * .18f * side, left + side, y - direction * .18f * side,
-                        std::max(1.f, Style().borderWidth), color);
-        }
-    }
-    void Image::OnRender(Canvas& canvas)
-    {
-        if (!bitmap_)
-            return;
-        const auto b = Bounds();
-        const auto pixels = bitmap_->GetBuffer();
-        if (!pixels.width || !pixels.height)
-            return;
-        const float scale = std::min(b.width / pixels.width, b.height / pixels.height);
-        const float width = pixels.width * scale, height = pixels.height * scale;
-        canvas.Image(pixels, b.x + (b.width - width) / 2, b.y + (b.height - height) / 2, width, height);
     }
     void ScrollBar::SetPage(double page)
     {
@@ -493,5 +456,21 @@ namespace LWSUI
                     dragging_   ? Style().accent
                     : Hovered() ? Style().foreground
                                 : Style().muted);
+    }
+    void ColorSwatch::OnRender(Canvas& c)
+    {
+        auto b = Bounds();
+        // Standalone controls can receive styles without settings validation. Bound
+        // work to logical pixels and use relative offsets so float addition progresses.
+        const double cell = std::isfinite(Style().checkerSize) ? std::max(1.f, Style().checkerSize) : 1.f;
+        bool darkRow = false;
+        for (double y = 0; y < b.height; y += cell, darkRow = !darkRow)
+        {
+            bool dark = darkRow;
+            for (double x = 0; x < b.width; x += cell, dark = !dark)
+                c.Fill(float(b.x + x), float(b.y + y), float(cell), float(cell),
+                       dark ? Style().checkerDark : Style().checkerLight);
+        }
+        c.Fill(b.x, b.y, b.width, b.height, value_);
     }
 }  // namespace LWSUI

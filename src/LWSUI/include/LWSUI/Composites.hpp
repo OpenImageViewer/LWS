@@ -5,6 +5,8 @@
 #include <LWSUI/Containers.hpp>
 #include <LWSUI/UIHost.hpp>
 #include <LWS/Timer.hpp>
+#include <LWSUI/ColorMath.hpp>
+#include <LWSUI/internal/ColorText.hpp>
 #include <charconv>
 #include <expected>
 #include <chrono>
@@ -66,7 +68,6 @@ namespace LWSUI
         std::string value_;
         std::vector<LWSUI::Event<void()>::Connection> choicesConnections_;
     };
-
     template <class T>
     class NumericEdit : public Container
     {
@@ -295,6 +296,41 @@ namespace LWSUI
         LWSUI::Event<void(bool)>::Connection downConnection_, upConnection_;
         LWSUI::Event<void(EditPhase)>::Connection downRelease_, upRelease_;
     };
+    class ColorPicker : public Grid
+    {
+      public:
+
+        ColorPicker();
+        void SetValue(LLUtils::Color value);
+        LLUtils::Color Value() const { return value_; }
+        LWSUI::Event<void(LLUtils::Color, EditPhase)> OnEdit;
+
+      protected:
+
+        Size OnMeasure(Size available) override
+        {
+            columns = {-1, Style().swatchWidth};
+            spacing = Style().swatchGap;
+            return Grid::OnMeasure(available);
+        }
+
+      private:
+
+        // Child roles are owned by this composite.
+        using Container::Add;
+        using Container::Clear;
+        using Container::Emplace;
+        using Container::Remove;
+
+        void Open();
+        void Refresh();
+        internal::ColorTextFormat format_ = internal::ColorTextFormat::Hash, startFormat_ = format_, preferredHexFormat_ = format_;
+        ColorSwatch* swatch_;
+        TextBox* text_;
+        LLUtils::Color value_{uint32_t{0x000000ff}}, start_;
+        LWSUI::Event<void()>::Connection open_;
+        LWSUI::Event<void(const std::string&, EditPhase)>::Connection textConnection_;
+    };
     class FilePicker : public Grid
     {
       public:
@@ -329,4 +365,5 @@ namespace LWSUI
         LWSUI::Event<void(const std::string&, EditPhase)>::Connection edit_;
     };
 }  // namespace LWSUI
+
 #include <LWSUI/SliderValue.hpp>

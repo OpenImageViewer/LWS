@@ -163,7 +163,7 @@ namespace LWSUI
             Glyph
         };
         FontRole fontRole = FontRole::Normal;
-        const FontSpec& Font() const;
+        virtual const FontSpec& Font() const;
         void SetHighlightPattern(std::string pattern)
         {
             highlightPattern_ = std::move(pattern);

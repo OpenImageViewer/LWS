@@ -4,6 +4,7 @@
 #include <LWSUI/internal/InputMask.hpp>
 #include <LWSUI/internal/DynamicMask.hpp>
 #include <cstdint>
+#include <utility>
 namespace LWS
 {
     class HighPrecisionTimer;
@@ -21,7 +22,6 @@ namespace LWSUI
         None,
         Ellipsis
     };
-
     class Label : public Control
     {
       public:
@@ -196,12 +196,16 @@ namespace LWSUI
         explicit TextBox(std::string value = {}, TextBoxMode mode = TextBoxMode::SingleLine);
         ~TextBox() override;
         TextBoxMode Mode() const { return mode_; }
+        const FontSpec& Font() const override;
+        void SetFontWeight(std::optional<int> weight);
+        void SetMinimumFontSize(float size);
         // Multiline content can use an enclosing ScrollView instead of an internal scrollbar.
         bool sizeToContent = false;
         // Preferred multiline height; allocation remains the parent's responsibility.
         void SetVisibleLines(unsigned lines);
         void SetText(std::string value);
         bool EditText(std::string value);
+        void SetDoubleClickAction(std::function<bool()> action) { doubleClickAction_ = std::move(action); }
         // Read-only retains selection/copy; enabling it cancels the current draft.
         void SetReadOnly(bool value);
         void SetBorderless(bool value)
@@ -212,9 +216,26 @@ namespace LWSUI
                 Invalidate();
             }
         }
+        void SetFocusOutline(bool enabled)
+        {
+            if (focusOutline_ == enabled) return;
+            focusOutline_ = enabled;
+            Invalidate();
+        }
+        void SetBackground(std::optional<LLUtils::Color> color)
+        {
+            if (background_ == color) return;
+            background_ = color;
+            Invalidate();
+        }
         const std::string& Text() const { return mask_ ? value_ : text_; }
         void SetInputFilter(InputFilter filter);
         // Called during rendering with display text and UTF-8 byte offsets. Providers must not mutate controls.
+        void SetTextSpanProvider(std::function<std::vector<TextSpan>(std::string_view)> provider)
+        {
+            textSpanProvider_ = std::move(provider);
+            Invalidate();
+        }
         std::expected<void, std::string> SetInputMask(std::string_view pattern);
         std::expected<void, std::string> SetInputMask(const DynamicMaskDefinition& definition);
         std::string UnmaskedText() const;
@@ -291,6 +312,13 @@ namespace LWSUI
         bool caretUpstream_ = false;
         std::string text_, committed_, validation_, placeholder_, value_, inputError_;
         InputFilter filter_;
+        std::function<bool()> doubleClickAction_;
+        std::optional<int> fontWeight_;
+        float minimumFontSize_ = 0;
+        mutable FontSpec inheritedFont_, effectiveFont_;
+        mutable bool fontResolved_ = false;
+        std::optional<LLUtils::Color> background_;
+        std::function<std::vector<TextSpan>(std::string_view)> textSpanProvider_;
         bool blockedDepartureFeedback_ = false;
         bool dynamicExplicit_ = false, committedDynamicExplicit_ = false;
         std::optional<internal::InputMask> mask_;
@@ -298,7 +326,7 @@ namespace LWSUI
         size_t caret_ = 0, anchor_ = 0;
         uint64_t pasteGeneration_ = 0;
         float scroll_ = 0;
-        bool editing_ = false, selecting_ = false, readOnly_ = false, borderless_ = false;
+        bool editing_ = false, selecting_ = false, readOnly_ = false, borderless_ = false, focusOutline_ = false;
         // Host text metrics are refreshed on text/font changes, independently of paint.
         // Multiline geometry also depends on viewport dimensions and the scrollbar gutter.
         bool geometryDirty_ = true, caretScrollPending_ = false;
@@ -377,6 +405,7 @@ namespace LWSUI
         SliderValueMode valueMode_ = SliderValueMode::Hidden;
         std::unique_ptr<internal::SliderValueBinding> valueBinding_;
     };
+    // Content distance per logical pointer pixel at the configured inward endpoint.
     enum class ScrollResolution
     {
         Row,

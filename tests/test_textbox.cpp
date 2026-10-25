@@ -1,15 +1,18 @@
 #ifdef LWS_TEST_UI
-#include <LWSUI/Composites.hpp>
     #include <catch2/catch_test_macros.hpp>
     #include <catch2/catch_approx.hpp>
-    #include <LWSUI/Containers.hpp>
+    #include <LWSUI/Composites.hpp>
     #include <LWSUI/UIHost.hpp>
+    #include <LWSUI/internal/ColorTextBox.hpp>
+    #include "../src/LWSUI/source/ColorPanel.hpp"
+    #include "../src/LWSUI/source/MenuHost.hpp"
     #include <LWS/TextClipboard.hpp>
     #include <LWS/Platform.hpp>
     #ifdef LWS_HAS_WIN32_BACKEND
         #include <LWS/Win32/Platform.hpp>
     #endif
     #include <chrono>
+    #include <cctype>
     #include <thread>
 
 namespace
@@ -574,7 +577,6 @@ TEST_CASE("Hexadecimal form flags choose accepted notations and preserve draft e
 }
 
 
-
 TEST_CASE("Hexadecimal spacing and group size preserve compact and editable input", "[ui][text][filter][hex]")
 {
     const HexadecimalFormFlags forms{HexadecimalForm::HashPrefix | HexadecimalForm::ZeroXPrefix};
@@ -599,7 +601,161 @@ TEST_CASE("Hexadecimal spacing and group size preserve compact and editable inpu
     REQUIRE(InputFilters::Hexadecimal(true, 1, 2)("#aa bb cc dd", TextEditOrigin::Paste));
     REQUIRE_FALSE(InputFilters::Hexadecimal(true, 1, 2)("#aa bb cc dd ee", TextEditOrigin::Paste));
 }
+TEST_CASE("Color text parses prefixed hexadecimal and variable-width decimal RGBA", "[ui][color][text]")
+{
+    using namespace LWSUI::internal;
+    const LLUtils::Color expected{uint32_t{0xfff0d2ff}};
+    for (auto value : {"#fff0d2ff", "#ff f0 d2 ff", "0xFFF0D2FF", "0Xff f0 d2 ff", "255,240,210,255", " 255 , 240, 210 ,255 "})
+    {
+        REQUIRE(ParseColor(value));
+        REQUIRE(*ParseColor(value) == expected);
+    }
+    REQUIRE(*ParseColor("#fff0d2") == expected);
+    REQUIRE(*ParseColor("0xff f0 d2") == expected);
+    REQUIRE(*ParseColor("255,240,210") == expected);
+    REQUIRE(*ParseColor("001,002,003,004") == LLUtils::Color{uint32_t{0x01020304}});
+    REQUIRE(*ParseColor("0,0,0,0") == LLUtils::Color{uint32_t{0}});
+    for (auto value : {"", "#", "0x", "fff0d2ff", "#f f0 d2 ff", "#ff  f0 d2 ff", "#gg ff 00 00",
+                       "255,240,", "255,240,210,255,0", "256,0,0,0", "0000,0,0,0", "-1,0,0,0", "1.0,0,0,0", "1,,3,4"})
+        REQUIRE_FALSE(ParseColor(value));
+    REQUIRE(ColorText(expected) == "#FF-F0-D2-FF");
+    REQUIRE(ColorText(expected, ColorTextFormat::ZeroX) == "0xFF-F0-D2-FF");
+    REQUIRE(ColorText(expected, ColorTextFormat::DecimalRgba) == "255,240,210,255");
+    auto mask = internal::DynamicMask::Create(ColorInputMask());
+    REQUIRE(mask);
+    for (auto value : {"", "0", "0x", "#ff-", "255,"}) REQUIRE(mask->Format(value));
+    REQUIRE_FALSE(mask->Format("#0011223344"));
+    REQUIRE_FALSE(mask->Format("1.0,2,3,4"));
 
+}
+TEST_CASE("ColorPicker detects both formats without rewriting drafts", "[ui][color][text]")
+{
+    ColorPicker picker;
+    auto* text = dynamic_cast<TextBox*>(picker.Children().front().get());
+    REQUIRE(text);
+    picker.SetValue(LLUtils::Color{uint32_t{0x11223344}});
+    REQUIRE(text->Text() == "#11-22-33-44");
+    std::vector<EditPhase> phases;
+    auto connection = picker.OnEdit.Connect([&](auto, auto phase) { phases.push_back(phase); });
+    auto draft = [&](std::string value)
+    {
+        REQUIRE(text->Dispatch({.kind = InputKind::KeyDown, .key = K::A, .control = true}));
+        REQUIRE(text->Dispatch({.kind = InputKind::Text, .text = value}));
+    };
+    draft("#FFF0D2FF");
+    REQUIRE(text->Text() == "#FF-F0-D2-FF");
+    REQUIRE(text->Finish(EditPhase::Commit));
+    REQUIRE(text->Text() == "#FF-F0-D2-FF");
+    draft("255,240,210,255");
+    REQUIRE(text->Text() == "255,240,210,255");
+    REQUIRE(text->Finish(EditPhase::Commit));
+    picker.SetValue(LLUtils::Color{uint32_t{0x01020304}});
+    REQUIRE(text->Text() == "1,2,3,4");
+    draft("0X01020304");
+    REQUIRE(text->Finish(EditPhase::Commit));
+    REQUIRE(text->Text() == "0X01-02-03-04");
+    draft("255,0,0,255");
+    REQUIRE(text->Finish(EditPhase::Cancel));
+    REQUIRE(picker.Value() == LLUtils::Color{uint32_t{0x01020304}});
+    REQUIRE(text->Text() == "0X01-02-03-04");
+    REQUIRE(phases.back() == EditPhase::Cancel);
+    draft("256,0,0,255");
+    REQUIRE_FALSE(text->InputError().empty());
+    REQUIRE(text->Finish(EditPhase::Commit));
+    REQUIRE(picker.Value() == LLUtils::Color{uint32_t{0x01020304}});
+    REQUIRE(text->Finish(EditPhase::Cancel));
+    draft("0");
+    REQUIRE_FALSE(text->Finish(EditPhase::Commit));
+    REQUIRE(text->Dispatch({.kind = InputKind::Text, .text = "x01020304"}));
+    REQUIRE(text->Finish(EditPhase::Commit));
+    REQUIRE(text->Text() == "0x01-02-03-04");
+}
+
+TEST_CASE("Dynamic color masks advance fields and reject edits atomically", "[ui][text][dynamic-mask]")
+{
+    TextEnvironment env("", {260, 30}, TextBoxMode::SingleLine);
+    REQUIRE(env.text->SetInputMask(internal::ColorInputMask()));
+    env.Type("#"); env.Type("ff");
+    REQUIRE(env.text->Text() == "#FF-");
+    env.Type("f0d2ff");
+    REQUIRE(env.text->Text() == "#FF-F0-D2-FF");
+    REQUIRE(env.text->MaskComplete());
+    REQUIRE(env.text->Finish(EditPhase::Commit));
+    REQUIRE(env.Key(K::A, true)); env.Type("0"); env.Type("x"); env.Type("01020304");
+    REQUIRE(env.text->Text() == "0x01-02-03-04");
+    REQUIRE(env.text->MaskComplete());
+    REQUIRE(env.text->Finish(EditPhase::Cancel));
+    REQUIRE(env.text->Text() == "#FF-F0-D2-FF");
+    REQUIRE(env.Key(K::A, true)); env.Type("12"); env.Type(",");
+    REQUIRE(env.text->Text() == "12,");
+    env.Type("255");
+    REQUIRE(env.text->Text() == "12,255,");
+    env.Type("256");
+    REQUIRE(env.text->Text() == "12,255,");
+    REQUIRE_FALSE(env.text->InputError().empty());
+    env.Type("2,3");
+    REQUIRE(env.text->MaskComplete());
+    REQUIRE(env.text->Text() == "12,255,2,3");
+    REQUIRE(env.Key(K::Home));
+    REQUIRE(env.Key(K::Right));
+    REQUIRE(env.Key(K::Delete));
+    REQUIRE(env.text->Text() == "1,255,2,3");
+    REQUIRE(env.Key(K::Home));
+    REQUIRE(env.Key(K::Right));
+    REQUIRE(env.Key(K::Right));
+    REQUIRE(env.Key(K::Backspace));
+    REQUIRE(env.text->Text() == ",255,2,3");
+    REQUIRE_FALSE(env.text->MaskComplete());
+    REQUIRE_FALSE(env.text->Finish(EditPhase::Commit));
+    env.host->SetInvalidEditPolicy(InvalidEditPolicy::DiscardOnLeave);
+    REQUIRE(env.host->Focus(env.next));
+    REQUIRE(env.text->Text() == "#FF-F0-D2-FF");
+    REQUIRE(env.text->Validation().empty());
+}
+TEST_CASE("Dynamic mask definitions and replacements preserve the previous state on failure", "[ui][text][dynamic-mask]")
+{
+    TextBox text("#01-02-03-04");
+    auto definition = internal::ColorInputMask();
+    REQUIRE(text.SetInputMask(definition));
+    definition.profiles[0].maximumDigits = 0;
+    REQUIRE_FALSE(text.SetInputMask(definition));
+    REQUIRE(text.Text() == "#01-02-03-04");
+    REQUIRE(text.Dispatch({.kind = InputKind::KeyDown, .key = K::A, .control = true}));
+    REQUIRE(text.Dispatch({.kind = InputKind::Text, .text = "256,0,0,0"}));
+    REQUIRE(text.Text() == "#01-02-03-04");
+    REQUIRE(text.Dispatch({.kind = InputKind::Text, .text = "1,2,3,4"}));
+    REQUIRE(text.Text() == "1,2,3,4");
+    REQUIRE(text.Finish(EditPhase::Cancel));
+    REQUIRE(text.Text() == "#01-02-03-04");
+    auto mask = internal::DynamicMask::Create(internal::ColorInputMask());
+    REQUIRE(mask);
+    auto pasted = mask->Replace("", 0, 0, "0X010203", TextEditOrigin::Paste);
+    REQUIRE(pasted);
+    REQUIRE(pasted->display == "0X01-02-03-FF");
+    REQUIRE_FALSE(mask->Replace("", 0, 0, "#01020z", TextEditOrigin::Paste));
+    REQUIRE(mask->Replace("", 0, 0, "#01 02 03 04", TextEditOrigin::Paste)->display == "#01-02-03-04");
+}
+TEST_CASE("Invalid edit departure policies preserve strict explicit commit", "[ui][text][validation]")
+{
+    TextEnvironment env("original", {260, 30}, TextBoxMode::SingleLine);
+    REQUIRE(env.host->GetInvalidEditPolicy() == InvalidEditPolicy::KeepInvalid);
+    REQUIRE(env.Key(K::A, true)); env.Type("invalid"); env.text->SetValidation("Rejected");
+    REQUIRE_FALSE(env.host->Finish(EditPhase::Commit));
+    env.host->SetInvalidEditPolicy(InvalidEditPolicy::BlockOnLeave);
+    REQUIRE_FALSE(env.host->Focus(env.next));
+    REQUIRE(env.text->Text() == "invalid");
+    env.host->SetInvalidEditPolicy(InvalidEditPolicy::DiscardOnLeave);
+    REQUIRE(env.text->Text() == "invalid");
+    REQUIRE(env.host->Focus(env.next));
+    REQUIRE(env.text->Text() == "original");
+    REQUIRE(env.text->Validation().empty());
+    REQUIRE(env.host->Focus(env.text));
+    env.Type("invalid"); env.text->SetValidation("Rejected");
+    REQUIRE(env.Key(K::Tab));
+    REQUIRE(env.host->IsFocused(*env.next));
+    REQUIRE(env.text->Text() == "original");
+}
+#ifdef LWS_HAS_WIN32_BACKEND
 TEST_CASE("Insert clipboard aliases use existing text paths and honor read-only", "[ui][text][clipboard]")
 {
     TextEnvironment env("copy me", {260, 30}, TextBoxMode::SingleLine);
@@ -622,32 +778,624 @@ TEST_CASE("Insert clipboard aliases use existing text paths and honor read-only"
     LWS::RequestClipboardText(*env.window, [&](auto, auto value) { copied = std::move(value); });
     REQUIRE(copied == "copy me");
 }
+#endif
 
-
-
-
-
-TEST_CASE("Invalid edit departure policies preserve strict explicit commit", "[ui][text][validation]")
+TEST_CASE("Color masks reset after deleting all decimal input or all hex input including its prefix", "[ui][text][dynamic-mask]")
 {
-    TextEnvironment env("original", {260, 30}, TextBoxMode::SingleLine);
-    REQUIRE(env.host->GetInvalidEditPolicy() == InvalidEditPolicy::KeepInvalid);
-    REQUIRE(env.Key(K::A, true)); env.Type("invalid"); env.text->SetValidation("Rejected");
-    REQUIRE_FALSE(env.host->Finish(EditPhase::Commit));
-    env.host->SetInvalidEditPolicy(InvalidEditPolicy::BlockOnLeave);
-    REQUIRE_FALSE(env.host->Focus(env.next));
-    REQUIRE(env.text->Text() == "invalid");
-    env.host->SetInvalidEditPolicy(InvalidEditPolicy::DiscardOnLeave);
-    REQUIRE(env.text->Text() == "invalid");
-    REQUIRE(env.host->Focus(env.next));
-    REQUIRE(env.text->Text() == "original");
-    REQUIRE(env.text->Validation().empty());
-    REQUIRE(env.host->Focus(env.text));
-    env.Type("invalid"); env.text->SetValidation("Rejected");
-    REQUIRE(env.Key(K::Tab));
-    REQUIRE(env.host->IsFocused(*env.next));
-    REQUIRE(env.text->Text() == "original");
+    TextEnvironment env("#11-22-33-44", {260, 30}, TextBoxMode::SingleLine);
+    REQUIRE(env.text->SetInputMask(internal::ColorInputMask()));
+    REQUIRE(env.Key(K::End));
+    for (unsigned i = 0; i < 8; ++i) REQUIRE(env.Key(K::Backspace));
+    REQUIRE(env.text->Text() == "#");
+    REQUIRE(env.Key(K::Backspace));
+    REQUIRE(env.text->Text().empty());
+    env.Type("12,34,56,78");
+    REQUIRE(env.text->Text() == "12,34,56,78");
+    REQUIRE(env.Key(K::Home)); REQUIRE(env.Key(K::Delete));
+    REQUIRE(env.text->Text() == "2,34,56,78");
+    REQUIRE(env.Key(K::End));
+    for (unsigned i = 0; i < 7; ++i) REQUIRE(env.Key(K::Backspace));
+    REQUIRE(env.text->Text().empty());
+    env.Type("0"); env.Type("x"); env.Type("11223344");
+    REQUIRE(env.text->Text() == "0x11-22-33-44");
+    for (unsigned i = 0; i < 8; ++i) REQUIRE(env.Key(K::Backspace));
+    REQUIRE(env.text->Text() == "0x");
+    REQUIRE(env.Key(K::Backspace));
+    REQUIRE(env.text->Text() == "0");
+    REQUIRE(env.Key(K::Backspace));
+    REQUIRE(env.text->Text().empty());
+    env.Type("#11223344");
+    REQUIRE(env.Key(K::A, true)); REQUIRE(env.Key(K::Delete));
+    REQUIRE(env.text->Text().empty());
+    REQUIRE(env.Key(K::Escape));
+    REQUIRE(env.text->Text() == "#11-22-33-44");
+}
+TEST_CASE("Incomplete color drafts preview entered channels without publishing a value", "[ui][color][text]")
+{
+    ColorPicker picker;
+    const LLUtils::Color original{uint32_t{0x11223344}};
+    picker.SetValue(original);
+    auto* text = dynamic_cast<TextBox*>(picker.Children().front().get());
+    auto* swatch = dynamic_cast<ColorSwatch*>(picker.Children().back().get());
+    REQUIRE(text); REQUIRE(swatch);
+    unsigned edits = 0;
+    auto changed = picker.OnEdit.Connect([&](auto, auto) { ++edits; });
+    auto draft = [&](std::string value)
+    {
+        REQUIRE(text->Dispatch({.kind = InputKind::KeyDown, .key = K::A, .control = true}));
+        REQUIRE(text->Dispatch({.kind = InputKind::Text, .text = value}));
+    };
+    draft("#f");
+    REQUIRE(swatch->Value() == LLUtils::Color{uint32_t{0x0f0000ff}});
+    REQUIRE(picker.Value() == original); REQUIRE(edits == 0);
+    draft("12,");
+    REQUIRE(swatch->Value() == LLUtils::Color{uint32_t{0x0c0000ff}});
+    REQUIRE(picker.Value() == original); REQUIRE(edits == 0);
+    draft("12,5");
+    REQUIRE(swatch->Value() == LLUtils::Color{uint32_t{0x0c0500ff}});
+    REQUIRE_FALSE(text->Finish(EditPhase::Commit));
+    REQUIRE(text->Finish(EditPhase::Cancel));
+    REQUIRE(swatch->Value() == original);
+    REQUIRE(picker.Value() == original);
+    REQUIRE(text->Text() == "#11-22-33-44");
 }
 
+TEST_CASE("Ambiguous color digits choose hexadecimal when a hex letter is typed", "[ui][text][dynamic-mask]")
+{
+    TextEnvironment env("", {260, 30}, TextBoxMode::SingleLine);
+    REQUIRE(env.text->SetInputMask(internal::ColorInputMask()));
+    for (const auto& letter : {"a", "B", "c", "D", "e", "F"})
+    {
+        REQUIRE(env.Key(K::A, true)); REQUIRE(env.Key(K::Delete));
+        env.Type(letter);
+        REQUIRE(env.text->Text() == std::string("#") + char(std::toupper(static_cast<unsigned char>(*letter))));
+    }
+    REQUIRE(env.Key(K::A, true)); REQUIRE(env.Key(K::Delete));
+    env.Type("0"); env.Type("f");
+    REQUIRE(env.text->Text() == "#0F-");
+    env.Type("123456");
+    REQUIRE(env.text->Text() == "#0F-12-34-56");
+    REQUIRE(env.text->MaskComplete());
+    REQUIRE(env.Key(K::A, true)); REQUIRE(env.Key(K::Delete));
+    env.Type("12"); env.Type("a"); env.Type("b");
+    REQUIRE(env.text->Text() == "#12-AB-");
+    REQUIRE(env.Key(K::A, true)); REQUIRE(env.Key(K::Delete));
+    env.Type("12"); REQUIRE(env.Key(K::Home)); env.Type("f");
+    REQUIRE(env.text->Text() == "#F1-2");
+    REQUIRE(env.Key(K::Delete)); env.Type("e");
+    REQUIRE(env.text->Text() == "#FE-2");
+    REQUIRE(env.Key(K::A, true)); REQUIRE(env.Key(K::Delete));
+    env.Type("12,"); env.Type("f");
+    REQUIRE(env.text->Text() == "12,");
+    REQUIRE_FALSE(env.text->InputError().empty());
+    REQUIRE(env.Key(K::A, true)); REQUIRE(env.Key(K::Delete));
+    env.Type("123"); env.Type("f");
+    REQUIRE(env.text->Text() == "#12-3F-");
+    REQUIRE(env.Key(K::A, true)); REQUIRE(env.Key(K::Delete));
+    env.Type("g");
+    REQUIRE(env.text->Text().empty());
+    env.Type("0"); env.Type("x"); env.Type("ab");
+    REQUIRE(env.text->Text() == "0xAB-");
+}
+
+TEST_CASE("Color paste normalizes bare RGB whitespace and prefix-only fields", "[ui][text][color][clipboard]")
+{
+    auto mask = internal::DynamicMask::Create(internal::ColorInputMask());
+    REQUIRE(mask);
+    for (const auto& display : {"", "#", "0x", "0X"})
+    {
+        auto result = mask->Replace(display, std::string_view(display).size(), std::string_view(display).size(),
+                                    "#  123f56", TextEditOrigin::Paste);
+        REQUIRE(result);
+        REQUIRE(result->display == "#12-3F-56-FF");
+        REQUIRE(result->caret == result->display.size());
+    }
+    for (const auto& paste : {"123f56", "  #  12 3f 56  ", "#12-3f-56", "123F56FF"})
+    {
+        auto result = mask->Replace("", 0, 0, paste, TextEditOrigin::Paste);
+        REQUIRE(result);
+        REQUIRE(result->display == "#12-3F-56-FF");
+        REQUIRE(mask->Complete(result->display));
+    }
+    REQUIRE(mask->Replace("0X", 2, 2, "123f56", TextEditOrigin::Paste)->display == "0X12-3F-56-FF");
+    REQUIRE(mask->Replace("#", 1, 1, "0x123F56", TextEditOrigin::Paste)->display == "0x12-3F-56-FF");
+    REQUIRE(mask->Replace("", 0, 0, "123456", TextEditOrigin::Paste)->display == "#12-34-56-FF");
+    for (const auto* invalid : {"#12--3f-56", "#123f5z", "123456789", "12,256,3,4"})
+        REQUIRE_FALSE(mask->Replace("#", 1, 1, invalid, TextEditOrigin::Paste));
+    REQUIRE(mask->Replace("#12-34-56-FF", 4, 4, "#123F56", TextEditOrigin::Paste)->display == "#12-3F-56-FF");
+}
+TEST_CASE("Explicit decimal selection and automatic separators have separate draft state", "[ui][text][dynamic-mask]")
+{
+    TextEnvironment env("", {260, 30}, TextBoxMode::SingleLine);
+    REQUIRE(env.text->SetInputMask(internal::ColorInputMask()));
+    for (const bool singleEvent : {false, true})
+    {
+        REQUIRE(env.Key(K::A, true)); REQUIRE(env.Key(K::Delete));
+        if (singleEvent) env.Type("123F");
+        else { env.Type("1"); env.Type("2"); env.Type("3"); env.Type("F"); }
+        REQUIRE(env.text->Text() == "#12-3F-");
+        REQUIRE(*internal::PreviewColor(env.text->Text()) == LLUtils::Color{uint32_t{0x123f00ff}});
+    }
+    REQUIRE(env.Key(K::A, true)); REQUIRE(env.Key(K::Delete));
+    env.Type("123"); env.Type(","); env.Type("F");
+    REQUIRE(env.text->Text() == "123,");
+    REQUIRE_FALSE(env.text->InputError().empty());
+    REQUIRE(env.Key(K::A, true)); REQUIRE(env.Key(K::Delete));
+    env.Type("123"); env.Type("g");
+    REQUIRE(env.text->Text() == "123,");
+    env.Type("F");
+    REQUIRE(env.text->Text() == "#12-3F-");
+    env.text->SetText("1,2,3,4");
+    env.Type("f");
+    REQUIRE(env.text->Text() == "1,2,3,4");
+    REQUIRE(env.Key(K::A, true)); REQUIRE(env.Key(K::Delete));
+    env.Type("123F"); REQUIRE(env.Key(K::Escape));
+    REQUIRE(env.text->Text() == "1,2,3,4");
+    env.Type("f");
+    REQUIRE(env.text->Text() == "1,2,3,4");
+}
+TEST_CASE("Incomplete previews use zero RGB and opaque alpha independently of the old value", "[ui][color][text]")
+{
+    using internal::PreviewColor;
+    for (const auto* value : {"", "#", "0x", "0X", "0"})
+        REQUIRE(*PreviewColor(value) == LLUtils::Color{uint32_t{0x000000ff}});
+    REQUIRE(*PreviewColor("#f") == LLUtils::Color{uint32_t{0x0f0000ff}});
+    REQUIRE(*PreviewColor("#12-3F-") == LLUtils::Color{uint32_t{0x123f00ff}});
+    REQUIRE(*PreviewColor("12,5") == LLUtils::Color{uint32_t{0x0c0500ff}});
+    REQUIRE(*PreviewColor("12,,5,") == LLUtils::Color{uint32_t{0x0c0005ff}});
+    REQUIRE(*PreviewColor("#12-34-56-0") == LLUtils::Color{uint32_t{0x12345600}});
+    REQUIRE(*PreviewColor("12,34,56,1") == LLUtils::Color{uint32_t{0x0c223801}});
+    REQUIRE_FALSE(PreviewColor("256,"));
+}
+TEST_CASE("Color spans identify channel digits without coloring prefixes or separators", "[ui][color][text]")
+{
+    for (const auto* text : {"#12-34-56-ff", "0x12-34-56-ff", "0X12-34-56-ff", "12,34,56,255"})
+    {
+        const auto spans = internal::ColorTextSpans(text);
+        REQUIRE(spans.size() == 4);
+        for (size_t i = 0; i < spans.size(); ++i)
+        {
+            REQUIRE(spans[i].foreground == LLUtils::Color{internal::ColorChannelColors[i]});
+            REQUIRE(spans[i].background == LLUtils::Color{uint32_t{0}});
+            REQUIRE(std::string_view(text).substr(spans[i].offset, spans[i].length).find_first_not_of("0123456789abcdefABCDEF") == std::string_view::npos);
+        }
+    }
+    auto spans = internal::ColorTextSpans("#12-3F-");
+    REQUIRE(spans.size() == 2);
+    REQUIRE(static_cast<TextRange>(spans[0]) == TextRange{1, 2});
+    REQUIRE(static_cast<TextRange>(spans[1]) == TextRange{4, 2});
+    spans = internal::ColorTextSpans("12,,5,");
+    REQUIRE(spans.size() == 2);
+    REQUIRE(spans[1].foreground == LLUtils::Color{uint32_t{0x3399ffff}});
+    REQUIRE(internal::ColorTextSpans("#").empty());
+}
+TEST_CASE("Text span providers respect selection UTF-8 boundaries and removal", "[ui][text][render]")
+{
+    for (const auto mode : {TextBoxMode::SingleLine, TextBoxMode::Multiline})
+    {
+        TextEnvironment env("RGB", {260, 100}, mode);
+        env.text->SetText("RGB");
+        auto render = [&]
+        {
+            Canvas canvas; canvas.Begin(400, 300);
+            env.text->Render(canvas);
+            const auto bitmap = canvas.End();
+            return std::vector<std::byte>(bitmap.pixels.begin(), bitmap.pixels.end());
+        };
+        const auto normal = render();
+        unsigned calls = 0;
+        env.text->SetTextSpanProvider([&](std::string_view text)
+        {
+            ++calls; REQUIRE(text == "RGB");
+            return std::vector<TextSpan>{{{0, 3}, LLUtils::Color{uint32_t{0xff0000ff}}, LLUtils::Color{uint32_t{0}}}};
+        });
+        REQUIRE(bool(render() != normal));
+        REQUIRE(calls == 1);
+        REQUIRE(env.Key(K::A, true));
+        const auto selected = render();
+        env.text->SetTextSpanProvider({});
+        REQUIRE(bool(render() == selected));
+        env.text->SetText("RGB");
+        REQUIRE(bool(render() == normal));
+        env.text->SetText("\xc3\xa9X");
+        const auto unicode = render();
+        env.text->SetTextSpanProvider([](std::string_view)
+        {
+            const LLUtils::Color red{uint32_t{0xff0000ff}}, clear{uint32_t{0}};
+            return std::vector<TextSpan>{{{1, 1}, red, clear}, {{0, 1}, red, clear},
+                                         {{99, 2}, red, clear}, {{0, 99}, red, clear}, {{0, 0}, red, clear}};
+        });
+        REQUIRE(bool(render() == unicode));
+    }
+}
+
+#ifdef LWS_HAS_WIN32_BACKEND
+TEST_CASE("Color clipboard paste replaces a provisional prefix and completes RGB alpha", "[ui][text][color][clipboard]")
+{
+    TextEnvironment env("", {260, 30}, TextBoxMode::SingleLine);
+    REQUIRE(env.text->SetInputMask(internal::ColorInputMask()));
+    for (const auto* initial : {"#", ""})
+    {
+        env.text->SetText(initial);
+        const std::string paste = std::string_view(initial).empty() ? "123f56" : "#  123f56";
+        auto status = LWS::SetClipboardText(*env.window, paste);
+        for (unsigned attempt = 0; attempt < 20; ++attempt)
+        {
+            status = LWS::SetClipboardText(*env.window, paste);
+            if (status == LWS::ClipboardResult::Success) break;
+            env.Pump(5);
+        }
+        if (status != LWS::ClipboardResult::Success) SKIP("Clipboard access unavailable");
+        REQUIRE(env.Key(K::V, true)); env.Pump(20);
+        REQUIRE(env.text->Text() == "#12-3F-56-FF");
+        REQUIRE(env.text->MaskComplete());
+        REQUIRE(*internal::ParseColor(env.text->Text()) == LLUtils::Color{uint32_t{0x123f56ff}});
+    }
+}
+#endif
+
+TEST_CASE("TextBox background override stays black when focused unfocused and borderless", "[ui][text][render]")
+{
+    TextEnvironment env("color", {260, 40}, TextBoxMode::SingleLine);
+    env.text->SetBackground(LLUtils::Color{uint32_t{0x000000ff}});
+    for (const bool borderless : {false, true})
+    {
+        env.text->SetBorderless(borderless);
+        for (const bool focused : {false, true})
+        {
+            REQUIRE(env.host->Focus(focused ? static_cast<Control*>(env.text) : env.next));
+            Canvas canvas; canvas.Begin(400, 300);
+            env.text->Render(canvas);
+            const auto pixels = canvas.End();
+            const auto bounds = env.text->Bounds();
+            const auto offset = size_t(bounds.y + 2) * pixels.rowPitch + size_t(bounds.x + bounds.width - 4) * 4;
+            REQUIRE(std::to_integer<unsigned>(pixels.pixels[offset]) == 0);
+            REQUIRE(std::to_integer<unsigned>(pixels.pixels[offset + 1]) == 0);
+            REQUIRE(std::to_integer<unsigned>(pixels.pixels[offset + 2]) == 0);
+            REQUIRE(std::to_integer<unsigned>(pixels.pixels[offset + 3]) == 255);
+        }
+    }
+}
+
+TEST_CASE("Color fields preserve charcoal fill and show focus below validation across themes", "[ui][text][render][color]")
+{
+    TextEnvironment env("#12-34-56-78", {260, 40}, TextBoxMode::SingleLine);
+    internal::ConfigureColorTextBox(*env.text);
+    const auto bounds = env.text->Bounds();
+    for (const auto preset : ThemePresets)
+    {
+        const auto theme = MakeTheme(preset);
+        env.text->SetStyle(theme);
+        for (const bool readOnly : {false, true})
+        {
+            env.text->SetReadOnly(readOnly);
+            env.text->SetBorderless(readOnly);
+            for (const bool focused : {false, true})
+            {
+                REQUIRE(env.host->Focus(focused ? static_cast<Control*>(env.text) : env.next));
+                Canvas canvas; canvas.Begin(400, 300);
+                env.text->Render(canvas);
+                const auto pixels = canvas.End();
+                auto pixel = [&](float x, float y)
+                {
+                    const auto at = size_t(y) * pixels.rowPitch + size_t(x) * 4;
+                    return LLUtils::Color{(uint32_t(std::to_integer<unsigned>(pixels.pixels[at + 2])) << 24) |
+                        (uint32_t(std::to_integer<unsigned>(pixels.pixels[at + 1])) << 16) |
+                        (uint32_t(std::to_integer<unsigned>(pixels.pixels[at])) << 8) |
+                        std::to_integer<unsigned>(pixels.pixels[at + 3])};
+                };
+                REQUIRE(pixel(bounds.x + bounds.width - 5, bounds.y + 4) == LLUtils::Color{uint32_t{0x161616ff}});
+                REQUIRE(pixel(bounds.x + 1, bounds.y + 1) ==
+                    (focused ? theme.accent : LLUtils::Color{uint32_t{0x161616ff}}));
+                REQUIRE(env.text->Bounds().width == bounds.width);
+                REQUIRE(env.text->Bounds().height == bounds.height);
+            }
+        }
+        REQUIRE(env.host->Focus(env.text));
+        env.text->SetValidation("Rejected");
+        Canvas canvas; canvas.Begin(400, 300); env.text->Render(canvas);
+        const auto pixels = canvas.End();
+        const auto at = size_t(bounds.y + bounds.height - 1) * pixels.rowPitch + size_t(bounds.x + 20) * 4;
+        REQUIRE(std::to_integer<unsigned>(pixels.pixels[at + 2]) == theme.error.R());
+        REQUIRE(std::to_integer<unsigned>(pixels.pixels[at + 1]) == theme.error.G());
+        REQUIRE(std::to_integer<unsigned>(pixels.pixels[at]) == theme.error.B());
+        env.text->SetValidation("");
+    }
+}
+
+TEST_CASE("Color typography inherits theme fonts while keeping semibold minimum size", "[ui][text][font][color]")
+{
+    TextEnvironment env("MMMM", {260, 80}, TextBoxMode::SingleLine);
+    env.text->fontRole = Control::FontRole::Small;
+    auto theme = env.text->Style();
+    theme.smallFont.family = "Arial";
+    theme.smallFont.size = 12;
+    theme.smallFont.weight = 300;
+    env.text->SetStyle(theme);
+    internal::ConfigureColorTextBox(*env.text);
+    const Control& base = *env.text;
+    REQUIRE(base.Font().size == 16);
+    REQUIRE(base.Font().weight == 600);
+    REQUIRE(base.Font().family == "Arial");
+    theme.smallFont.size = 26;
+    theme.smallFont.weight = 700;
+    theme.smallFont.family = "DejaVu Sans";
+    env.text->SetStyle(theme);
+    REQUIRE(base.Font().size == 26);
+    REQUIRE(base.Font().weight == 600);
+    REQUIRE(base.Font().family == "DejaVu Sans");
+    const auto bounds = env.text->Bounds();
+    const float x = bounds.x + theme.textPadding + env.host->MeasureCaret("MMMM", 2, env.text->Font()) + .1f;
+    REQUIRE(env.host->Route({.kind = InputKind::Down, .x = x, .y = bounds.y + 14}));
+    REQUIRE(env.host->Route({.kind = InputKind::Up, .x = x, .y = bounds.y + 14}));
+    env.Type("X");
+    REQUIRE(env.text->Text() == "MMXMM");
+    REQUIRE(env.text->Finish(EditPhase::Commit));
+    env.text->SetMinimumFontSize(40);
+    const auto wanted = env.host->MeasureText("Mg", 260, false, env.text->Font()).height + 2 * theme.textPadding;
+    REQUIRE(env.text->Measure({260, 500}).height >= wanted);
+    env.text->SetFontWeight(std::nullopt);
+    env.text->SetMinimumFontSize(0);
+    REQUIRE(env.text->Font().weight == 700);
+    REQUIRE(env.text->Font().size == 26);
+}
+TEST_CASE("Multiline typography overrides update wrapping and caret geometry", "[ui][text][font][multiline]")
+{
+    TextEnvironment env("alpha beta gamma delta epsilon zeta", {170, 130});
+    env.text->SetMinimumFontSize(24);
+    env.text->SetFontWeight(600);
+    REQUIRE(env.Key(K::End, true));
+    env.Type("!");
+    REQUIRE(env.text->Text().ends_with("zeta!"));
+    const auto lines = env.host->MeasureTextLines(env.text->Text(), env.Width(), env.text->Font());
+    REQUIRE(lines.size() > 1);
+    REQUIRE(env.Key(K::Home, true));
+    REQUIRE(env.Key(K::Down));
+    env.Type("X");
+    const auto inserted = env.text->Text().find('X');
+    REQUIRE(inserted != std::string::npos);
+    REQUIRE(inserted >= lines[1].range.offset);
+}
+
+TEST_CASE("Partial color paste starts editable decimal or hexadecimal drafts", "[ui][text][color][clipboard]")
+{
+    auto mask = internal::DynamicMask::Create(internal::ColorInputMask());
+    REQUIRE(mask);
+    const auto decimal = mask->Replace("", 0, 0, "111,111", TextEditOrigin::Paste);
+    REQUIRE(decimal);
+    REQUIRE(decimal->display == "111,111,");
+    REQUIRE_FALSE(mask->Complete(decimal->display));
+    REQUIRE(*internal::PreviewColor(decimal->display) == LLUtils::Color{uint32_t{0x6f6f00ff}});
+    const auto hex = mask->Replace("", 0, 0, "123F", TextEditOrigin::Paste);
+    REQUIRE(hex);
+    REQUIRE(hex->display == "#12-3F-");
+    REQUIRE_FALSE(mask->Complete(hex->display));
+    REQUIRE(*internal::PreviewColor(hex->display) == LLUtils::Color{uint32_t{0x123f00ff}});
+    REQUIRE(mask->Replace("", 0, 0, "123", TextEditOrigin::Paste)->display == "123,");
+    REQUIRE(mask->Replace("#", 1, 1, "123F", TextEditOrigin::Paste)->display == "#12-3F-");
+    REQUIRE(mask->Replace("", 0, 0, "#12-3", TextEditOrigin::Paste)->display == "#12-3");
+    REQUIRE(mask->Replace("", 0, 0, "123f56", TextEditOrigin::Paste)->display == "#12-3F-56-FF");
+    REQUIRE(mask->Replace("", 0, 0, "111,111,", TextEditOrigin::Paste)->display == "111,111,");
+    REQUIRE(mask->Replace("#FF-FF-FF-FF", 5, 5, "111,111", TextEditOrigin::Paste)->display == "111,111,");
+    REQUIRE(mask->Replace("1,2,3,4", 2, 3, "123F", TextEditOrigin::Paste)->display == "#12-3F-");
+    for (const auto* invalid : {"111,,111", "111,256", "1 11,111", "#12--3F", "123FG", "123456789"})
+        REQUIRE_FALSE(mask->Replace("", 0, 0, invalid, TextEditOrigin::Paste));
+}
+
+#ifdef LWS_HAS_WIN32_BACKEND
+TEST_CASE("Pasting partial colors replaces the current draft and Escape restores it", "[ui][text][color][clipboard]")
+{
+    TextEnvironment env("#11-22-33-44", {260, 40}, TextBoxMode::SingleLine);
+    REQUIRE(env.text->SetInputMask(internal::ColorInputMask()));
+    for (const auto* paste : {"111,111", "123F"})
+    {
+        REQUIRE(env.Key(K::Home)); REQUIRE(env.Key(K::Right));
+        auto status = LWS::SetClipboardText(*env.window, paste);
+        for (unsigned attempt = 0; status != LWS::ClipboardResult::Success && attempt < 20; ++attempt)
+        { env.Pump(5); status = LWS::SetClipboardText(*env.window, paste); }
+        if (status != LWS::ClipboardResult::Success) SKIP("Clipboard access unavailable");
+        REQUIRE(env.Key(K::V, true)); env.Pump(20);
+        REQUIRE(env.text->Text() == (std::string_view(paste).find(',') != std::string_view::npos ? "111,111," : "#12-3F-"));
+        REQUIRE_FALSE(env.text->MaskComplete());
+        REQUIRE_FALSE(env.text->Finish(EditPhase::Commit));
+        REQUIRE(env.Key(K::Escape));
+        REQUIRE(env.text->Text() == "#11-22-33-44");
+    }
+}
+#endif
+
+TEST_CASE("Out-of-range undecided decimal input chooses hexadecimal", "[ui][text][color][inference]")
+{
+    TextEnvironment env("", {260, 40}, TextBoxMode::SingleLine);
+    REQUIRE(env.text->SetInputMask(internal::ColorInputMask()));
+    env.Type("3"); env.Type("3"); env.Type("3");
+    REQUIRE(env.text->Text() == "#33-3");
+    REQUIRE_FALSE(env.text->MaskComplete());
+    REQUIRE(env.Key(K::A, true)); env.Type("256");
+    REQUIRE(env.text->Text() == "#25-6");
+    REQUIRE(env.Key(K::A, true)); env.Type("255");
+    REQUIRE(env.text->Text() == "255,");
+    auto mask = internal::DynamicMask::Create(internal::ColorInputMask());
+    REQUIRE(mask->Replace("", 0, 0, "333", TextEditOrigin::Paste)->display == "#33-3");
+    REQUIRE_FALSE(mask->Replace("", 0, 0, "1,333", TextEditOrigin::Paste));
+    REQUIRE(env.Key(K::A, true)); env.Type("1,"); env.Type("333");
+    REQUIRE(env.text->Text() == "1,");
+}
+TEST_CASE("RGB input is complete with optional alpha and high-nibble trailing hex digits", "[ui][text][color]")
+{
+    using internal::ParseColor;
+    REQUIRE(*ParseColor("#1234F") == LLUtils::Color{uint32_t{0x1234f0ff}});
+    REQUIRE(*ParseColor("#12-34-F") == LLUtils::Color{uint32_t{0x1234f0ff}});
+    REQUIRE(*ParseColor("#12-34-F-A") == LLUtils::Color{uint32_t{0x1234f0a0}});
+    REQUIRE(*ParseColor("0x123456A") == LLUtils::Color{uint32_t{0x123456a0}});
+    REQUIRE(*ParseColor("12,34,56") == LLUtils::Color{uint32_t{0x0c2238ff}});
+    REQUIRE(*ParseColor("12,34,56,") == LLUtils::Color{uint32_t{0x0c2238ff}});
+    REQUIRE_FALSE(ParseColor("#123F"));
+    REQUIRE_FALSE(ParseColor("#12-3-F"));
+    REQUIRE_FALSE(ParseColor("12,34,"));
+    ColorPicker picker;
+    const LLUtils::Color original{uint32_t{0x11223344}};
+    picker.SetValue(original);
+    auto* text = dynamic_cast<TextBox*>(picker.Children().front().get());
+    auto draft = [&](const char* value)
+    {
+        REQUIRE(text->Dispatch({.kind = InputKind::KeyDown, .key = K::A, .control = true}));
+        REQUIRE(text->Dispatch({.kind = InputKind::Text, .text = value}));
+    };
+    draft("1234f");
+    REQUIRE(text->Text() == "#12-34-F");
+    REQUIRE(text->MaskComplete());
+    REQUIRE(picker.Value() == LLUtils::Color{uint32_t{0x1234f0ff}});
+    REQUIRE(text->Finish(EditPhase::Cancel));
+    REQUIRE(picker.Value() == original);
+    draft("1234f"); REQUIRE(text->Finish(EditPhase::Commit));
+    REQUIRE(text->Text() == "#12-34-F0-FF");
+    draft("123456a"); REQUIRE(text->Finish(EditPhase::Commit));
+    REQUIRE(text->Text() == "#12-34-56-A0");
+    draft("12,34,56"); REQUIRE(text->Finish(EditPhase::Commit));
+    REQUIRE(text->Text() == "12,34,56,255");
+    auto mask = internal::DynamicMask::Create(internal::ColorInputMask());
+    const auto pasted = mask->Replace("", 0, 0, "1234f", TextEditOrigin::Paste);
+    REQUIRE(pasted); REQUIRE(mask->Complete(pasted->display));
+    REQUIRE(*ParseColor(pasted->display) == LLUtils::Color{uint32_t{0x1234f0ff}});
+    REQUIRE(*ParseColor(mask->Replace("", 0, 0, "#12-34-F-A", TextEditOrigin::Paste)->display) == LLUtils::Color{uint32_t{0x1234f0a0}});
+}
+TEST_CASE("Byte fields accept decimal and implicit or prefixed hexadecimal", "[ui][text][color]")
+{
+    TextEnvironment env("0", {260, 40}, TextBoxMode::SingleLine);
+    REQUIRE(env.text->SetInputMask(internal::ColorByteInputMask()));
+    REQUIRE(env.text->MaskComplete());
+    for (const auto* input : {"FF", "#FF", "0xFF", "0Xff", "255"})
+    {
+        REQUIRE(env.Key(K::A, true)); env.Type(input);
+        REQUIRE(env.text->MaskComplete());
+        REQUIRE(*internal::ParseColorByte(env.text->Text()) == 255);
+        REQUIRE(env.text->Finish(EditPhase::Commit));
+    }
+    REQUIRE(env.Key(K::A, true)); env.Type("f");
+    REQUIRE(env.text->Text() == "#F");
+    REQUIRE(*internal::ParseColorByte(env.text->Text()) == 15);
+    REQUIRE(env.text->Finish(EditPhase::Cancel));
+    REQUIRE(env.text->Text() == "255");
+    REQUIRE(env.Key(K::A, true)); env.Type("0x");
+    REQUIRE_FALSE(env.text->MaskComplete());
+    env.Type("80"); REQUIRE(*internal::ParseColorByte(env.text->Text()) == 128);
+    REQUIRE_FALSE(internal::ParseColorByte("333"));
+    REQUIRE_FALSE(internal::ParseColorByte("0x100"));
+}
+
+TEST_CASE("Double-click actions consume one native double press and preserve draft cancellation", "[ui][text][double-click]")
+{
+    TextEnvironment env("original", {260, 40}, TextBoxMode::SingleLine);
+    unsigned toggles = 0, previews = 0, commits = 0;
+    auto edited = env.text->OnEdit.Connect([&](const auto&, auto phase)
+    { previews += phase == EditPhase::Preview; commits += phase == EditPhase::Commit; });
+    env.text->SetDoubleClickAction([&] { ++toggles; return env.text->EditText("converted"); });
+    const auto bounds = env.text->Bounds();
+    auto pointer = [&](bool pressed, unsigned count)
+    {
+        auto input = internal::InputFromEvent(LWS::EventMouseButton{LWS::MouseButton::Left, pressed,
+            {int32_t(bounds.x + 10), int32_t(bounds.y + 10)}, count}, env.context);
+        REQUIRE(input); REQUIRE(input->clickCount == count); REQUIRE(env.host->Route(*input));
+    };
+    pointer(true, 1); pointer(false, 1);
+    REQUIRE(toggles == 0);
+    pointer(true, 2); pointer(false, 1);
+    REQUIRE(toggles == 1); REQUIRE(previews == 1); REQUIRE(commits == 0);
+    REQUIRE(env.host->IsFocused(*env.text));
+    REQUIRE(env.text->Text() == "converted");
+    env.Type("X"); REQUIRE(env.text->Text() == "convertedX");
+    REQUIRE(env.Key(K::Escape)); REQUIRE(env.text->Text() == "original");
+    pointer(true, 3); pointer(false, 1);
+    REQUIRE(toggles == 1);
+    env.text->SetDoubleClickAction({});
+    pointer(true, 2); pointer(false, 1);
+    REQUIRE(toggles == 1);
+    env.text->SetReadOnly(true);
+    REQUIRE_FALSE(env.text->EditText("forbidden"));
+    REQUIRE(env.text->Text() == "original");
+}
+TEST_CASE("Inline format toggles preserve prefix history numeric values and partial edit restoration", "[ui][text][color][double-click]")
+{
+    ColorPicker picker;
+    const LLUtils::Color original{uint32_t{0x12345678}};
+    picker.SetValue(original);
+    auto* text = dynamic_cast<TextBox*>(picker.Children().front().get());
+    auto toggle = [&]
+    {
+        REQUIRE(text->Dispatch({.kind = InputKind::Down, .clickCount = 2}));
+        REQUIRE(text->Dispatch({.kind = InputKind::Up}));
+    };
+    REQUIRE(text->EditText("0x12345678")); REQUIRE(text->Finish(EditPhase::Commit));
+    toggle(); REQUIRE(text->Text() == "18,52,86,120"); REQUIRE(picker.Value() == original);
+    toggle(); REQUIRE(text->Text() == "0x12-34-56-78"); REQUIRE(picker.Value() == original);
+    REQUIRE(text->Finish(EditPhase::Cancel)); REQUIRE(text->Text() == "0x12-34-56-78");
+    REQUIRE(text->EditText("#12"));
+    toggle(); REQUIRE(text->Text() == "18,0,0,255");
+    REQUIRE(picker.Value() == LLUtils::Color{uint32_t{0x120000ff}});
+    REQUIRE(text->Finish(EditPhase::Cancel));
+    REQUIRE(picker.Value() == original); REQUIRE(text->Text() == "0x12-34-56-78");
+}
+TEST_CASE("Popup formats toggle independently including read-only Original and byte defaults", "[ui][text][color][double-click]")
+{
+    const LLUtils::Color original{uint32_t{0x11223344}};
+    auto preview = original;
+    unsigned notifications = 0;
+    TextEnvironment env("", {260, 40}, TextBoxMode::SingleLine);
+    auto panel = std::make_unique<internal::ColorPanel>(original,
+        [&](auto value, bool complete) { if (complete) preview = value; ++notifications; });
+    auto* root = panel.get();
+    std::vector<TextBox*> fields;
+    for (auto& child : root->Children()) if (auto* field = dynamic_cast<TextBox*>(child.get())) fields.push_back(field);
+    REQUIRE(fields.size() == 9);
+    env.host->SetRoot(std::move(panel));
+    root->Measure({720, 680}); root->Arrange({0, 0, 720, 680});
+    auto toggle = [&](size_t index)
+    {
+        const auto b = fields[index]->Bounds();
+        REQUIRE(fields[index]->Dispatch({.kind = InputKind::Down, .x = b.x + 5, .y = b.y + 5, .clickCount = 2}));
+        REQUIRE(fields[index]->Dispatch({.kind = InputKind::Up, .x = b.x + 5, .y = b.y + 5}));
+    };
+    toggle(7); REQUIRE(fields[7]->Text() == "17,34,51,68");
+    REQUIRE(fields[8]->Text() == "#11-22-33-44"); REQUIRE(fields[0]->Text() == "17");
+    const auto beforeOriginal = notifications;
+    toggle(8); REQUIRE(fields[8]->Text() == "17,34,51,68"); REQUIRE(notifications == beforeOriginal);
+    REQUIRE_FALSE(fields[8]->EditText("forbidden"));
+    REQUIRE(fields[7]->Finish(EditPhase::Commit));
+    toggle(0); REQUIRE(fields[0]->Text() == "#11");
+    REQUIRE(fields[1]->Text() == "34"); REQUIRE(fields[7]->Text() == "17,34,51,68");
+    REQUIRE(fields[0]->EditText("0x80")); REQUIRE(fields[0]->Finish(EditPhase::Commit));
+    toggle(0); REQUIRE(fields[0]->Text() == "128");
+    toggle(0); REQUIRE(fields[0]->Text() == "0x80");
+    REQUIRE(fields[1]->EditText("64"));
+    REQUIRE(fields[0]->Text() == "0x80"); REQUIRE(fields[8]->Text() == "17,34,51,68");
+    REQUIRE(preview == LLUtils::Color{uint32_t{0x80403344}});
+    const auto hsl = fields[4]->Text(); const auto beforeHsl = preview;
+    toggle(4); REQUIRE(fields[4]->Text() == hsl); REQUIRE(preview == beforeHsl);
+    for (size_t channel = 0; channel < 4; ++channel)
+    {
+        REQUIRE(fields[channel]->EditText("")); toggle(channel);
+        REQUIRE(*internal::ParseColorByte(fields[channel]->Text()) == (channel == 3 ? 255 : 0));
+    }
+    toggle(8); REQUIRE(fields[8]->Text() == "#11-22-33-44");
+}
+
+TEST_CASE("Pending clipboard input cannot overwrite a double-click conversion", "[ui][text][double-click][clipboard]")
+{
+    TextEnvironment env("original", {260, 40}, TextBoxMode::SingleLine);
+    auto status = LWS::SetClipboardText(*env.window, "late paste");
+    for (unsigned attempt = 0; status != LWS::ClipboardResult::Success && attempt < 20; ++attempt)
+    { env.Pump(5); status = LWS::SetClipboardText(*env.window, "late paste"); }
+    if (status != LWS::ClipboardResult::Success) SKIP("Clipboard publication unavailable");
+    env.text->SetDoubleClickAction([&] { return env.text->EditText("converted"); });
+    REQUIRE(env.Key(K::V, true));
+    const auto b = env.text->Bounds();
+    REQUIRE(env.host->Route({.kind = InputKind::Down, .x = b.x + 10, .y = b.y + 10, .clickCount = 2}));
+    REQUIRE(env.host->Route({.kind = InputKind::Up, .x = b.x + 10, .y = b.y + 10}));
+    env.Pump(30);
+    REQUIRE(env.text->Text() == "converted");
+    REQUIRE(env.Key(K::Escape)); REQUIRE(env.text->Text() == "original");
+}
 TEST_CASE("Per-field validation modes override the host and retain drafts by default", "[ui][text][validation]")
 {
     TextEnvironment env("25", {260, 40}, TextBoxMode::SingleLine);
@@ -664,7 +1412,6 @@ TEST_CASE("Per-field validation modes override the host and retain drafts by def
     REQUIRE(env.text->Text() == "25");
     REQUIRE(env.text->ValidationError().empty());
 }
-
 TEST_CASE("Rejected filtered edits preserve selection and do not invalidate a valid draft", "[ui][text][filter][validation]")
 {
     TextEnvironment env("25", {260, 40}, TextBoxMode::SingleLine);
@@ -679,7 +1426,6 @@ TEST_CASE("Rejected filtered edits preserve selection and do not invalidate a va
     REQUIRE(env.text->InputError().empty());
     REQUIRE(env.host->Finish(EditPhase::Commit));
 }
-
 TEST_CASE("Blocked focus departure explains the error and clears feedback after editing", "[ui][text][validation]")
 {
     TextEnvironment env("25", {260, 40}, TextBoxMode::SingleLine);
@@ -709,7 +1455,23 @@ TEST_CASE("Blocked focus departure explains the error and clears feedback after 
     REQUIRE(env.text->InputFeedback().empty());
     REQUIRE(env.text->Text() == "99");
 }
-
+TEST_CASE("Whole-value paste handles provisional prefixes without a fallback profile", "[ui][text][dynamic-mask]")
+{
+    DynamicMaskDefinition definition;
+    definition.pasteReplacesValue = true;
+    definition.profiles.push_back({"0x", 16, 1, 1, 2, 0, 255, '-'});
+    auto mask = internal::DynamicMask::Create(definition);
+    REQUIRE(mask);
+    auto pasted = mask->Replace("0", 1, 1, "0xAB", TextEditOrigin::Paste);
+    REQUIRE(pasted); REQUIRE(pasted->display == "0xAB");
+    REQUIRE_FALSE(mask->Replace("0", 1, 1, "AB", TextEditOrigin::Paste));
+    definition.normalizePaste = [](std::string_view value, std::string_view prefix)
+        -> std::expected<std::string, std::string>
+    { REQUIRE(prefix.empty()); return "0x" + std::string(value); };
+    mask = internal::DynamicMask::Create(definition);
+    pasted = mask->Replace("0", 1, 1, "AB", TextEditOrigin::Paste);
+    REQUIRE(pasted); REQUIRE(pasted->display == "0xAB");
+}
 TEST_CASE("Static-mask validation agrees with optional empty and incomplete commit", "[ui][text][validation][mask]")
 {
     TextBox text;
@@ -727,7 +1489,6 @@ TEST_CASE("Static-mask validation agrees with optional empty and incomplete comm
     REQUIRE_FALSE(text.ValidationError().empty());
     REQUIRE_FALSE(text.Finish(EditPhase::Commit));
 }
-
 TEST_CASE("Popup validation inherits its logical owner's policy", "[ui][text][validation][popup]")
 {
     TextEnvironment env("25", {260, 40}, TextBoxMode::SingleLine);
@@ -750,7 +1511,6 @@ TEST_CASE("Popup validation inherits its logical owner's policy", "[ui][text][va
     env.host->ClosePopup(EditPhase::Cancel);
     REQUIRE(UIHost::CollectValidationIssues(*env.text).empty());
 }
-
 TEST_CASE("Outside popup discard honors an owner override rather than the host default", "[ui][text][validation][popup]")
 {
     TextEnvironment env("25", {260, 40}, TextBoxMode::SingleLine);
@@ -767,4 +1527,22 @@ TEST_CASE("Outside popup discard honors an owner override rather than the host d
     REQUIRE(env.host->IsFocused(*env.next));
     REQUIRE(env.text->Text() == "25");
 }
+
+
+TEST_CASE("Dynamic mask completion resolves decimal zero before an unfinished hex prefix", "[ui][text][dynamic-mask][regression]")
+{
+    DynamicMaskDefinition definition;
+    definition.profiles = {{"0x", 16, 1, 1, 2, 0, 255, '-'}, {"", 10, 1, 1, 3, 0, 255, ','}};
+    TextBox text;
+    REQUIRE(text.SetInputMask(definition));
+    for (const auto value : {"0", "25", "255", "0x00", "0xFF"})
+    {
+        REQUIRE(text.EditText(value));
+        REQUIRE(text.MaskComplete()); REQUIRE(text.Finish(EditPhase::Commit));
+    }
+    REQUIRE(text.EditText("0x")); REQUIRE_FALSE(text.MaskComplete());
+    REQUIRE_FALSE(text.Finish(EditPhase::Commit));
+}
+
+
 #endif
