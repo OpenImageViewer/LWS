@@ -377,18 +377,60 @@ namespace LWSUI
         SliderValueMode valueMode_ = SliderValueMode::Hidden;
         std::unique_ptr<internal::SliderValueBinding> valueBinding_;
     };
+    enum class ScrollResolution
+    {
+        Row,
+        Pixel
+    };
     class ScrollBar : public Slider
     {
       public:
 
-        void SetPage(double page)
+        void SetDynamicResolution(bool);
+        // Fraction of the full control width (vertical bar) or height (horizontal bar), in (0, 1].
+        void SetInwardDistance(double fraction);
+        double InwardDistance() const { return inwardDistance_; }
+        // Fraction of a row or content pixel per logical pointer pixel at the inward endpoint.
+        void SetResolutionFraction(double fraction);
+        double ResolutionFraction() const { return resolutionFraction_; }
+        // Requires dynamic resolution, maximum speed is a percent of normal sensitivity.
+        void SetOutwardAcceleration(bool);
+        bool OutwardAcceleration() const { return outwardAcceleration_; }
+        void SetMaximumScrollSpeed(double percent);
+        double MaximumScrollSpeed() const { return maximumScrollSpeed_; }
+        // Fraction of control width or height measured beyond the scrollbar outer edge, in (0, 1].
+        void SetOutwardDistance(double fraction);
+        double OutwardDistance() const { return outwardDistance_; }
+        void RenderResolutionGuide(Canvas&) const;
+        bool DynamicResolution() const { return dynamicResolution_; }
+        // contentRange is the maximum content offset, lineSize is a row height or estimated line unit.
+        // Horizontal row mode uses lineSize as an estimate rather than an actual column width.
+        // TODO: Find a better horizontal unit based on column widths or another meaningful measure.
+        void ConfigureResolution(Rect controlBounds, double contentRange, double lineSize,
+                                 ScrollResolution mode = ScrollResolution::Row);
+        // Display scale: normal 100%, one line 1%, one pixel 1/lineSize percent, scaled by ResolutionFraction.
+        double ScrollSpeed() const { return speed_; }
+        bool ResolutionDragging() const { return resolutionDragging_; }
+        float ResolutionPosition() const { return inward_; }
+        ScrollResolution CenterResolution() const { return resolutionMode_; }
+        bool Finish(EditPhase) override;
+        Event<void(double)> OnScrollSpeed;
+        void SetOrientation(Orientation value)
         {
-            page_ = std::clamp(page, 0.0, 1.0);
-            Invalidate();
+            if (orientation_ != value)
+            {
+                Finish(EditPhase::Cancel);
+                orientation_ = value;
+                Invalidate(true);
+            }
         }
+        Orientation GetOrientation() const { return orientation_; }
+        void SetPage(double page);
 
       protected:
 
+        void OnArrange() override;
+        void OnDetach() override { Finish(EditPhase::Cancel); }
         void OnRender(Canvas&) override;
         bool OnInput(const Input&) override;
         double Fraction(float, float) const override;
@@ -398,6 +440,16 @@ namespace LWSUI
         using Slider::ConfigureValue;
         using Slider::SetValueDisplay;
         Rect Thumb() const;
+        Orientation orientation_ = Orientation::Vertical;
+        void UpdateSpeed(float x, float y);
+        bool dynamicResolution_ = false, resolutionDragging_ = false;
+        Rect resolutionBounds_{}, arrangedBounds_{};
+        double contentRange_ = 0, lineSize_ = 1, sensitivity_ = 0, speed_ = 100;
+        ScrollResolution resolutionMode_ = ScrollResolution::Row;
+        float lastAxis_ = 0, inward_ = 0;
+        double inwardDistance_ = .5, outwardDistance_ = .1, maximumScrollSpeed_ = 400, resolutionFraction_ = .2;
+        double outwardMultiplier_ = 1;
+        bool outwardAcceleration_ = false;
         double page_ = 1;
         float grab_ = 0.5f;
     };
