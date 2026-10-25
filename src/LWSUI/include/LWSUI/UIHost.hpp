@@ -69,6 +69,8 @@ namespace LWSUI
         bool RouteContextMenu(const Input&);
         bool ContextMenuOwnerValid() const;
         void Hover(Control* control);
+        void UpdateCursor();
+        void RenderTooltip(Canvas&);
         LWS::Window& window_;
         Theme theme_;
         std::optional<Theme> popupStyle_;
@@ -81,7 +83,8 @@ namespace LWSUI
         Rect popupBounds_, contextMenuBounds_;
         ControlHandle contextMenuOwner_;
         bool suppressPointerRelease_ = false;
-        bool popupModal_ = false;
+        bool popupModal_ = false, cursorApplied_ = false;
+        LWS::CursorShape cursorShape_ = LWS::CursorShape::Arrow;
         std::vector<std::pair<ControlHandle, std::function<void(Control&)>>> deferred_;
         bool layoutDirty_ = true, paintDirty_ = true, updating_ = false;
         LWS::EventConnection listener_;

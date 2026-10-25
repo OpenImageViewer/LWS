@@ -229,6 +229,11 @@ TEST_CASE("Content-sized multiline text uses its enclosing viewport", "[ui][text
     REQUIRE(host.Route({.kind = InputKind::Wheel, .x = x, .y = y, .wheel = -1}));
     REQUIRE(scroll.Offset() > 0);
     const float beforeLeave = scroll.Offset();
+    int leaves = 0;
+    auto leave = scroll.OnLeave.Connect([&] { ++leaves; });
+    host.Route({.kind = InputKind::Move, .x = x, .y = y});
+    host.Route({.kind = InputKind::Move, .x = -10, .y = -10});
+    REQUIRE(leaves == 1);
     REQUIRE(platform.ProcessMessages() == LWS::LoopResult::Continue);
     REQUIRE(scroll.Offset() == beforeLeave);
     for (auto& child : text.Children()) REQUIRE_FALSE(child->Visible());

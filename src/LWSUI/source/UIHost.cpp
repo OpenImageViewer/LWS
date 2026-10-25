@@ -1,6 +1,8 @@
 #include <LWSUI/UIHost.hpp>
 #include "ContextMenu.hpp"
 #include <LWS/Platform.hpp>
+#include <LWS/Cursor.hpp>
+#include <LWSUI/internal/ControlTree.hpp>
 #include <algorithm>
 #ifdef LWS_HAS_WIN32_BACKEND
     #include <LWS/Win32/WindowExtensions.hpp>
@@ -179,6 +181,7 @@ namespace LWSUI
                 }
                 if (contextMenu_)
                     contextMenu_->Render(canvas_);
+                RenderTooltip(canvas_);
                 const auto result = window_.PresentBitmap(canvas_.End());
                 // Readiness is published through native paint/metrics events. Posting
                 // retries here would keep an unconfigured surface's event loop busy.
@@ -239,8 +242,15 @@ namespace LWSUI
         CloseContextMenu();
         if (auto* old = focus_.Get())
         {
-            if (!old->Finish(c ? c->focusLossPhase : EditPhase::Commit))
-                return false;
+            const auto phase = c ? c->focusLossPhase : EditPhase::Commit;
+            const auto previous = old->Handle();
+            // Popup focus stays within its owner's logical editing scope.
+            auto* logicalNext = InPopup(c) ? popupOwner_.Get() : c;
+            for (auto* ancestor = old; ancestor; ancestor = ancestor->Parent())
+                if (!ancestor->PrepareFocusLoss(logicalNext, phase)) return false;
+            old = previous.Get();
+            if (!old) return false;
+            if (!old->Finish(phase)) return false;
             for (auto* current = old; current; current = current->Parent())
                 current->Dispatch({InputKind::Blur});
         }
@@ -256,6 +266,7 @@ namespace LWSUI
     void UIHost::Capture(Control* c)
     {
         capture_ = c->Handle();
+        UpdateCursor();
 #ifdef LWS_HAS_WIN32_BACKEND
         (void) LWS::Win32::SetMouseCapture(window_, true);
 #endif
@@ -266,12 +277,18 @@ namespace LWSUI
         if (capture_.Get() != c)
             return;
         capture_ = {};
+        UpdateCursor();
 #ifdef LWS_HAS_WIN32_BACKEND
         (void) LWS::Win32::SetMouseCapture(window_, false);
 #endif
     }
     void UIHost::Detached(Control& c)
     {
+        if (pointerHover_.Get() == &c)
+        {
+            pointerHover_ = {};
+            UpdateCursor();
+        }
         if (contextMenuOwner_.Get() == &c)
             CloseContextMenu();
         if (popupOwner_.Get() == &c)
@@ -354,6 +371,14 @@ namespace LWSUI
             {
                 previous->hovered_ = false;
                 previous->Invalidate();
+                for (auto* ancestor = previous; ancestor; ancestor = ancestor->Parent())
+                {
+                    if (!internal::IsWithin(c, ancestor))
+                    {
+                        ancestor->OnPointerLeave();
+                        ancestor->OnLeave.Raise();
+                    }
+                }
             }
             pointerHover_ = c ? c->Handle() : ControlHandle{};
             if (c)
@@ -362,6 +387,7 @@ namespace LWSUI
                 c->Invalidate();
             }
         }
+        UpdateCursor();
         if (popup_)
             c = popupOwner_.Get();
         if (c == hover_.Get())
@@ -739,5 +765,42 @@ namespace LWSUI
     TextCaret UIHost::MeasureTextCaret(std::string_view text, TextPosition position, float width, const FontSpec& font)
     {
         return canvas_.CaretBounds(text, position, width, font);
+    }
+    void UIHost::UpdateCursor()
+    {
+        auto* target = capture_ ? capture_.Get() : pointerHover_.Get();
+        while (target && !target->cursor)
+            target = target->Parent();
+        if (!target && !cursorApplied_)
+            return;
+        const auto shape = target ? *target->cursor : LWS::CursorShape::Arrow;
+        if (!cursorApplied_ || shape != cursorShape_)
+            if (window_.IsCreated())
+                std::ignore = window_.SetMouseCursor(LWS::Cursor::FromShape(shape));
+        cursorShape_ = shape;
+        cursorApplied_ = target != nullptr;
+    }
+    void UIHost::RenderTooltip(Canvas& canvas)
+    {
+        if (popup_ || contextMenu_ || capture_)
+            return;
+        auto* owner = pointerHover_.Get();
+        while (owner && owner->Tooltip().empty())
+            owner = owner->Parent();
+        if (!Available(owner))
+            return;
+        const auto size = window_.GetClientAreaMetrics().logical;
+        const auto b = owner->Bounds();
+        const auto& style = PopupStyle();
+        const float p = style.padding;
+        const float width = std::min(float(size.x), canvas.Measure(owner->Tooltip(), style.smallFont) + 2 * p);
+        const float height = canvas.TextHeight(owner->Tooltip(), std::max(1.f, width - 2 * p), style.smallFont,
+                                                false) +
+                             2 * p;
+        const float x = std::clamp(b.x, 0.f, std::max(0.f, float(size.x) - width));
+        const float y = b.y + b.height + height <= size.y ? b.y + b.height : std::max(0.f, b.y - height);
+        canvas.Fill(x, y, width, height, style.background);
+        canvas.CenteredText(owner->Tooltip(), x + p, y, std::max(0.f, width - 2 * p), height, style.foreground,
+                             style.smallFont);
     }
 }  // namespace LWSUI

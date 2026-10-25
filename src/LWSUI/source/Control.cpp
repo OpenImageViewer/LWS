@@ -90,7 +90,7 @@ namespace LWSUI
     }
     Control* Control::HitTest(float x, float y)
     {
-        return visible_ && enabled_ && bounds_.Contains(x, y) ? this : nullptr;
+        return visible_ && enabled_ && hitTestVisible && bounds_.Contains(x, y) ? this : nullptr;
     }
     void Control::SetVisible(bool value)
     {
@@ -126,7 +126,8 @@ namespace LWSUI
     }
     void Control::Attach(UIHost* host, Container* parent)
     {
-        if (host_ != host)
+        const bool changed = host_ != host;
+        if (changed)
         {
             if (host_)
             {
@@ -143,6 +144,8 @@ namespace LWSUI
         if (auto* container = dynamic_cast<Container*>(this))
             for (auto& child : container->children_)
                 child->Attach(host, container);
+        if (changed && host_)
+            OnAttach();
     }
     Control& Container::Add(std::unique_ptr<Control> child)
     {
@@ -180,7 +183,7 @@ namespace LWSUI
         for (auto it = children_.rbegin(); it != children_.rend(); ++it)
             if (auto* hit = (*it)->HitTest(x, y))
                 return hit;
-        return this;
+        return hitTestBackground ? this : nullptr;
     }
     void Container::OnRender(Canvas& c)
     {
@@ -198,5 +201,17 @@ namespace LWSUI
     {
         desired_ = visible_ ? OnMeasureContent(available) : Size{};
         return desired_;
+    }
+    bool Container::OnPreviewInput(const Input& input)
+    {
+        for (auto it = children_.rbegin(); it != children_.rend(); ++it)
+        {
+            // Pointer previews obey ancestor clipping just like normal hit testing.
+            if (input.kind == InputKind::Down && !(*it)->Bounds().Contains(input.x, input.y))
+                continue;
+            if ((*it)->PreviewInput(input))
+                return true;
+        }
+        return false;
     }
 }  // namespace LWSUI

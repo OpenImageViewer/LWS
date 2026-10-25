@@ -4,6 +4,7 @@
 #include <LWSUI/Event.hpp>
 #include <LWS/KeyCode.hpp>
 #include <LWS/MouseButton.hpp>
+#include <LWS/CursorShape.hpp>
 #include <optional>
 #include <functional>
 namespace LWSUI
@@ -107,8 +108,19 @@ namespace LWSUI
         void Arrange(Rect bounds);
         void Render(Canvas& canvas);
         bool Dispatch(const Input& input);
-        bool PreviewInput(const Input& input) { return Visible() && Enabled() && OnPreviewInput(input); }
+        bool PreviewInput(const Input& input)
+        {
+            return Visible() && Enabled() && (input.kind != InputKind::Down || hitTestVisible) && OnPreviewInput(input);
+        }
         virtual Control* HitTest(float x, float y);
+        bool hitTestVisible = true;
+        std::optional<LWS::CursorShape> cursor;
+        void SetTooltip(std::string text)
+        {
+            tooltip_ = std::move(text);
+            Invalidate();
+        }
+        const std::string& Tooltip() const { return tooltip_; }
         const Rect& Bounds() const { return bounds_; }
         Size DesiredSize() const { return desired_; }
         ControlHandle Handle() const;
@@ -159,7 +171,8 @@ namespace LWSUI
         EditPhase focusLossPhase = EditPhase::Commit;
         virtual bool Focusable() const { return false; }
         virtual bool Finish(EditPhase) { return true; }
-        LWSUI::Event<void()> OnHover;
+        virtual bool PrepareFocusLoss(Control*, EditPhase) { return true; }
+        LWSUI::Event<void()> OnHover, OnLeave;
         // Replaces the default provider. An empty result suppresses ancestor menus.
         void SetContextMenuProvider(ContextMenuProvider provider) { contextMenuProvider_ = std::move(provider); }
 
@@ -171,6 +184,8 @@ namespace LWSUI
         virtual void OnRender(Canvas&) {}
         virtual bool OnInput(const Input&) { return false; }
         virtual bool OnPreviewInput(const Input&) { return false; }
+        virtual void OnPointerLeave() {}
+        virtual void OnAttach() {}
         virtual void OnDetach() {}
         void Capture();
         void ReleaseCapture();
@@ -181,6 +196,7 @@ namespace LWSUI
         friend class UIHost;
         void Attach(UIHost* host, Container* parent);
         ContextMenuProvider contextMenuProvider_;
+        std::string tooltip_;
         Rect bounds_;
         Size desired_;
         bool visible_ = true, enabled_ = true, hovered_ = false;
@@ -207,12 +223,14 @@ namespace LWSUI
         std::unique_ptr<Control> Remove(Control& child);
         void Clear();
         const auto& Children() const { return children_; }
+        bool hitTestBackground = true;
         Control* HitTest(float x, float y) override;
         bool Finish(EditPhase phase) override;
 
       protected:
 
         void OnRender(Canvas&) override;
+        bool OnPreviewInput(const Input&) override;
 
       private:
 
