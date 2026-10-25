@@ -1,5 +1,7 @@
 #include <LWSUI/internal/ControlTree.hpp>
 #include <LWSUI/UIHost.hpp>
+#include <LWSUI/Primitives.hpp>
+#include <LWSUI/Containers.hpp>
 #include "ContextMenu.hpp"
 #include "MenuHost.hpp"
 #include <LWS/Platform.hpp>
@@ -388,28 +390,114 @@ namespace LWSUI
     {
         return internal::IsWithin(c, popup_.get());
     }
+    const Control* UIHost::LogicalParent(const Control& control) const
+    {
+        if (control.Parent()) return control.Parent();
+        return &control == popup_.get() ? popupOwner_.Get() : nullptr;
+    }
+    InvalidEditPolicy UIHost::DeparturePolicy(const Control& control) const
+    {
+        for (auto* current = &control; current; current = LogicalParent(*current))
+            if (auto policy = current->GetInvalidEditPolicy()) return *policy;
+        return invalidEditPolicy_;
+    }
+    std::vector<ValidationIssue> UIHost::CollectValidationIssues(const Control& root)
+    {
+        std::vector<ValidationIssue> issues;
+        auto* host = root.Host();
+        auto collect = [&](auto&& self, const Control& control) -> void
+        {
+            if (auto error = control.ValidationError(); !error.empty())
+            {
+                auto policy = host ? host->DeparturePolicy(control) : InvalidEditPolicy::KeepInvalid;
+                if (!host)
+                    for (auto* current = &control; current; current = current->Parent())
+                        if (auto override = current->GetInvalidEditPolicy()) { policy = *override; break; }
+                issues.push_back({control.Handle(), std::move(error), policy});
+            }
+            if (const auto* group = dynamic_cast<const Container*>(&control))
+                for (const auto& child : group->Children()) self(self, *child);
+        };
+        collect(collect, root);
+        if (host && host->popup_)
+            for (const auto* owner = host->popupOwner_.Get(); owner; owner = host->LogicalParent(*owner))
+                if (owner == &root) { collect(collect, *host->popup_); break; }
+        return issues;
+    }
+    void UIHost::ShowBlockedDepartureFeedback(Control& control)
+    {
+        blockedDepartureField_ = {};
+        for (const auto& issue : CollectValidationIssues(control))
+            if (auto* text = dynamic_cast<TextBox*>(issue.control.Get()))
+            {
+                blockedDepartureField_ = issue.control;
+                text->ShowBlockedDepartureFeedback();
+                return;
+            }
+    }
+    bool UIHost::FinishDeparture(Control& control, EditPhase phase)
+    {
+        const auto handle = control.Handle();
+        const auto policy = DeparturePolicy(control);
+        if (control.Finish(phase)) return true;
+        if (phase == EditPhase::Commit && policy == InvalidEditPolicy::KeepInvalid) return true;
+        auto* live = handle.Get();
+        if (live && phase == EditPhase::Commit && policy == InvalidEditPolicy::BlockOnLeave)
+        {
+            ShowBlockedDepartureFeedback(*live);
+        }
+        return phase == EditPhase::Commit && policy == InvalidEditPolicy::DiscardOnLeave &&
+               live && live->Finish(EditPhase::Cancel);
+    }
+    bool UIHost::PrepareDeparture(Control* next, EditPhase phase)
+    {
+        auto* old = focus_.Get();
+        if (!old) return true;
+        const auto previous = old->Handle();
+        // Popup focus stays within its owner's logical editing scope.
+        auto* logicalNext = InPopup(next) ? popupOwner_.Get() : next;
+        for (auto* ancestor = old; ancestor;)
+        {
+            const auto handle = ancestor->Handle();
+            const auto parent = ancestor->Parent() ? ancestor->Parent()->Handle() : ControlHandle{};
+            if (!ancestor->PrepareFocusLoss(logicalNext, phase))
+            {
+                auto* live = handle.Get();
+                const auto policy = DeparturePolicy(*old);
+                if (phase != EditPhase::Commit || policy == InvalidEditPolicy::BlockOnLeave)
+                {
+                    if (live && phase == EditPhase::Commit)
+                    {
+                        ShowBlockedDepartureFeedback(*live);
+                    }
+                    return false;
+                }
+                if (policy == InvalidEditPolicy::DiscardOnLeave &&
+                    (!live || !live->PrepareFocusLoss(logicalNext, EditPhase::Cancel))) return false;
+            }
+            ancestor = parent.Get();
+        }
+        old = previous.Get();
+        return !old || FinishDeparture(*old, phase);
+    }
     bool UIHost::Focus(Control* c)
     {
-        if (c && (c->Host() != this || !Available(c)))
-            return false;
-        if (c == focus_.Get())
-            return true;
+        if (c && (c->Host() != this || !Available(c))) return false;
+        if (c == focus_.Get()) return true;
+        const auto nextHandle = c ? c->Handle() : ControlHandle{};
+        const auto previous = focus_;
         CloseContextMenu();
-        if (auto* old = focus_.Get())
+        if ((!c || !c->preserveEditOnFocus) && !PrepareDeparture(c, c ? c->focusLossPhase : EditPhase::Commit)) return false;
+        blockedDepartureField_ = {};
+        for (auto* current = previous.Get(); current;)
         {
-            const auto phase = c ? c->focusLossPhase : EditPhase::Commit;
-            const auto previous = old->Handle();
-            // Popup focus stays within its owner's logical editing scope.
-            auto* logicalNext = InPopup(c) ? popupOwner_.Get() : c;
-            for (auto* ancestor = old; ancestor; ancestor = ancestor->Parent())
-                if (!ancestor->PrepareFocusLoss(logicalNext, phase)) return false;
-            old = previous.Get();
-            if (!old) return false;
-            if (!old->Finish(phase)) return false;
-            for (auto* current = old; current; current = current->Parent())
-                current->Dispatch({InputKind::Blur});
+            const auto parent = current->Parent() ? current->Parent()->Handle() : ControlHandle{};
+            current->Dispatch({InputKind::Blur});
+            current = parent.Get();
         }
-        focus_ = c ? c->Handle() : ControlHandle{};
+        if (c && (!nextHandle || nextHandle.Get()->Host() != this || !Available(nextHandle.Get()))) return false;
+        c = nextHandle.Get();
+        focus_ = nextHandle;
         if (c)
         {
             c->Dispatch({InputKind::Focus});
@@ -492,6 +580,9 @@ namespace LWSUI
         Invalidate(true);
         return true;
     }
+
+
+
     void UIHost::ClosePopup(EditPhase phase)
     {
         CloseContextMenu();
@@ -571,6 +662,26 @@ namespace LWSUI
     }
     void UIHost::RenderTooltip(Canvas& canvas)
     {
+        auto* feedback = dynamic_cast<TextBox*>(blockedDepartureField_.Get());
+        if (!feedback || feedback->InputFeedback().empty()) feedback = dynamic_cast<TextBox*>(focus_.Get());
+        if (auto* text = feedback; text && !text->InputFeedback().empty() &&
+            !contextMenu_ && !HasOpenMenu() && !capture_)
+        {
+            const auto size = window_.GetClientAreaMetrics().logical;
+            const auto b = text->Bounds();
+            const auto& style = PopupStyle();
+            const float p = style.padding;
+            const auto message = text->InputFeedback();
+            const float width = std::min(float(size.x), std::min(420.f, canvas.Measure(message, style.smallFont) + 2 * p));
+            const float height = canvas.TextHeight(message, std::max(1.f, width - 2 * p), style.smallFont, true) + 2 * p;
+            const float x = std::clamp(b.x, 0.f, std::max(0.f, float(size.x) - width));
+            const float y = b.y + b.height + height <= size.y ? b.y + b.height : std::max(0.f, b.y - height);
+            canvas.Fill(x, y, width, height, style.background);
+            canvas.Fill(x, y, 3.f, height, style.error);
+            canvas.Text(message, x + p, y + p, std::max(1.f, width - 2 * p), height - 2 * p,
+                        style.foreground, style.smallFont, true);
+            return;
+        }
         if (popup_ || contextMenu_ || HasOpenMenu() || capture_)
             return;
         auto* owner = pointerHover_.Get();
@@ -734,6 +845,15 @@ namespace LWSUI
         }
         return true;
     }
+    Control* UIHost::HitInput(float x, float y) const
+    {
+        if (popup_)
+            if (auto* hit = popup_->HitTest(x, y)) return hit;
+        auto* hit = menuBar_ ? menuBar_->HitContent(x, y) : nullptr;
+        if (!hit && root_) hit = root_->HitTest(x, y);
+        if (!hit && menuBar_ && menuBar_->Bounds().Contains(x, y)) hit = menuBar_.get();
+        return hit && Available(hit) && (!popup_ || hit->allowDuringPopup) ? hit : nullptr;
+    }
     bool UIHost::Route(Input input)
     {
         if (input.kind == InputKind::Up && suppressPointerRelease_)
@@ -743,6 +863,28 @@ namespace LWSUI
         }
         if (input.kind == InputKind::Down)
             suppressPointerRelease_ = false;
+
+        if (input.kind == InputKind::Down && !capture_ && !contextMenu_)
+        {
+            auto* target = HitInput(input.x, input.y);
+            if (popup_ && !popupBounds_.Contains(input.x, input.y) && (!target || !target->preserveEditOnFocus))
+            {
+                const auto issues = CollectValidationIssues(*popup_);
+                const bool discard = !issues.empty() && std::all_of(issues.begin(), issues.end(),
+                    [](const auto& issue) { return issue.policy == InvalidEditPolicy::DiscardOnLeave; });
+                if (discard)
+                {
+                    ClosePopup(EditPhase::Cancel);
+                    if (popup_) return true;
+                }
+            }
+            {
+                auto* hit = HitInput(input.x, input.y);
+                // Caption actions keep focus in the editor. The form close guard decides dismissal.
+                if (hit && hit != menuBar_.get() && !hit->Focusable() && focus_ && !internal::IsWithin(hit, focus_.Get()))
+                    if (!PrepareDeparture(hit, hit->focusLossPhase)) return true;
+            }
+        }
         // A captured gesture and an active overlay own input until completed. The menu's own
         // caption-button capture still belongs to its session; all other capture uses normal routing.
         if (!popup_ && !contextMenu_ && (!capture_ || capture_.Get() == menuBar_.get()) &&
@@ -783,13 +925,9 @@ namespace LWSUI
         if (pointer)
         {
             target = capture_.Get();
-            if (target && popup_ && !InPopup(target))
+            if (target && popup_ && !InPopup(target) && !target->allowDuringPopup)
                 target = nullptr;
-            if (!target && !popup_ && menuBar_) target = menuBar_->HitContent(input.x, input.y);
-            if (!target)
-                target = popup_  ? popup_->HitTest(input.x, input.y)
-                         : root_ ? root_->HitTest(input.x, input.y)
-                                 : nullptr;
+            if (!target) target = HitInput(input.x, input.y);
             Hover(target);
             if (input.kind == InputKind::Down)
             {
@@ -802,7 +940,7 @@ namespace LWSUI
                 auto* focus = target;
                 while (focus && !focus->Focusable())
                     focus = focus->Parent();
-                if (!Focus(focus))
+                if ((!focus || !focus->preserveEditOnFocus) && !Focus(focus))
                     return true;
             }
         }

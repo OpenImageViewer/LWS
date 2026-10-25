@@ -234,7 +234,7 @@ namespace LWSUI
             Invalidate();
         }
         const std::string& Validation() const { return validation_; }
-        std::string ValidationError() const
+        std::string ValidationError() const override
         {
             if (editing_ && !validation_.empty()) return validation_;
             const bool requiresCompletion = dynamicMask_.has_value() || (mask_ && !Text().empty());

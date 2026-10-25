@@ -30,9 +30,9 @@ namespace LWSUI
         }
         void Invalidate(bool recalculateLayout = false);
         void Update();
+        // Opt-in synchronous rendering on size notifications; never runs deferred application work.
         void SetRedrawOnResize(bool enabled) { redrawOnResize_ = enabled; }
         bool RedrawOnResize() const { return redrawOnResize_; }
-        // Opt-in synchronous rendering on size notifications; never runs deferred application work.
         // Windows uses native window DPI, not a ratio distorted by rounded logical dimensions.
         // Arrangement and painting must use the same scale. Other backends retain paired metrics.
         std::optional<LWS::ContentScale> DrawingScale() const;
@@ -46,6 +46,8 @@ namespace LWSUI
         void SetPopupStyle(Theme style) { popupStyle_ = std::move(style); }
         bool Route(Input input);
         bool Focus(Control* control);
+        void SetInvalidEditPolicy(InvalidEditPolicy policy) { invalidEditPolicy_ = policy; }
+        InvalidEditPolicy GetInvalidEditPolicy() const { return invalidEditPolicy_; }
         bool IsFocused(const Control& control) const { return focus_.Get() == &control; }
         bool HasFocusWithin(const Control& control) const;
         bool HasHoverWithin(const Control& control) const;
@@ -59,6 +61,10 @@ namespace LWSUI
         bool HasContextMenu() const { return contextMenu_ != nullptr; }
         bool HasPopup() const { return popup_ != nullptr; }
         bool Finish(EditPhase phase);
+        const Control* LogicalParent(const Control& control) const;
+        InvalidEditPolicy DeparturePolicy(const Control& control) const;
+        // Includes the subtree and its logically owned popup. Also supports detached controls.
+        static std::vector<ValidationIssue> CollectValidationIssues(const Control& root);
         // Main menu. Docked bars sit in the window and shrink the root rect; a floating bar
         // is code-positioned and overlays the root. Dropdowns are popup windows owned by the
         // session. Every entry point closes any open menu first.
@@ -96,6 +102,10 @@ namespace LWSUI
         bool RenderFrame();
         bool Event(const LWS::AnyEvent&);
         bool InPopup(Control* control) const;
+        Control* HitInput(float x, float y) const;
+        bool FinishDeparture(Control& control, EditPhase phase);
+        void ShowBlockedDepartureFeedback(Control& control);
+        bool PrepareDeparture(Control* next, EditPhase phase);
         bool RequestContextMenu(Input input, bool keyboard);
         bool RouteContextMenu(const Input&);
         bool ContextMenuOwnerValid() const;
@@ -116,7 +126,8 @@ namespace LWSUI
         ControlHandle focus_, capture_, popupOwner_, hover_, pointerHover_;
         std::function<void(EditPhase)> popupClosed_;
         Rect popupBounds_, contextMenuBounds_;
-        ControlHandle contextMenuOwner_;
+        ControlHandle contextMenuOwner_, blockedDepartureField_;
+        InvalidEditPolicy invalidEditPolicy_ = InvalidEditPolicy::KeepInvalid;
         bool suppressPointerRelease_ = false;
         bool popupModal_ = false, cursorApplied_ = false;
         LWS::CursorShape cursorShape_ = LWS::CursorShape::Arrow;

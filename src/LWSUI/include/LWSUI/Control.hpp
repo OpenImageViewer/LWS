@@ -23,7 +23,7 @@ namespace LWSUI
         Vertical,
         Horizontal
     };
-
+    enum class InvalidEditPolicy { BlockOnLeave, DiscardOnLeave, KeepInvalid };
     enum class EditPhase
     {
         Preview,
@@ -77,7 +77,12 @@ namespace LWSUI
         };
         std::weak_ptr<Lifetime> lifetime_;
     };
-
+    struct ValidationIssue
+    {
+        ControlHandle control;
+        std::string message;
+        InvalidEditPolicy policy = InvalidEditPolicy::KeepInvalid;
+    };
     struct ContextMenuRequest
     {
         ControlHandle target;
@@ -172,7 +177,7 @@ namespace LWSUI
         bool Enabled() const { return enabled_; }
         bool Hovered() const { return hovered_; }
         // Filtering can preserve drafts when the containing form owns their transactions.
-        void SetVisible(bool value);
+        void SetVisible(bool value, bool cancelEdit = true);
         void SetEnabled(bool value);
         void SetForeground(std::optional<LLUtils::Color> color)
         {
@@ -185,11 +190,16 @@ namespace LWSUI
         void Invalidate(bool recalculateLayout = false);
         // Action controls such as Cancel may discard the previous focused draft.
         // Form actions inspect drafts before deciding whether to finish them.
+        bool preserveEditOnFocus = false;
         // Explicit opt-in for actions outside an active popup. Normal input routing still applies.
+        bool allowDuringPopup = false;
         EditPhase focusLossPhase = EditPhase::Commit;
         virtual bool Focusable() const { return false; }
         virtual bool Finish(EditPhase) { return true; }
+        virtual std::string ValidationError() const { return {}; }
         // The nearest override wins. An empty policy inherits from the host or parent.
+        void SetInvalidEditPolicy(std::optional<InvalidEditPolicy> policy) { invalidEditPolicy_ = policy; }
+        std::optional<InvalidEditPolicy> GetInvalidEditPolicy() const { return invalidEditPolicy_; }
         // Composite editors can validate a transaction before focus leaves their subtree.
         virtual bool PrepareFocusLoss(Control*, EditPhase) { return true; }
         LWSUI::Event<void()> OnHover, OnLeave;
@@ -221,6 +231,7 @@ namespace LWSUI
         Size MeasureCore(Size available, bool content);
         ContextMenuProvider contextMenuProvider_;
         std::string tooltip_;
+        std::optional<InvalidEditPolicy> invalidEditPolicy_;
         Rect bounds_;
         Size desired_;
         uint64_t layoutRevision_ = 0;

@@ -154,11 +154,11 @@ namespace LWSUI
     {
         return visible_ && enabled_ && hitTestVisible && bounds_.Contains(x, y) ? this : nullptr;
     }
-    void Control::SetVisible(bool value)
+    void Control::SetVisible(bool value, bool cancelEdit)
     {
         if (visible_ != value)
         {
-            if (!value)
+            if (!value && cancelEdit)
                 Finish(EditPhase::Cancel);
             visible_ = value;
             Invalidate(true);

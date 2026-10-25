@@ -64,3 +64,39 @@ text and caret together. Rejected edits preserve text, selection, and profile.
 `normalizePaste` callback receives pasted text and an existing prefix, and
 transforms whole-field or prefix-only paste before mask validation.
 Normalization failures leave the draft unchanged.
+
+## Invalid edits when leaving a control
+
+`UIHost` defaults to `InvalidEditPolicy::KeepInvalid`. Invalid drafts can
+lose focus while preserving their text and edit-start snapshot. Explicit
+`Finish(EditPhase::Commit)` remains strict. Applications validate drafts before
+saving their form. LWSSettings aggregates field errors in a modal message box.
+
+`BlockOnLeave` refuses departure until the draft is corrected or cancelled.
+`DiscardOnLeave` restores the edit-start value and continues the interaction.
+Set the host default with `SetInvalidEditPolicy`. Set an optional override on
+any control or composite with the same method. The nearest ancestor override
+wins. `std::nullopt` restores inheritance. Changing policy leaves drafts intact.
+
+Filter rejection preserves text and selection. The focused textbox displays
+its rejection explanation in an overlay beside the field, including inside
+popups. Accepted edits and finishing the interaction clear that feedback.
+Rejected attempts do not make an otherwise valid value fail form validation.
+Invalid input has an underline at least 3 logical pixels thick.
+
+## Clipboard aliases
+
+TextBox supports Ctrl+Insert for Copy and Shift+Insert for Paste in addition
+to Ctrl+C and Ctrl+V. These use the existing clipboard operations and pending
+paste safeguards. Read-only fields allow Copy and block Paste. GridView also
+supports Ctrl+Insert for selection copying and does not support Paste.
+
+## Validation discovery
+
+`UIHost::CollectValidationIssues(root)` is a non-mutating query returning control
+handles, messages, and effective departure policies. It supports
+detached subtrees and includes a hosted subtree's logically owned popup.
+Popup fields inherit the departure policy from their owner unless overridden locally.
+Applications add their own field names and submission or dismissal decisions.
+The same textbox validity query governs explicit commit and form preflight,
+including the existing optional-empty rule for static masks.

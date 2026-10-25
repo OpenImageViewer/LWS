@@ -138,6 +138,7 @@ TEST_CASE("Multiline text retains normalization and transactional editing", "[ui
     env.Type("two\r\nthree");
     REQUIRE(env.text->Text() == "one\ntwo\nthree");
     REQUIRE(commits == 0);
+    env.host->SetInvalidEditPolicy(InvalidEditPolicy::BlockOnLeave);
     env.text->SetValidation("rejected");
     REQUIRE_FALSE(env.text->Dispatch({.kind = InputKind::KeyDown, .key = K::Enter, .control = true}));
     REQUIRE_FALSE(env.host->Focus(env.next));
@@ -624,4 +625,146 @@ TEST_CASE("Insert clipboard aliases use existing text paths and honor read-only"
 
 
 
+
+
+TEST_CASE("Invalid edit departure policies preserve strict explicit commit", "[ui][text][validation]")
+{
+    TextEnvironment env("original", {260, 30}, TextBoxMode::SingleLine);
+    REQUIRE(env.host->GetInvalidEditPolicy() == InvalidEditPolicy::KeepInvalid);
+    REQUIRE(env.Key(K::A, true)); env.Type("invalid"); env.text->SetValidation("Rejected");
+    REQUIRE_FALSE(env.host->Finish(EditPhase::Commit));
+    env.host->SetInvalidEditPolicy(InvalidEditPolicy::BlockOnLeave);
+    REQUIRE_FALSE(env.host->Focus(env.next));
+    REQUIRE(env.text->Text() == "invalid");
+    env.host->SetInvalidEditPolicy(InvalidEditPolicy::DiscardOnLeave);
+    REQUIRE(env.text->Text() == "invalid");
+    REQUIRE(env.host->Focus(env.next));
+    REQUIRE(env.text->Text() == "original");
+    REQUIRE(env.text->Validation().empty());
+    REQUIRE(env.host->Focus(env.text));
+    env.Type("invalid"); env.text->SetValidation("Rejected");
+    REQUIRE(env.Key(K::Tab));
+    REQUIRE(env.host->IsFocused(*env.next));
+    REQUIRE(env.text->Text() == "original");
+}
+
+TEST_CASE("Per-field validation modes override the host and retain drafts by default", "[ui][text][validation]")
+{
+    TextEnvironment env("25", {260, 40}, TextBoxMode::SingleLine);
+    REQUIRE(env.text->EditText("999"));
+    env.text->SetValidation("Use 1 to 100");
+    REQUIRE(env.host->Focus(env.next));
+    REQUIRE(env.text->Text() == "999");
+    REQUIRE_FALSE(env.host->Finish(EditPhase::Commit));
+    REQUIRE(env.host->Focus(env.text));
+    env.text->SetInvalidEditPolicy(InvalidEditPolicy::BlockOnLeave);
+    REQUIRE_FALSE(env.host->Focus(env.next));
+    env.text->SetInvalidEditPolicy(InvalidEditPolicy::DiscardOnLeave);
+    REQUIRE(env.host->Focus(env.next));
+    REQUIRE(env.text->Text() == "25");
+    REQUIRE(env.text->ValidationError().empty());
+}
+
+TEST_CASE("Rejected filtered edits preserve selection and do not invalidate a valid draft", "[ui][text][filter][validation]")
+{
+    TextEnvironment env("25", {260, 40}, TextBoxMode::SingleLine);
+    env.text->SetInputFilter(InputFilters::Number(true));
+    REQUIRE(env.Key(K::A, true));
+    env.Type("x");
+    REQUIRE(env.text->Text() == "25");
+    REQUIRE(env.text->InputError() == "Use integer digits");
+    REQUIRE(env.text->ValidationError().empty());
+    env.Type("42");
+    REQUIRE(env.text->Text() == "42");
+    REQUIRE(env.text->InputError().empty());
+    REQUIRE(env.host->Finish(EditPhase::Commit));
+}
+
+TEST_CASE("Blocked focus departure explains the error and clears feedback after editing", "[ui][text][validation]")
+{
+    TextEnvironment env("25", {260, 40}, TextBoxMode::SingleLine);
+    env.text->SetInvalidEditPolicy(InvalidEditPolicy::BlockOnLeave);
+    auto validation = env.text->OnEdit.Connect([&](const auto& value, EditPhase phase)
+    {
+        if (phase == EditPhase::Preview && value == "999") env.text->SetValidation("Use 1 to 100");
+    });
+    REQUIRE(env.text->EditText("999"));
+    REQUIRE(env.text->InputFeedback().empty());
+    REQUIRE(env.Key(K::Tab));
+    REQUIRE(env.host->IsFocused(*env.text));
+    REQUIRE(env.text->InputFeedback().find("Cannot leave this field") != std::string::npos);
+    REQUIRE(env.text->InputFeedback().find("Use 1 to 100") != std::string::npos);
+    REQUIRE(env.text->InputFeedback().find("Escape") != std::string::npos);
+    const auto b = env.next->Bounds();
+    REQUIRE(env.host->Route({.kind = InputKind::Down, .x = b.x + 5, .y = b.y + 5}));
+    REQUIRE(env.host->IsFocused(*env.text));
+    REQUIRE(env.text->Text() == "999");
+    REQUIRE(env.text->EditText("99"));
+    REQUIRE(env.text->InputFeedback().empty());
+    REQUIRE(env.host->Focus(env.next));
+    REQUIRE(env.host->Focus(env.text));
+    REQUIRE(env.text->EditText("999"));
+    REQUIRE_FALSE(env.host->Focus(env.next));
+    REQUIRE(env.Key(K::Escape));
+    REQUIRE(env.text->InputFeedback().empty());
+    REQUIRE(env.text->Text() == "99");
+}
+
+TEST_CASE("Static-mask validation agrees with optional empty and incomplete commit", "[ui][text][validation][mask]")
+{
+    TextBox text;
+    REQUIRE(text.SetInputMask("00:00"));
+    REQUIRE(text.ValidationError().empty());
+    REQUIRE(UIHost::CollectValidationIssues(text).empty());
+    REQUIRE(text.Finish(EditPhase::Commit));
+    REQUIRE(text.EditText("12"));
+    REQUIRE_FALSE(text.ValidationError().empty());
+    REQUIRE_FALSE(text.Finish(EditPhase::Commit));
+    REQUIRE(text.Finish(EditPhase::Cancel));
+    REQUIRE(text.ValidationError().empty());
+    REQUIRE(text.EditText(""));
+    text.SetValidation("Required");
+    REQUIRE_FALSE(text.ValidationError().empty());
+    REQUIRE_FALSE(text.Finish(EditPhase::Commit));
+}
+
+TEST_CASE("Popup validation inherits its logical owner's policy", "[ui][text][validation][popup]")
+{
+    TextEnvironment env("25", {260, 40}, TextBoxMode::SingleLine);
+    env.text->SetInvalidEditPolicy(InvalidEditPolicy::BlockOnLeave);
+    auto popup = std::make_unique<StackPanel>();
+    auto& field = popup->Emplace<TextBox>("valid");
+    REQUIRE(env.host->OpenPopup(*env.text, std::move(popup), {20, 80, 240, 80}));
+    REQUIRE(env.host->Focus(&field));
+    REQUIRE(field.EditText("invalid")); field.SetValidation("Invalid popup draft");
+    REQUIRE(env.host->DeparturePolicy(field) == InvalidEditPolicy::BlockOnLeave);
+    auto issues = UIHost::CollectValidationIssues(*env.text);
+    REQUIRE(issues.size() == 1); REQUIRE(issues[0].control.Get() == &field);
+    REQUIRE(issues[0].policy == InvalidEditPolicy::BlockOnLeave);
+    REQUIRE_FALSE(env.host->Focus(env.next));
+    field.SetInvalidEditPolicy(InvalidEditPolicy::KeepInvalid);
+    REQUIRE(env.host->Focus(env.next));
+    issues = UIHost::CollectValidationIssues(*env.text);
+    REQUIRE(issues.size() == 1);
+    REQUIRE(issues[0].policy == InvalidEditPolicy::KeepInvalid);
+    env.host->ClosePopup(EditPhase::Cancel);
+    REQUIRE(UIHost::CollectValidationIssues(*env.text).empty());
+}
+
+TEST_CASE("Outside popup discard honors an owner override rather than the host default", "[ui][text][validation][popup]")
+{
+    TextEnvironment env("25", {260, 40}, TextBoxMode::SingleLine);
+    env.host->SetInvalidEditPolicy(InvalidEditPolicy::BlockOnLeave);
+    env.text->SetInvalidEditPolicy(InvalidEditPolicy::DiscardOnLeave);
+    auto popup = std::make_unique<StackPanel>();
+    auto& field = popup->Emplace<TextBox>("valid");
+    REQUIRE(env.host->OpenPopup(*env.text, std::move(popup), {20, 100, 240, 80}, {}, true));
+    REQUIRE(env.host->Focus(&field));
+    REQUIRE(field.EditText("invalid")); field.SetValidation("Rejected");
+    const auto b = env.next->Bounds();
+    REQUIRE(env.host->Route({.kind = InputKind::Down, .x = b.x + b.width / 2, .y = b.y + b.height / 2}));
+    REQUIRE_FALSE(env.host->HasPopup());
+    REQUIRE(env.host->IsFocused(*env.next));
+    REQUIRE(env.text->Text() == "25");
+}
 #endif

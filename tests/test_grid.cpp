@@ -389,6 +389,7 @@ TEST_CASE("Grid pointer sorting resizing cancellation and reordering use public 
 TEST_CASE("Grid composite focus validation prevents leaving a rejected edit", "[ui][grid][focus]")
 {
     Environment env;
+    env.host->SetInvalidEditPolicy(InvalidEditPolicy::BlockOnLeave);
     auto root = std::make_unique<DockPanel>();
     auto grid = std::make_unique<GridView>();
     auto* view = grid.get();
