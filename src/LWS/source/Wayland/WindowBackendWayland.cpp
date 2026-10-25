@@ -113,8 +113,6 @@ namespace LWS
             presentedBuffers.clear();
             if (transparentBuffer != nullptr)
                 wl_buffer_destroy(transparentBuffer);
-            if (decoration != nullptr)
-                zxdg_toplevel_decoration_v1_destroy(decoration);
             if (fractionalScale != nullptr)
                 wp_fractional_scale_v1_destroy(fractionalScale);
             if (viewport != nullptr)
@@ -127,10 +125,7 @@ namespace LWS
                 wl_subsurface_destroy(captionSubsurface);
             if (captionSurface != nullptr)
                 wl_surface_destroy(captionSurface);
-            if (toplevel != nullptr)
-                xdg_toplevel_destroy(toplevel);
-            if (shellSurface != nullptr)
-                xdg_surface_destroy(shellSurface);
+            releaseToplevelRole();
             if (surface != nullptr)
                 wl_surface_destroy(surface);
         }
@@ -226,6 +221,50 @@ namespace LWS
             releasedBuffer->busy = false;
             if (pendingBitmap != nullptr)
                 owner.presentPendingBitmap();
+        }
+
+        bool createToplevelRole()
+        {
+            auto& platform = owner.fPlatform;
+            shellSurface = xdg_wm_base_get_xdg_surface(platform.shell(), surface);
+            toplevel = shellSurface ? xdg_surface_get_toplevel(shellSurface) : nullptr;
+            if (!shellSurface || !toplevel)
+                return false;
+            static constexpr xdg_surface_listener surfaceListener{.configure = surfaceConfigure};
+            static constexpr xdg_toplevel_listener toplevelListener{
+                .configure = toplevelConfigure,
+                .close = toplevelClose,
+                .configure_bounds = toplevelConfigureBounds,
+                .wm_capabilities = toplevelWmCapabilities,
+            };
+            xdg_surface_add_listener(shellSurface, &surfaceListener, this);
+            xdg_toplevel_add_listener(toplevel, &toplevelListener, this);
+            if (platform.decorationManager())
+            {
+                decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(platform.decorationManager(), toplevel);
+                if (!decoration)
+                    return false;
+                decorationMode = internal::WaylandDecorationMode::Pending;
+                static constexpr zxdg_toplevel_decoration_v1_listener decorationListener{
+                    .configure = decorationConfigure};
+                zxdg_toplevel_decoration_v1_add_listener(decoration, &decorationListener, this);
+            }
+            return true;
+        }
+
+        void releaseToplevelRole()
+        {
+            if (decoration)
+                zxdg_toplevel_decoration_v1_destroy(decoration);
+            if (toplevel)
+                xdg_toplevel_destroy(toplevel);
+            if (shellSurface)
+                xdg_surface_destroy(shellSurface);
+            decoration = nullptr;
+            toplevel = nullptr;
+            shellSurface = nullptr;
+            pendingToplevelConfigure.reset();
+            configured = false;
         }
 
         static void surfaceConfigure(void* data, xdg_surface* surface, uint32_t serial)
@@ -440,10 +479,7 @@ namespace LWS
         }
         else
         {
-            native->shellSurface = xdg_wm_base_get_xdg_surface(platform.shell(), native->surface);
-            native->toplevel = native->shellSurface != nullptr ? xdg_surface_get_toplevel(native->shellSurface)
-                                                               : nullptr;
-            if (native->shellSurface == nullptr || native->toplevel == nullptr)
+            if (!native->createToplevelRole())
                 return Result::Failure;
 
             if (captionMode() == internal::WaylandCaptionMode::Detached)
@@ -465,16 +501,6 @@ namespace LWS
                 wl_subsurface_set_position(native->captionSubsurface, 0, -internal::waylandCaptionHeight);
                 wl_subsurface_set_desync(native->captionSubsurface);
             }
-
-            static constexpr xdg_surface_listener surfaceListener{.configure = NativeState::surfaceConfigure};
-            static constexpr xdg_toplevel_listener toplevelListener{
-                .configure = NativeState::toplevelConfigure,
-                .close = NativeState::toplevelClose,
-                .configure_bounds = NativeState::toplevelConfigureBounds,
-                .wm_capabilities = NativeState::toplevelWmCapabilities,
-            };
-            xdg_surface_add_listener(native->shellSurface, &surfaceListener, native.get());
-            xdg_toplevel_add_listener(native->toplevel, &toplevelListener, native.get());
         }
 
         fNativeState = std::move(native);
@@ -482,22 +508,8 @@ namespace LWS
         if (fNativeState->captionSurface != nullptr)
             platform.registerWindow(fNativeState->captionSurface, *this, internal::WaylandSurfaceRole::Caption);
 
-        if (!isChildWindow() && platform.decorationManager() != nullptr)
-        {
-            fNativeState->decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(platform.decorationManager(),
-                                                                                          fNativeState->toplevel);
-            if (fNativeState->decoration == nullptr)
-            {
-                destroy();
-                return Result::Failure;
-            }
-            fNativeState->decorationMode = internal::WaylandDecorationMode::Pending;
-            static constexpr zxdg_toplevel_decoration_v1_listener decorationListener{
-                .configure = NativeState::decorationConfigure,
-            };
-            zxdg_toplevel_decoration_v1_add_listener(fNativeState->decoration, &decorationListener, fNativeState.get());
+        if (fNativeState->decoration)
             setWindowStyles(fWindowStyles);
-        }
 
         if (isChildWindow())
         {
@@ -559,6 +571,32 @@ namespace LWS
     {
         if (fNativeState != nullptr && !fVisible)
         {
+            if (!isChildWindow() && !fNativeState->toplevel)
+            {
+                if (fPlatform.hasHostWindowFrame())
+                {
+                    // WSLg rapid remaps can remain unconfigured without a server roundtrip.
+                    // Use a private queue so this synchronization cannot run application callbacks.
+                    std::unique_ptr<wl_event_queue, decltype(&wl_event_queue_destroy)> queue(
+                        wl_display_create_queue(fPlatform.display()), wl_event_queue_destroy);
+                    if (!queue || wl_display_roundtrip_queue(fPlatform.display(), queue.get()) < 0)
+                    {
+                        const int error = queue ? wl_display_get_error(fPlatform.display()) : ENOMEM;
+                        queue.reset();
+                        internal::PlatformContextAccess::Fail(fPlatform.context(), error ? error : EIO,
+                                                              "Wayland host-frame remap synchronization");
+                        return;
+                    }
+                }
+                if (!fNativeState->createToplevelRole())
+                {
+                    fNativeState->releaseToplevelRole();
+                    internal::PlatformContextAccess::Fail(fPlatform.context(), ENOMEM, "xdg toplevel remap");
+                    return;
+                }
+                if (fNativeState->decoration)
+                    setWindowStyles(fWindowStyles);
+            }
             fVisible = true;
             if (isChildWindow())
             {
@@ -570,6 +608,17 @@ namespace LWS
                 updateSubsurfacePosition();
                 updateSubsurfaceInputRegion();
                 wl_surface_commit(fParentBackend->fNativeState->surface);
+            }
+            else if (!fNativeState->configured)
+            {
+                // Unmapping discards the xdg_toplevel attributes. Restore the role
+                // state before the initial empty commit requests a new configure.
+                setTitle(fTitle);
+                if (!fAppId.empty())
+                    setAppId(fAppId);
+                setMinMaxSize(fMinSize, fMaxSize);
+                setFullScreenState(fFullScreenState);
+                setDisplayState(fDisplayState);
             }
             updateWindowGeometry();
             if (fNativeState->configured)
@@ -619,7 +668,12 @@ namespace LWS
                 wl_surface_commit(fParentBackend->fNativeState->surface);
             }
             if (!isChildWindow())
-                fNativeState->configured = false;
+            {
+                // Recreate only the private xdg role on show. This starts a fresh configure
+                // handshake on compositors which do not reconfigure an existing unmapped role.
+                // The borrowed wl_surface and its renderer/buffer resources remain stable.
+                fNativeState->releaseToplevelRole();
+            }
         }
     }
 
