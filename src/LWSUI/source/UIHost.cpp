@@ -1011,7 +1011,12 @@ namespace LWSUI
         }
         if (input.kind == InputKind::Down)
             suppressPointerRelease_ = false;
-
+        if (input.kind == InputKind::KeyDown && !dialogKind_ && !contextMenu_ && !capture_)
+        {
+            bool handled = false;
+            OnCommandInput.Raise(input, handled);
+            if (handled) return true;
+        }
         if (input.kind == InputKind::Down && !capture_ && !contextMenu_)
         {
             auto* target = HitInput(input.x, input.y);

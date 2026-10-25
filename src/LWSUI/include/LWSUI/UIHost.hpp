@@ -45,6 +45,9 @@ namespace LWSUI
         const Theme& PopupStyle() const { return popupStyle_ ? *popupStyle_ : theme_; }
         void SetPopupStyle(Theme style) { popupStyle_ = std::move(style); }
         bool Route(Input input);
+        // Application-defined keyboard commands, including commands over owned popups.
+        // Service dialogs, context menus and captured gestures retain exclusive input.
+        LWSUI::Event<void(const Input&, bool&)> OnCommandInput;
         bool Focus(Control* control);
         void SetInvalidEditPolicy(InvalidEditPolicy policy) { invalidEditPolicy_ = policy; }
         InvalidEditPolicy GetInvalidEditPolicy() const { return invalidEditPolicy_; }

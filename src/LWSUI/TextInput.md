@@ -244,3 +244,12 @@ retain inline feedback when an invalid popup prevents opening. Decision dialogs
 suspend an existing popup, restore its draft and focus before delivering a choice,
 and always provide cancellation. Escape and X cancel without choosing an action.
 Applications supply captions and callbacks and own all form operation policies.
+
+UIHost::OnCommandInput lets an application explicitly handle keyboard commands over
+owned popups. Handlers set the handled flag after recognizing their own command.
+Service dialogs, context menus, and captured gestures retain exclusive input.
+LWSUI does not assign application save or apply shortcuts. Control::allowDuringPopup
+opts an external action into popup input routing. Control::preserveEditOnFocus
+preserves existing drafts, including keeping pointer focus in the editor. Both
+options retain normal mouse-button filtering, capture delivery, and disabled-ancestor
+checks.

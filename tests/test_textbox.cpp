@@ -1527,26 +1527,6 @@ TEST_CASE("Outside popup discard honors an owner override rather than the host d
     REQUIRE(env.host->IsFocused(*env.next));
     REQUIRE(env.text->Text() == "25");
 }
-
-
-TEST_CASE("Dynamic mask completion resolves decimal zero before an unfinished hex prefix", "[ui][text][dynamic-mask][regression]")
-{
-    DynamicMaskDefinition definition;
-    definition.profiles = {{"0x", 16, 1, 1, 2, 0, 255, '-'}, {"", 10, 1, 1, 3, 0, 255, ','}};
-    TextBox text;
-    REQUIRE(text.SetInputMask(definition));
-    for (const auto value : {"0", "25", "255", "0x00", "0xFF"})
-    {
-        REQUIRE(text.EditText(value));
-        REQUIRE(text.MaskComplete()); REQUIRE(text.Finish(EditPhase::Commit));
-    }
-    REQUIRE(text.EditText("0x")); REQUIRE_FALSE(text.MaskComplete());
-    REQUIRE_FALSE(text.Finish(EditPhase::Commit));
-}
-
-
-
-
 TEST_CASE("Informational dialogs preserve invalid edits and deliver dismissal immediately", "[ui][text][dialog]")
 {
     TextEnvironment env("start", {260, 40}, TextBoxMode::SingleLine);
@@ -1569,7 +1549,6 @@ TEST_CASE("Informational dialogs preserve invalid edits and deliver dismissal im
         REQUIRE(env.text->Text() == "invalid");
     }
 }
-
 TEST_CASE("Decision dialogs restore a popup before delivering a choice", "[ui][text][dialog][popup]")
 {
     TextEnvironment env("start", {260, 40}, TextBoxMode::SingleLine);
@@ -1610,7 +1589,20 @@ TEST_CASE("Decision dialogs restore a popup before delivering a choice", "[ui][t
     REQUIRE(selected == 1); REQUIRE(cancelled == 1);
     REQUIRE(field.Text() == "invalid");
 }
-
+TEST_CASE("Dynamic mask completion resolves decimal zero before an unfinished hex prefix", "[ui][text][dynamic-mask][regression]")
+{
+    DynamicMaskDefinition definition;
+    definition.profiles = {{"0x", 16, 1, 1, 2, 0, 255, '-'}, {"", 10, 1, 1, 3, 0, 255, ','}};
+    TextBox text;
+    REQUIRE(text.SetInputMask(definition));
+    for (const auto value : {"0", "25", "255", "0x00", "0xFF"})
+    {
+        REQUIRE(text.EditText(value));
+        REQUIRE(text.MaskComplete()); REQUIRE(text.Finish(EditPhase::Commit));
+    }
+    REQUIRE(text.EditText("0x")); REQUIRE_FALSE(text.MaskComplete());
+    REQUIRE_FALSE(text.Finish(EditPhase::Commit));
+}
 TEST_CASE("Draft-preserving actions obey mouse buttons capture and disabled ancestry", "[ui][text][input][regression]")
 {
     TextEnvironment env("start", {260, 40}, TextBoxMode::SingleLine);
@@ -1633,5 +1625,31 @@ TEST_CASE("Draft-preserving actions obey mouse buttons capture and disabled ance
     REQUIRE(env.host->Route({.kind = InputKind::Down, .x = b.x + 5, .y = b.y + 5}));
     REQUIRE(env.host->Route({.kind = InputKind::Up, .x = b.x + 5, .y = b.y + 5}));
     REQUIRE(clicks == 1);
+}
+TEST_CASE("Applications explicitly choose keyboard commands over popups", "[ui][text][popup][regression]")
+{
+    TextEnvironment env("start");
+    struct Probe : Control
+    {
+        unsigned previews = 0;
+        bool OnPreviewInput(const Input& input) override
+        {
+            if (input.kind == InputKind::KeyDown && input.control) ++previews;
+            return false;
+        }
+    };
+    auto& probe = static_cast<Container*>(env.host->Root())->Emplace<Probe>();
+    auto popup = std::make_unique<TextBox>("popup");
+    auto* field = popup.get();
+    REQUIRE(env.host->OpenPopup(*env.text, std::move(popup), {20, 100, 240, 80}, {}, true));
+    REQUIRE(env.host->Focus(field));
+    REQUIRE(env.Key(K::S, true)); REQUIRE(env.Key(K::Enter, true));
+    REQUIRE(probe.previews == 0);
+    unsigned commands = 0;
+    auto connection = env.host->OnCommandInput.Connect([&](const Input& input, bool& handled)
+    {
+        if (input.control && input.key == K::B) { ++commands; handled = true; }
+    });
+    REQUIRE(env.Key(K::B, true)); REQUIRE(commands == 1); REQUIRE(probe.previews == 0);
 }
 #endif
