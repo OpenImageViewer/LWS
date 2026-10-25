@@ -112,6 +112,26 @@ namespace LWS
         [[nodiscard]] ClientSizeLimits GetClientSizeLimits() const;
         [[nodiscard]] Result Center(CenterTarget target);
 
+        /// Requires a created top-level window. Enabled modes are unsupported on Wayland, children, and popups.
+        /// Aligns visible edges within 12 logical units during dragging, including BeginWindowDrag(Move).
+        /// Screen edges use monitor work areas. Window targets align only opposite edges with positive overlap.
+        /// Other windows must be visible, non-minimized top-level windows.
+        /// LWS targets in this context must also enable snapping to other windows, regardless of role.
+        /// Dragging either a Leader or an unattached Follower can attach them in this context. Both enable other-window
+        /// snapping. Leader movement carries its followers. Independent follower movement detaches it.
+        /// Resizing, hiding, show-state changes, destruction, or disabling other-window snapping releases attachments.
+        /// Other applications remain snap targets without attachments. Fullscreen windows do not participate.
+        [[nodiscard]] Result SetSnappingMode(WindowSnappingMode mode);
+        [[nodiscard]] WindowSnappingMode GetSnappingMode() const;
+        /// Requires a created window. Leader and Follower roles support only Win32 top-level windows.
+        /// Actual role changes release attachments and publish EventSnappingStateChanged. No-op changes do not.
+        [[nodiscard]] Result SetSnappingRole(WindowSnappingRole role);
+        /// Context-thread snapshot. Outside creation retains the configured role with no attachments.
+        [[nodiscard]] WindowSnappingState GetSnappingState() const;
+        /// Idempotently detaches a follower or releases a leader's followers without changing role or mode.
+        /// Requires a created window. Also cancels attachment for the current drag.
+        [[nodiscard]] Result ReleaseSnappingAttachments();
+
         [[nodiscard]] Result SetWindowMode(WindowMode mode);
         [[nodiscard]] WindowMode GetWindowMode() const;
         /// Maximized requests a windowed, maximized top-level window, leaving fullscreen if necessary.

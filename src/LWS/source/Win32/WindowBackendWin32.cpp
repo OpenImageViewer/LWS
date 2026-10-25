@@ -33,6 +33,105 @@ namespace
     static constexpr LWS::char_type g_windowPropName[] = L"LWSBackend";
     static constexpr int g_logicalDpi = 96;
 
+    using DwmGetWindowAttributeFn = HRESULT(WINAPI*)(HWND, DWORD, PVOID, DWORD);
+
+    DwmGetWindowAttributeFn dwmAttribute()
+    {
+        static const auto function = []
+        {
+            const HMODULE module = LoadLibraryW(L"dwmapi.dll");
+            return module != nullptr
+                       ? reinterpret_cast<DwmGetWindowAttributeFn>(GetProcAddress(module, "DwmGetWindowAttribute"))
+                       : nullptr;
+        }();
+        return function;
+    }
+
+    RECT visibleWindowRectangle(HWND window, RECT fallback)
+    {
+        RECT frame{};
+        const auto attribute = dwmAttribute();
+        // DWMWA_EXTENDED_FRAME_BOUNDS excludes invisible resize borders.
+        if (attribute != nullptr && SUCCEEDED(attribute(window, 9, &frame, sizeof(frame))))
+            return frame;
+        return fallback;
+    }
+
+    struct SnapCandidates
+    {
+        HWND movingWindow;
+        RECT moving;
+        LONG threshold;
+        LONG dx{};
+        LONG dy{};
+        LONG bestX;
+        LONG bestY;
+        HWND targetX{};
+        HWND targetY{};
+        const std::vector<HWND>* excluded{};
+
+        void considerX(LONG delta, HWND target)
+        {
+            if (std::abs(delta) <= threshold && std::abs(delta) < bestX)
+            {
+                dx = delta;
+                targetX = target;
+                bestX = std::abs(delta);
+            }
+        }
+
+        void considerY(LONG delta, HWND target)
+        {
+            if (std::abs(delta) <= threshold && std::abs(delta) < bestY)
+            {
+                dy = delta;
+                targetY = target;
+                bestY = std::abs(delta);
+            }
+        }
+
+        void consider(const RECT& target, HWND window = nullptr)
+        {
+            const bool screen = window == nullptr;
+            if (screen ? moving.top <= target.bottom && moving.bottom >= target.top
+                       : moving.top < target.bottom && moving.bottom > target.top)
+            {
+                if (screen)
+                {
+                    considerX(target.left - moving.left, window);
+                    considerX(target.right - moving.right, window);
+                }
+                else
+                {
+                    considerX(target.left - moving.right, window);
+                    considerX(target.right - moving.left, window);
+                }
+            }
+            if (screen ? moving.left <= target.right && moving.right >= target.left
+                       : moving.left < target.right && moving.right > target.left)
+            {
+                if (screen)
+                {
+                    considerY(target.top - moving.top, window);
+                    considerY(target.bottom - moving.bottom, window);
+                }
+                else
+                {
+                    considerY(target.top - moving.bottom, window);
+                    considerY(target.bottom - moving.top, window);
+                }
+            }
+        }
+    };
+
+    BOOL CALLBACK collectSnapMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM data)
+    {
+        MONITORINFO info{sizeof(info)};
+        if (GetMonitorInfoW(monitor, &info))
+            reinterpret_cast<SnapCandidates*>(data)->consider(info.rcWork);
+        return TRUE;
+    }
+
     // Resolve the Windows 10 DPI helpers dynamically so the same binary remains loadable on Windows 7 and 8.
     UINT systemDpi()
     {
@@ -374,6 +473,9 @@ namespace LWS
         fMinSize = config.minSize;
         fMaxSize = config.maxSize;
         fWindowStyles = config.styles;
+        fSnappingMode = config.snappingMode;
+        fSnappingRole = config.snappingRole;
+        fPublishedSnappingState = {fSnappingRole};
         fDisplayState = config.displayState;
         fVisible = config.visible;
         fLastMousePos = {};
@@ -985,6 +1087,10 @@ namespace LWS
     {
         if (state == fFullScreenState)
             return;
+        const internal::WindowBackendAccess::DispatchScope dispatch(owner());
+        clearAttachments();
+        if (fHwnd == nullptr)
+            return;
         switch (state)
         {
             case internal::FullScreenState::Windowed:
@@ -1218,6 +1324,8 @@ namespace LWS
             WindowBackendWin32* self = reinterpret_cast<WindowBackendWin32*>(create_struct->lpCreateParams);
             SetProp(hWnd, g_windowPropName, self);
             self->fHwnd = hWnd;
+            self->fSnappingLifetime = std::make_shared<SnappingLifetime>(SnappingLifetime{self});
+            self->fDestroyingSnapping = false;
             self->fDpi = windowDpi(hWnd);
         }
 
@@ -1229,6 +1337,289 @@ namespace LWS
         }
 
         return DefWindowProc(hWnd, message, wParam, lParam);
+    }
+
+    WindowBackendWin32::SnappingReference WindowBackendWin32::snappingReference(HWND window)
+    {
+        DWORD process{};
+        if (window == nullptr || GetWindowThreadProcessId(window, &process) != GetCurrentThreadId() ||
+            process != GetCurrentProcessId())
+            return {};
+        auto* backend = static_cast<WindowBackendWin32*>(GetPropW(window, g_windowPropName));
+        return backend != nullptr ? backend->snappingReference() : SnappingReference{};
+    }
+
+    BOOL CALLBACK WindowBackendWin32::collectSnapWindow(HWND window, LPARAM data)
+    {
+        auto& candidates = *reinterpret_cast<SnapCandidates*>(data);
+        if (window == candidates.movingWindow ||
+            (candidates.excluded != nullptr &&
+             std::ranges::find(*candidates.excluded, window) != candidates.excluded->end()) ||
+            !IsWindowVisible(window) || IsIconic(window) ||
+            (GetWindowLongW(window, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0)
+            return TRUE;
+        auto* moving = snappingReference(candidates.movingWindow).get();
+        auto* target = snappingReference(window).get();
+        if (moving != nullptr && target != nullptr &&
+            &moving->owner().GetPlatformContext() == &target->owner().GetPlatformContext() &&
+            target->fSnappingMode != WindowSnappingMode::OtherWindows &&
+            target->fSnappingMode != WindowSnappingMode::ScreenEdgesAndOtherWindows)
+            return TRUE;
+        DWORD cloaked{};
+        const auto attribute = dwmAttribute();
+        // DWMWA_CLOAKED excludes windows on inactive virtual desktops.
+        if (attribute != nullptr && SUCCEEDED(attribute(window, 14, &cloaked, sizeof(cloaked))) && cloaked != 0)
+            return TRUE;
+        RECT rectangle{};
+        if (GetWindowRect(window, &rectangle))
+            candidates.consider(visibleWindowRectangle(window, rectangle), window);
+        return TRUE;
+    }
+
+    bool WindowBackendWin32::allowsWindowSnapping() const
+    {
+        return !fDestroyingSnapping && owner().IsCreated() && fParentBackend == nullptr && !fPopupPlacement &&
+               fFullScreenState == internal::FullScreenState::Windowed && IsWindowVisible(fHwnd) && !IsIconic(fHwnd) &&
+               !IsZoomed(fHwnd) &&
+               (fSnappingMode == WindowSnappingMode::OtherWindows ||
+                fSnappingMode == WindowSnappingMode::ScreenEdgesAndOtherWindows);
+    }
+
+    WindowSnappingState WindowBackendWin32::getSnappingState() const
+    {
+        return {fSnappingRole, fSnappingLeader.get() != nullptr, fSnappingFollowers.size()};
+    }
+
+    void WindowBackendWin32::notifySnappingState()
+    {
+        const auto state = getSnappingState();
+        if (state == fPublishedSnappingState)
+            return;
+        fPublishedSnappingState = state;
+        if (!fDestroyingSnapping && owner().IsCreated())
+            std::ignore = dispatchEvent(EventSnappingStateChanged{});
+    }
+
+    void WindowBackendWin32::clearAttachments(bool cancelDrag)
+    {
+        ++fAttachmentRevision;
+        if (cancelDrag && fInSnappingDrag)
+            fAttachmentCancelled = true;
+        fPendingAttachments.clear();
+        const auto self = snappingReference();
+        std::vector<SnappingReference> changed;
+        if (auto* leader = fSnappingLeader.get())
+        {
+            std::erase(leader->fSnappingFollowers, self);
+            changed.push_back(fSnappingLeader);
+        }
+        fSnappingLeader = {};
+        for (const auto& follower : std::exchange(fSnappingFollowers, {}))
+            if (auto* peer = follower.get())
+            {
+                peer->fSnappingLeader = {};
+                ++peer->fAttachmentRevision;
+                peer->fPendingAttachments.clear();
+                if (cancelDrag && peer->fInSnappingDrag)
+                    peer->fAttachmentCancelled = true;
+                changed.push_back(follower);
+            }
+        changed.push_back(self);
+        // Publish only after all reciprocal relationships are consistent. Callbacks can retire any participant.
+        for (const auto& reference : changed)
+            if (auto* peer = reference.get())
+                peer->notifySnappingState();
+    }
+
+    void WindowBackendWin32::releaseSnappingAttachments()
+    {
+        clearAttachments();
+    }
+
+    void WindowBackendWin32::setSnappingRole(WindowSnappingRole role)
+    {
+        if (role == fSnappingRole)
+            return;
+        fSnappingRole = role;
+        clearAttachments();
+    }
+
+    void WindowBackendWin32::setSnappingMode(WindowSnappingMode mode)
+    {
+        if (mode == fSnappingMode)
+            return;
+        fSnappingDragAnchor.Reset();
+        fSnappingMode = mode;
+        if (mode != WindowSnappingMode::OtherWindows && mode != WindowSnappingMode::ScreenEdgesAndOtherWindows)
+            clearAttachments();
+    }
+
+    void WindowBackendWin32::detachForMovement()
+    {
+        if (fSnappingLeader.get() == nullptr)
+            return;
+        clearAttachments(false);
+    }
+
+    void WindowBackendWin32::commitSnapAttachments()
+    {
+        const auto pending = std::exchange(fPendingAttachments, {});
+        const auto self = snappingReference();
+        const auto revision = fAttachmentRevision;
+        for (const auto& reference : pending)
+        {
+            if (self.get() != this || revision != fAttachmentRevision || fAttachmentCancelled ||
+                fSnappingRole == WindowSnappingRole::Independent || !allowsWindowSnapping() ||
+                (fSnappingRole == WindowSnappingRole::Follower && fSnappingLeader.get() != nullptr))
+                break;
+            auto* peer = reference.get();
+            if (peer == nullptr || peer == this || !peer->allowsWindowSnapping() ||
+                &peer->owner().GetPlatformContext() != &owner().GetPlatformContext())
+                continue;
+            auto* leader = fSnappingRole == WindowSnappingRole::Leader ? this : peer;
+            auto* follower = fSnappingRole == WindowSnappingRole::Follower ? this : peer;
+            if (leader->fSnappingRole != WindowSnappingRole::Leader ||
+                follower->fSnappingRole != WindowSnappingRole::Follower || follower->fSnappingLeader.get() != nullptr)
+                continue;
+            RECT outer{}, targetOuter{};
+            if (!GetWindowRect(fHwnd, &outer) || !GetWindowRect(peer->fHwnd, &targetOuter))
+                continue;
+            const RECT frame = visibleWindowRectangle(fHwnd, outer);
+            const RECT other = visibleWindowRectangle(peer->fHwnd, targetOuter);
+            const bool side = (std::abs(frame.left - other.right) <= 1 || std::abs(frame.right - other.left) <= 1) &&
+                              frame.top < other.bottom && frame.bottom > other.top;
+            const bool above = (std::abs(frame.top - other.bottom) <= 1 || std::abs(frame.bottom - other.top) <= 1) &&
+                               frame.left < other.right && frame.right > other.left;
+            if (side || above)
+            {
+                leader->fSnappingFollowers.push_back(follower->snappingReference());
+                follower->fSnappingLeader = leader->snappingReference();
+                notifySnappingState();
+                if (auto* current = reference.get())
+                    current->notifySnappingState();
+            }
+        }
+    }
+
+    void WindowBackendWin32::moveSnappingFollowers()
+    {
+        RECT outer{};
+        if (!GetWindowRect(fHwnd, &outer))
+            return;
+        const POINT position{outer.left, outer.top};
+        const auto previous = std::exchange(fSnappingPosition, position);
+        if (fSnappingMoveTarget)
+        {
+            if (position.x != fSnappingMoveTarget->x || position.y != fSnappingMoveTarget->y)
+                clearAttachments();
+            return;
+        }
+        if (!previous || (position.x == previous->x && position.y == previous->y))
+            return;
+        if (fSnappingLeader.get() != nullptr)
+        {
+            detachForMovement();
+            return;
+        }
+        if (fSnappingFollowers.empty())
+            return;
+        const auto self = snappingReference();
+        const auto revision = fAttachmentRevision;
+        const LONG dx = position.x - previous->x, dy = position.y - previous->y;
+        struct Member
+        {
+            SnappingReference reference;
+            RECT rectangle;
+        };
+        std::vector<Member> members;
+        for (const auto& reference : fSnappingFollowers)
+        {
+            auto* peer = reference.get();
+            RECT rectangle{};
+            if (peer != nullptr && GetWindowRect(peer->fHwnd, &rectangle))
+                members.push_back({reference, rectangle});
+        }
+        fSnappingMoveTarget = position;
+        for (const auto& member : members)
+        {
+            if (self.get() != this || revision != fAttachmentRevision)
+                break;
+            auto* peer = member.reference.get();
+            if (peer == nullptr || peer->fSnappingLeader != self)
+                continue;
+            RECT current{};
+            if (!GetWindowRect(peer->fHwnd, &current) || !EqualRect(&current, &member.rectangle))
+            {
+                peer->clearAttachments();
+                continue;
+            }
+            const POINT expected{member.rectangle.left + dx, member.rectangle.top + dy};
+            peer->fSnappingMoveTarget = expected;
+            const BOOL moved = SetWindowPos(peer->fHwnd, nullptr, expected.x, expected.y, 0, 0,
+                                            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER);
+            peer = member.reference.get();
+            if (peer != nullptr)
+            {
+                peer->fSnappingMoveTarget.reset();
+                if (peer->fSnappingLeader == self &&
+                    (!moved || !GetWindowRect(peer->fHwnd, &current) || current.left != expected.x ||
+                     current.top != expected.y ||
+                     current.right - current.left != member.rectangle.right - member.rectangle.left ||
+                     current.bottom - current.top != member.rectangle.bottom - member.rectangle.top))
+                    peer->clearAttachments();
+            }
+        }
+        if (self.get() == this)
+            fSnappingMoveTarget.reset();
+    }
+
+    void WindowBackendWin32::snapMovingRectangle(RECT& rectangle)
+    {
+        fPendingAttachments.clear();
+        RECT outer{};
+        if (!GetWindowRect(fHwnd, &outer))
+            return;
+        const auto self = snappingReference();
+        if (fSnappingLeader.get() != nullptr && (rectangle.left != outer.left || rectangle.top != outer.top))
+        {
+            detachForMovement();
+            if (self.get() != this)
+                return;
+            RECT current{};
+            if (!GetWindowRect(fHwnd, &current))
+                return;
+            if (!EqualRect(&current, &outer))
+            {
+                rectangle = current;
+                return;
+            }
+        }
+        const RECT frame = visibleWindowRectangle(fHwnd, outer);
+        const RECT proposedFrame{rectangle.left + frame.left - outer.left, rectangle.top + frame.top - outer.top,
+                                 rectangle.right + frame.right - outer.right,
+                                 rectangle.bottom + frame.bottom - outer.bottom};
+        const LONG threshold = std::max(1, physicalFromLogical(12, fDpi));
+        std::vector<HWND> excluded;
+        for (const auto& reference : fSnappingFollowers)
+            if (auto* peer = reference.get())
+                excluded.push_back(peer->fHwnd);
+        SnapCandidates candidates{fHwnd, proposedFrame, threshold, 0, 0, threshold + 1, threshold + 1};
+        candidates.excluded = &excluded;
+        if (fSnappingMode == WindowSnappingMode::ScreenEdges ||
+            fSnappingMode == WindowSnappingMode::ScreenEdgesAndOtherWindows)
+            EnumDisplayMonitors(nullptr, nullptr, collectSnapMonitor, reinterpret_cast<LPARAM>(&candidates));
+        if (fSnappingMode == WindowSnappingMode::OtherWindows ||
+            fSnappingMode == WindowSnappingMode::ScreenEdgesAndOtherWindows)
+            EnumWindows(collectSnapWindow, reinterpret_cast<LPARAM>(&candidates));
+        OffsetRect(&rectangle, candidates.dx, candidates.dy);
+        if (fSnappingRole != WindowSnappingRole::Independent && !fAttachmentCancelled)
+            for (const HWND target : {candidates.targetX, candidates.targetY})
+            {
+                const auto reference = snappingReference(target);
+                if (reference.get() != nullptr &&
+                    std::ranges::find(fPendingAttachments, reference) == fPendingAttachments.end())
+                    fPendingAttachments.push_back(reference);
+            }
     }
 
     LRESULT WindowBackendWin32::windowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -1343,6 +1734,14 @@ namespace LWS
                 break;
 
             case WM_DESTROY:
+                fSnappingDragAnchor.Reset();
+                fDestroyingSnapping = true;
+                clearAttachments();
+                if (fSnappingLifetime)
+                    fSnappingLifetime->backend = nullptr;
+                fSnappingLifetime.reset();
+                fSnappingPosition.reset();
+                fSnappingSize.reset();
                 fPresentedBitmap.reset();
                 fPresentedPixels.reset();
                 fPresentedPixelSize = 0;
@@ -1359,6 +1758,10 @@ namespace LWS
 
             case WM_SIZE:
             {
+                if (wParam == SIZE_MINIMIZED || wParam == SIZE_MAXIMIZED)
+                    clearAttachments();
+                if (fHwnd == nullptr)
+                    break;
                 WindowShowState new_state = fDisplayState;
                 switch (wParam)
                 {
@@ -1413,8 +1816,59 @@ namespace LWS
                 dispatchClientAreaSizeChanged(getFramebufferSize());
                 break;
 
+            case WM_ENTERSIZEMOVE:
+                fSnappingDragAnchor.Reset();
+                fPendingAttachments.clear();
+                fInSnappingDrag = true;
+                fAttachmentCancelled = false;
+                break;
+
+            case WM_EXITSIZEMOVE:
+                fSnappingDragAnchor.Reset();
+                commitSnapAttachments();
+                fInSnappingDrag = false;
+                fAttachmentCancelled = false;
+                break;
+
+            case WM_WINDOWPOSCHANGED:
+            {
+                const auto* placement = reinterpret_cast<const WINDOWPOS*>(lParam);
+                RECT current{};
+                if (GetWindowRect(hWnd, &current))
+                {
+                    const Size size{current.right - current.left, current.bottom - current.top};
+                    const auto previousSize = std::exchange(fSnappingSize, size);
+                    if ((placement->flags & SWP_HIDEWINDOW) != 0 || IsIconic(hWnd) || IsZoomed(hWnd) ||
+                        (previousSize && (size.x != previousSize->x || size.y != previousSize->y)))
+                        clearAttachments();
+                }
+                break;
+            }
+
+            case WM_MOVING:
+                if (fSnappingMode != WindowSnappingMode::Disabled && fParentBackend == nullptr &&
+                    fFullScreenState == internal::FullScreenState::Windowed && lParam != 0)
+                {
+                    auto& rectangle = *reinterpret_cast<RECT*>(lParam);
+                    if (fInSnappingDrag && (fSnappingDragAnchor.Active() || GetCapture() == hWnd ||
+                                           (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0))
+                    {
+                        POINT cursor{};
+                        if (GetCursorPos(&cursor))
+                            fSnappingDragAnchor.Apply(rectangle, cursor);
+                        else
+                            fSnappingDragAnchor.Reset();
+                    }
+                    snapMovingRectangle(rectangle);
+                    use_default = false;
+                    return_value = TRUE;
+                }
+                break;
+
             case WM_MOVE:
-                dispatchEvent(EventMove{getPosition()});
+                moveSnappingFollowers();
+                if (fHwnd != nullptr)
+                    dispatchEvent(EventMove{getPosition()});
                 break;
 
             case WM_SETFOCUS:

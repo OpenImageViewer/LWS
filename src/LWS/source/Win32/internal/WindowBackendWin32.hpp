@@ -4,7 +4,10 @@
     #include <Windows.h>
     #include <LWS/Bitmap.hpp>
 
+    #include "WindowDragAnchor.hpp"
+
     #include <optional>
+    #include <vector>
 
     #include <LWS/source/internal/Backends.hpp>
     #include <LWS/Win32/EventWin32.hpp>
@@ -44,6 +47,10 @@ namespace LWS
         void setMinMaxSize(Size minSize, Size maxSize) override;
         Size getMinSize() const override;
         Size getMaxSize() const override;
+        void setSnappingMode(WindowSnappingMode mode) override;
+        void setSnappingRole(WindowSnappingRole role) override;
+        WindowSnappingState getSnappingState() const override;
+        void releaseSnappingAttachments() override;
         void setWindowStyles(WindowStyle styles) override;
         WindowStyle getWindowStyles() const override;
         void setForeground() override;
@@ -89,6 +96,49 @@ namespace LWS
         void setFullScreen(bool multiMonitor);
         LRESULT getCorner(POINTS points) const;
         [[nodiscard]] bool dispatchPlatformEvent(const Win32::PlatformEvent& event, LRESULT& result);
+
+        struct SnappingLifetime
+        {
+            WindowBackendWin32* backend{};
+        };
+        struct SnappingReference
+        {
+            std::weak_ptr<SnappingLifetime> lifetime;
+            WindowBackendWin32* get() const
+            {
+                const auto token = lifetime.lock();
+                return token ? token->backend : nullptr;
+            }
+            bool operator==(const SnappingReference& other) const
+            {
+                return !lifetime.owner_before(other.lifetime) && !other.lifetime.owner_before(lifetime);
+            }
+        };
+        SnappingReference snappingReference() const { return {fSnappingLifetime}; }
+        static SnappingReference snappingReference(HWND window);
+        static BOOL CALLBACK collectSnapWindow(HWND window, LPARAM data);
+        bool allowsWindowSnapping() const;
+        void notifySnappingState();
+        void clearAttachments(bool cancelDrag = true);
+        void detachForMovement();
+        void commitSnapAttachments();
+        void moveSnappingFollowers();
+        void snapMovingRectangle(RECT& rectangle);
+        std::shared_ptr<SnappingLifetime> fSnappingLifetime;
+        SnappingReference fSnappingLeader;
+        std::vector<SnappingReference> fSnappingFollowers;
+        std::vector<SnappingReference> fPendingAttachments;
+        std::optional<POINT> fSnappingPosition;
+        std::optional<Size> fSnappingSize;
+        std::optional<POINT> fSnappingMoveTarget;
+        WindowSnappingMode fSnappingMode{WindowSnappingMode::Disabled};
+        WindowSnappingRole fSnappingRole{WindowSnappingRole::Independent};
+        WindowSnappingState fPublishedSnappingState;
+        uint64_t fAttachmentRevision{};
+        internal::WindowDragAnchor fSnappingDragAnchor;
+        bool fInSnappingDrag = false;
+        bool fAttachmentCancelled = false;
+        bool fDestroyingSnapping = false;
 
         bool drawBitmap(HDC dc) const;
         std::unique_ptr<Bitmap> fPresentedBitmap;

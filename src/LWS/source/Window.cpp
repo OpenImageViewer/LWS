@@ -13,6 +13,19 @@
 
 namespace
 {
+    bool ValidSnappingMode(LWS::WindowSnappingMode mode)
+    {
+        return mode == LWS::WindowSnappingMode::Disabled || mode == LWS::WindowSnappingMode::ScreenEdges ||
+               mode == LWS::WindowSnappingMode::OtherWindows ||
+               mode == LWS::WindowSnappingMode::ScreenEdgesAndOtherWindows;
+    }
+
+    bool ValidSnappingRole(LWS::WindowSnappingRole role)
+    {
+        return role == LWS::WindowSnappingRole::Independent || role == LWS::WindowSnappingRole::Leader ||
+               role == LWS::WindowSnappingRole::Follower;
+    }
+
     bool ValidSizeLimits(const LWS::ClientSizeLimits& limits)
     {
         const auto& [minimum, maximum] = limits;
@@ -139,6 +152,12 @@ namespace LWS
         platform_.AssertCurrentThread();
         if (!platform_.IsUsable() || impl_->state != Impl::State::PreCreate)
             return Result::InvalidState;
+        if (!ValidSnappingMode(config.snappingMode) || !ValidSnappingRole(config.snappingRole))
+            return Result::InvalidArgument;
+        if ((config.snappingMode != WindowSnappingMode::Disabled ||
+             config.snappingRole != WindowSnappingRole::Independent) &&
+            (platform_.GetBackendId() != BackendId::Win32 || config.parent != nullptr))
+            return Result::NotSupported;
         if (config.clientSize.x <= 0 || config.clientSize.y <= 0 || !ValidSizeLimits(config.clientSizeLimits) ||
             (config.showState != WindowShowState::Restored && config.showState != WindowShowState::Maximized &&
              config.showState != WindowShowState::Minimized))
@@ -171,8 +190,8 @@ namespace LWS
         impl_->backend->setParent(config.parent != nullptr ? config.parent->impl_->backend.get() : nullptr);
         const internal::NativeWindowConfig nativeConfig{
             .position = config.position.value_or(Point{100, 100}),
-            .size = static_cast<Size>(
-                config.popupPlacement.has_value() ? config.popupPlacement->size : config.clientSize),
+            .size = static_cast<Size>(config.popupPlacement.has_value() ? config.popupPlacement->size
+                                                                        : config.clientSize),
             .title = config.title,
             .styles = config.styles.get(),
             .displayState = config.showState,
@@ -183,6 +202,8 @@ namespace LWS
             .minSize = static_cast<Size>(config.clientSizeLimits.minimum),
             .maxSize = static_cast<Size>(config.clientSizeLimits.maximum),
             .popup = config.popupPlacement,
+            .snappingMode = config.snappingMode,
+            .snappingRole = config.snappingRole,
         };
         impl_->backend->setBackgroundColor(config.backgroundColor);
         Result result = Result::Success;
@@ -460,6 +481,57 @@ namespace LWS
         const Point origin = area.LeftTop();
         return RequestPlacement(
             {.position = Point{origin.x + (area.GetWidth() - size.x) / 2, origin.y + (area.GetHeight() - size.y) / 2}});
+    }
+
+    Result Window::SetSnappingMode(WindowSnappingMode mode)
+    {
+        if (!IsCreated())
+            return Result::InvalidState;
+        const internal::WindowBackendAccess::DispatchScope dispatch(*this);
+        if (!ValidSnappingMode(mode))
+            return Result::InvalidArgument;
+        if (mode != WindowSnappingMode::Disabled &&
+            (platform_.GetBackendId() != BackendId::Win32 || impl_->parent != nullptr))
+            return Result::NotSupported;
+        impl_->config.snappingMode = mode;
+        impl_->backend->setSnappingMode(mode);
+        return Result::Success;
+    }
+
+    WindowSnappingMode Window::GetSnappingMode() const
+    {
+        platform_.AssertCurrentThread();
+        return impl_->config.snappingMode;
+    }
+
+    Result Window::SetSnappingRole(WindowSnappingRole role)
+    {
+        if (!IsCreated())
+            return Result::InvalidState;
+        const internal::WindowBackendAccess::DispatchScope dispatch(*this);
+        if (!ValidSnappingRole(role))
+            return Result::InvalidArgument;
+        if (role != WindowSnappingRole::Independent &&
+            (platform_.GetBackendId() != BackendId::Win32 || impl_->parent != nullptr))
+            return Result::NotSupported;
+        impl_->config.snappingRole = role;
+        impl_->backend->setSnappingRole(role);
+        return Result::Success;
+    }
+
+    WindowSnappingState Window::GetSnappingState() const
+    {
+        platform_.AssertCurrentThread();
+        return IsCreated() ? impl_->backend->getSnappingState() : WindowSnappingState{impl_->config.snappingRole};
+    }
+
+    Result Window::ReleaseSnappingAttachments()
+    {
+        if (!IsCreated())
+            return Result::InvalidState;
+        const internal::WindowBackendAccess::DispatchScope dispatch(*this);
+        impl_->backend->releaseSnappingAttachments();
+        return Result::Success;
     }
 
     Result Window::SetWindowMode(WindowMode mode)

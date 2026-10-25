@@ -445,3 +445,55 @@ Assigned and pasted multiline text normalizes CRLF/CR to LF. Existing OnEdit,
 validation, read-only, clipboard, placeholder, borderless, and highlighting APIs
 apply. Scrollbar interaction keeps the draft and does not add a Tab stop. These
 are plain-text notes, without rich text, syntax highlighting, or undo history.
+
+### Window snapping
+
+Opt in with `WindowConfig::snappingMode` when creating a window, or call
+`window.SetSnappingMode(LWS::WindowSnappingMode::ScreenEdgesAndOtherWindows)`
+after creation. `GetSnappingMode()` returns the selected mode. The modes are
+`Disabled` (the default), `ScreenEdges`, `OtherWindows`, and
+`ScreenEdgesAndOtherWindows`.
+
+On Win32, dragging a top-level window aligns its visible edges with monitor work
+area edges or visible neighboring windows within 12 logical units, scaled for
+DPI. This also applies to `BeginWindowDrag(WindowDragOperation::Move)` and custom
+menu-bar dragging. Snapping preserves window size and releases when the pointer
+moves beyond the threshold. Hidden, minimized, cloaked, and tool windows are
+excluded as targets. Window targets snap only opposite edges (left to right or
+top to bottom) with positive overlap along the other axis. In the same LWS
+context, both windows must enable OtherWindows or ScreenEdgesAndOtherWindows for
+geometric snapping. Disabled and ScreenEdges targets do not attract other
+windows, regardless of role. External windows remain geometric targets.
+Enabled modes return `NotSupported` on Wayland and for
+child or popup windows.
+
+Attachment is a separate, explicit role. `WindowConfig::snappingRole` defaults
+to `WindowSnappingRole::Independent`. Select `Leader` or `Follower` at creation,
+or call `SetSnappingRole()` after creation. Leader and Follower roles support
+only Win32 top-level windows.
+
+Dragging either a Leader or an unattached Follower can attach them in the same
+platform context. Both must enable snapping to other windows, and their adjacent visible
+edges must touch when the drag ends. A leader can carry multiple followers, each
+follower belongs to one leader, and attachments never form chains. Matching
+roles, Independent windows, and other applications still align without attaching.
+
+Moving a leader carries its followers by the same displacement, including
+programmatic movement. Direct follower movement detaches only that follower,
+leaving the leader and siblings stationary. The former leader remains an eligible
+snap target, so the follower can pull free and return to it during the same drag.
+Dropping against either the same leader or a different leader reattaches on release.
+
+`GetSnappingState()` returns the role, `attachedToLeader`, and `followerCount`.
+Subscribe to `EventSnappingStateChanged` and query current state when notified.
+The event follows reciprocal state updates and may reenter native dispatch.
+Register a listener before querying initial state. No window identities or
+borrowed attachment pointers are exposed.
+
+`ReleaseSnappingAttachments()` detaches a follower or releases a leader's
+followers while retaining roles and modes. It is idempotent and cancels attachment
+for the current drag. Actual role changes, disabling other-window snapping,
+resizing (including DPI-induced resizing), hiding, minimizing, maximizing,
+fullscreen, and destruction also release attachments. No-op role or mode setters
+preserve attachments. Outside a live window, state queries retain the configured
+role with no attachments. All operations require the context thread.

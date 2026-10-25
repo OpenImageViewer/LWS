@@ -9,6 +9,7 @@
 #include <LLUtils/Point.h>
 #include <LLUtils/Rect.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 
@@ -70,6 +71,31 @@ namespace LWS
         Windowed,
         Fullscreen,
         FullscreenAllMonitors
+    };
+
+    /// Magnetic edge alignment during interactive movement. Disabled by default.
+    enum class WindowSnappingMode
+    {
+        Disabled,
+        ScreenEdges,
+        OtherWindows,
+        ScreenEdgesAndOtherWindows
+    };
+
+    enum class WindowSnappingRole
+    {
+        Independent,
+        Leader,
+        Follower
+    };
+
+    struct WindowSnappingState
+    {
+        WindowSnappingRole role{WindowSnappingRole::Independent};
+        bool attachedToLeader{};
+        size_t followerCount{};
+
+        bool operator==(const WindowSnappingState&) const = default;
     };
 
     enum class CenterTarget
@@ -200,5 +226,8 @@ namespace LWS
         /// monitor work area. On Wayland the compositor owns dismissal and EventPopupDismissed fires
         /// when it dismisses the popup.
         std::optional<PopupPlacement> popupPlacement;
+        /// Win32 top-level windows only. Snaps within 12 logical units without resizing.
+        WindowSnappingMode snappingMode{WindowSnappingMode::Disabled};
+        WindowSnappingRole snappingRole{WindowSnappingRole::Independent};
     };
 }  // namespace LWS

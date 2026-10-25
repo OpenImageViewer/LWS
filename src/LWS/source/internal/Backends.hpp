@@ -46,6 +46,8 @@ namespace LWS
             Size minSize{};
             Size maxSize{};
             std::optional<PopupPlacement> popup;
+            WindowSnappingMode snappingMode{WindowSnappingMode::Disabled};
+            WindowSnappingRole snappingRole{WindowSnappingRole::Independent};
         };
 
         class ICursorBackend
@@ -88,6 +90,10 @@ namespace LWS
             virtual void setMinMaxSize(Size minSize, Size maxSize) = 0;
             [[nodiscard]] virtual Size getMinSize() const = 0;
             [[nodiscard]] virtual Size getMaxSize() const = 0;
+            virtual void setSnappingMode(WindowSnappingMode) {}
+            virtual void setSnappingRole(WindowSnappingRole) {}
+            [[nodiscard]] virtual WindowSnappingState getSnappingState() const { return {}; }
+            virtual void releaseSnappingAttachments() {}
             virtual void setWindowStyles(WindowStyle styles) = 0;
             [[nodiscard]] virtual WindowStyle getWindowStyles() const = 0;
             virtual void setForeground() = 0;
