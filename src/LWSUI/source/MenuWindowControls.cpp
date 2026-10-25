@@ -62,7 +62,7 @@ namespace LWSUI
     }
     float MenuBar::DragSpan() const
     {
-        return WindowControlsAvailable() && windowControls_.draggable ? 48.f : 0.f;
+        return WindowControlsAvailable() && windowControls_.draggable && !ContentActive() ? 48.f : 0.f;
     }
     float MenuBar::WindowControlsSpan() const
     {
@@ -100,7 +100,7 @@ namespace LWSUI
         const auto layout = CalculateLayout();
         const auto contains = [x, y](Rect rect) { return rect.Contains(x, y); };
         return (contains(layout.icon) || contains(layout.drag)) && std::ranges::none_of(layout.items, contains) &&
-               std::ranges::none_of(layout.buttons, contains);
+               std::ranges::none_of(layout.buttons, contains) && !ContentOccupied(x, y);
     }
     void MenuBar::ClearWindowPress()
     {
@@ -113,6 +113,7 @@ namespace LWSUI
     }
     void MenuBar::OnArrange()
     {
+        ArrangeContent();
         if (windowPressed_ && !SameRect(WindowButtonRect(*windowPressed_), windowPressBounds_))
             ClearWindowPress();
     }

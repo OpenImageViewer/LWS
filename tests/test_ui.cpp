@@ -1163,7 +1163,19 @@ TEST_CASE("Menu caption double-click is an explicit independent maximize toggle"
         REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
         REQUIRE(env.window().GetShowState() == LWS::WindowShowState::Restored);
     }
-
+    SECTION("interactive and disabled content never acts as a caption")
+    {
+        bar->SetContent(std::make_unique<LWSUI::Button>("Action"));
+        env.host().Update();
+        for (bool enabled : {true, false})
+        {
+            bar->Content()->SetEnabled(enabled);
+            env.host().Route({.kind = LWSUI::InputKind::Down, .x = 100, .y = 10, .clickCount = 2});
+            env.host().Route({.kind = LWSUI::InputKind::Up, .x = 100, .y = 10});
+            REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+            REQUIRE(env.window().GetShowState() == LWS::WindowShowState::Restored);
+        }
+    }
     SECTION("default remains disabled")
     {
         bar->SetWindowControls({});
@@ -1174,4 +1186,131 @@ TEST_CASE("Menu caption double-click is an explicit independent maximize toggle"
     }
 }
 #endif
+
+
+TEST_CASE("Menu icon items and owned content share layout and input safely", "[ui][menu][content]")
+{
+    struct Content final : LWSUI::Container
+    {
+        LWSUI::Label* title = &Emplace<LWSUI::Label>("Title");
+        LWSUI::TextBox* editor = &Emplace<LWSUI::TextBox>("Edit");
+        LWSUI::Button* action = &Emplace<LWSUI::Button>("Action");
+        LWSUI::Control* HitTest(float x, float y) override
+        {
+            if (!Bounds().Contains(x, y)) return nullptr;
+            for (auto& child : Children()) if (auto* hit = child->HitTest(x, y)) return hit;
+            return nullptr;
+        }
+        LWSUI::Size OnMeasure(LWSUI::Size available) override
+        {
+            for (auto& child : Children()) child->Measure({80, available.height});
+            return {280, available.height};
+        }
+        void OnArrange() override
+        {
+            const auto b = Bounds();
+            title->Arrange({b.x, b.y, 60, b.height});
+            editor->Arrange({b.x + 80, b.y, 80, b.height});
+            action->Arrange({b.x + b.width - 80, b.y, 80, b.height});
+        }
+    };
+    using Access = LWSUI::internal::MenuSessionAccess;
+    using Action = LWSUI::internal::MenuWindowAction;
+    MenuEnvironment env;
+    MenuCounters counts;
+    env.host().SetRoot(std::make_unique<LWSUI::Button>("Body"));
+    auto menu = std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts));
+    auto* bar = menu.get();
+    unsigned closed = 0, clicked = 0;
+    bar->SetWindowControls({.draggable = true, .requestClose = [&] { ++closed; }});
+    std::array<std::byte, 8 * 4 * 4> pixels{};
+    const auto icon = std::make_shared<LWS::Bitmap>(LWS::BitmapBuffer{.pixels = pixels, .width = 8, .height = 4, .rowPitch = 32});
+    bar->SetIcon(icon);
+    auto contents = std::make_unique<Content>();
+    auto* controls = contents.get();
+    auto click = controls->action->OnClick.Connect([&] { ++clicked; });
+    bar->SetContent(std::move(contents), 280);
+    env.host().SetMainMenu(std::move(menu));
+    env.host().Update();
+    REQUIRE(bar->Icon() == icon);
+    REQUIRE(bar->ItemRect(0).x > bar->Bounds().x);
+    REQUIRE(bar->Content()->Bounds().x >= bar->ItemRect(1).x + bar->ItemRect(1).width);
+    const auto close = Access::WindowButtonBounds(*bar, Action::Close);
+    REQUIRE(bar->Content()->Bounds().x + bar->Content()->Bounds().width <= close.x + .01f);
+    REQUIRE(bar->MinimumWidth() >= 280 + close.width + 40);
+    REQUIRE(Access::HitDrag(*bar, 4, 4));
+    REQUIRE_FALSE(Access::HitDrag(*bar, bar->ItemRect(0).x + 3, bar->ItemRect(0).y + 3));
+    REQUIRE_FALSE(Access::HitDrag(*bar, close.x + 3, close.y + 3));
+    for (auto* control : {static_cast<LWSUI::Control*>(controls->title),
+                          static_cast<LWSUI::Control*>(controls->editor),
+                          static_cast<LWSUI::Control*>(controls->action)})
+    {
+        const auto bounds = control->Bounds();
+        REQUIRE_FALSE(Access::HitDrag(*bar, bounds.x + 3, bounds.y + 3));
+    }
+    controls->action->SetEnabled(false);
+    REQUIRE_FALSE(Access::HitDrag(*bar, controls->action->Bounds().x + 3, controls->action->Bounds().y + 3));
+    controls->action->SetEnabled(true);
+    const auto captionControls = bar->WindowControls();
+    auto noDrag = captionControls; noDrag.draggable = false;
+    bar->SetWindowControls(noDrag);
+    REQUIRE_FALSE(Access::HitDrag(*bar, 4, 4));
+    bar->SetWindowControls(captionControls);
+    bar->SetEnabled(false); REQUIRE_FALSE(Access::HitDrag(*bar, 4, 4)); bar->SetEnabled(true);
+    const auto press = [&](LWSUI::Rect b)
+    { return env.host().Route({.kind = LWSUI::InputKind::Down, .x = b.x + 3, .y = b.y + 3}); };
+    const auto release = [&](LWSUI::Rect b)
+    { return env.host().Route({.kind = LWSUI::InputKind::Up, .x = b.x + 3, .y = b.y + 3}); };
+    REQUIRE(press(controls->action->Bounds())); REQUIRE(release(controls->action->Bounds()));
+    REQUIRE(clicked == 1); REQUIRE_FALSE(env.host().HasOpenMenu());
+    REQUIRE(env.host().Focus(controls->editor));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Text, .text = "draft"}));
+    const auto draft = controls->editor->Text();
+    REQUIRE(press(close));
+    REQUIRE(release(controls->action->Bounds())); // Release over content cancels the caption button.
+    REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+    REQUIRE(closed == 0); REQUIRE(clicked == 1);
+#ifdef LWS_HAS_WIN32_BACKEND
+    REQUIRE(GetCapture() == nullptr);
+    unsigned moves = 0;
+    const SUBCLASSPROC observer = [](HWND h, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) -> LRESULT
+    { if (message == WM_NCLBUTTONDOWN && w == HTCAPTION) { ++*reinterpret_cast<unsigned*>(data); return 0; }
+      return DefSubclassProc(h, message, w, l); };
+    REQUIRE(SetWindowSubclass(Hwnd(env.window()), observer, 9, reinterpret_cast<DWORD_PTR>(&moves)));
+    POINT point{}; const bool pointer = GetCursorPos(&point) != FALSE;
+    REQUIRE(press({1, 1, 20, 20})); REQUIRE(release({1, 1, 20, 20}));
+    if (pointer) REQUIRE(moves == 1);
+    const auto iconMoves = moves;
+    REQUIRE(press(controls->title->Bounds())); REQUIRE(release(controls->title->Bounds()));
+    controls->action->SetEnabled(false);
+    REQUIRE(press(controls->action->Bounds())); REQUIRE(release(controls->action->Bounds()));
+    REQUIRE(moves == iconMoves);
+    const auto b = controls->Bounds();
+    REQUIRE(press({b.x + 170, b.y, 10, b.height}));
+    if (pointer) REQUIRE(moves == iconMoves + 1);
+    REQUIRE(release({b.x + 170, b.y, 10, b.height}));
+    REQUIRE(RemoveWindowSubclass(Hwnd(env.window()), observer, 9));
+    controls->action->SetEnabled(true);
+#endif
+    REQUIRE(controls->editor->Text() == draft);
+    REQUIRE(env.host().Focus(controls->editor));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Tab}));
+    REQUIRE(env.host().IsFocused(*controls->action));
+    controls->action->SetContextMenuProvider([](auto&, const auto&)
+        { return std::vector<LWSUI::ContextMenuItem>{{"Choose", "", [](auto&) {}}}; });
+    const auto actionBounds = controls->action->Bounds();
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = actionBounds.x + 2, .y = actionBounds.y + 2, .button = LWS::MouseButton::Right}));
+    REQUIRE(env.host().HasContextMenu());
+    const auto old = controls->action->Handle();
+    bar->SetContent(std::make_unique<LWSUI::Label>("Replacement"), 80);
+    REQUIRE_FALSE(old);
+    env.host().Update(); REQUIRE_FALSE(env.host().HasContextMenu());
+    bar->SetIcon(nullptr); env.host().Update();
+    REQUIRE(bar->ItemRect(0).x == bar->Bounds().x);
+    bar->SetIcon(icon); bar->orientation = LWSUI::Orientation::Vertical;
+    env.host().SetMainMenuDock(LWSUI::MenuDock::Left); env.host().Update();
+    REQUIRE(bar->ItemRect(0).y > bar->Bounds().y);
+    REQUIRE_FALSE(Access::HitDrag(*bar, 4, 4));
+    REQUIRE(bar->Content()->Bounds().width == 0);
+}
 #endif

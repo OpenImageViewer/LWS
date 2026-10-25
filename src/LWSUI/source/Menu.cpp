@@ -92,7 +92,8 @@ namespace LWSUI
     }
     float MenuBar::NaturalSpan() const
     {
-        return ItemsSpan() + WindowControlsSpan();
+        return IconSpan() + ItemsSpan() + WindowControlsSpan() +
+               (ContentActive() ? std::max(contentMinimum_, content_->DesiredSize().width) : 0);
     }
     float MenuBar::Thickness() const
     {
@@ -101,10 +102,13 @@ namespace LWSUI
         float width = 0;
         for (const auto& item : items_)
             width = std::max(width, TextWidth(ParseMnemonic(item.label).label) + 2 * Style().menuBarPadding);
-        return width;
+        return std::max(width, IconSpan());
     }
     Size MenuBar::OnMeasure(Size available)
     {
+        if (ContentActive())
+            content_->Measure(
+                {std::max(0.f, available.width - IconSpan() - ItemsSpan() - WindowControlsSpan()), Thickness()});
         const bool horizontal = orientation == Orientation::Horizontal;
         const float limit = std::max(0.f, horizontal ? available.width : available.height);
         float span = stretch ? limit : NaturalSpan();
@@ -122,7 +126,7 @@ namespace LWSUI
         Layout layout;
         const auto b = Bounds();
         const bool horizontal = orientation == Orientation::Horizontal;
-        const float icon = 0;
+        const float icon = IconSpan();
         layout.icon = horizontal ? Rect{b.x, b.y, std::min(b.width, icon), b.height}
                                  : Rect{b.x, b.y, b.width, std::min(b.height, icon)};
         float right = b.x + b.width;
@@ -142,7 +146,7 @@ namespace LWSUI
         if (horizontal)
         {
             layout.itemsArea.x += std::min(b.width, icon);
-            const float itemRight = right;
+            const float itemRight = ContentActive() ? std::max(layout.itemsArea.x, right - contentMinimum_) : right;
             layout.itemsArea.width = std::max(0.f, itemRight - layout.itemsArea.x - std::min(DragSpan(), right - b.x));
         }
         else
@@ -152,7 +156,7 @@ namespace LWSUI
         }
         float position = (horizontal ? b.x : b.y) + icon;
         layout.items.reserve(items_.size());
-        const bool clipItems = horizontal && (WindowControlsSpan() > 0);
+        const bool clipItems = horizontal && (WindowControlsSpan() > 0 || ContentActive() || icon_);
         for (size_t i = 0; i < items_.size(); ++i)
         {
             const float extent = ItemExtent(i);
@@ -162,7 +166,11 @@ namespace LWSUI
             layout.items.push_back(item);
             position += extent;
         }
-
+        if (ContentActive())
+        {
+            const float left = std::min(right, position);
+            layout.content = {left, b.y, std::max(0.f, right - left), b.height};
+        }
         const float end = std::min(position, layout.itemsArea.x + layout.itemsArea.width);
         layout.drag = {end, b.y, std::max(0.f, right - end), b.height};
         return layout;
@@ -226,6 +234,7 @@ namespace LWSUI
                 }
             }
         }
+        RenderContent(canvas, layout);
         RenderWindowControls(canvas, layout);
     }
     bool MenuBar::OnInput(const Input& input)
@@ -237,13 +246,6 @@ namespace LWSUI
         }
         // Ordinary interaction is owned by the menu session.
         return false;
-    }
-    float MenuBar::ItemsSpan() const
-    {
-        float span = 0;
-        for (size_t i = 0; i < items_.size(); ++i)
-            span += ItemExtent(i);
-        return span;
     }
     namespace internal
     {
@@ -997,6 +999,8 @@ namespace LWSUI
             auto* bar = host_.MainMenu();
             if (!bar || !PointerKind(input.kind))
                 return false;
+            if (bar->HitContent(input.x, input.y))
+                return false;
             const bool overBar = bar->Bounds().Contains(input.x, input.y);
             const size_t hit = overBar ? bar->HitItem(input.x, input.y) : MenuBar::NoItem;
             const auto usable = [bar](size_t index)
@@ -1119,7 +1123,20 @@ namespace LWSUI
                 menuUsed_ = true;
                 return Mnemonic(*character);
             }
-
+            if (bar->ContentActive() && !bar->windowPressed_ &&
+                PointerKind(input.kind) && bar->HitContent(input.x, input.y))
+            {
+                if (input.kind == InputKind::Down)
+                    Close();
+                else if (input.kind == InputKind::Move)
+                {
+                    bar->windowHover_.reset();
+                    if (!active_)
+                        SetHot(-1);
+                    bar->Invalidate();
+                }
+                return false;
+            }
             return WindowInput(input) || PointerInput(input);
         }
         void MenuSession::FocusLost()

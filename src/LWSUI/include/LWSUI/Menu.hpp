@@ -56,7 +56,7 @@ namespace LWSUI
     /// Menu bar control. A single `&` in a label marks the mnemonic that is underlined; `&&` is a
     /// literal ampersand. The bar is passive: UIHost::SetMainMenu drives state, popup dropdowns,
     /// hover and the full Windows-style keyboard path; hover the control directly for rendering.
-    class MenuBar : public Control
+    class MenuBar : public Container
     {
       public:
 
@@ -89,7 +89,14 @@ namespace LWSUI
             maxSpan_ = std::max(0.f, span);
             Invalidate(true);
         }
+        void SetIcon(LWS::BitmapSharedPtr icon);
+        const LWS::BitmapSharedPtr& Icon() const { return icon_; }
         // Content is active in horizontal Top/Bottom bars. Structural replacements must be deferred from callbacks.
+        void SetContent(std::unique_ptr<Control> content, float minimumWidth = 0);
+        Control* Content() const { return content_; }
+        void SetContentMinimumWidth(float width);
+        float MinimumWidth() const;
+        Event<void(float)> OnMinimumWidthChanged;
         void SetItems(std::vector<MenuBarItem> items);
         void SetWindowControls(MenuBarWindowControls controls);
         const MenuBarWindowControls& WindowControls() const { return windowControls_; }
@@ -121,7 +128,23 @@ namespace LWSUI
         };
         Layout CalculateLayout() const;
         friend class UIHost;
+        using Container::Add;
+        using Container::Clear;
+        using Container::Emplace;
+        using Container::Remove;
+        bool ContentActive() const;
+        Control* HitContent(float x, float y) const;
+        bool ContentOccupied(float x, float y) const;
+        bool InContent(Control* control) const;
+        Rect ContentRect() const;
+        float IconSpan() const;
         float ItemsSpan() const;
+        void ArrangeContent();
+        void RenderContent(Canvas& canvas, const Layout& layout);
+        void NotifyMinimumWidth();
+        LWS::BitmapSharedPtr icon_;
+        Control* content_ = nullptr;
+        float contentMinimum_ = 0, notifiedMinimum_ = -1;
         friend class internal::MenuSession;
         friend struct internal::MenuSessionAccess;
         using WindowAction = internal::MenuWindowAction;
