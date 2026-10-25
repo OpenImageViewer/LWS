@@ -35,6 +35,14 @@ namespace LWS::internal
             wl_output* object = nullptr;
             MonitorDesc description;
             int32_t scale = 1;
+            void updateLogicalSize()
+            {
+                const Point origin = description.monitorRect.GetCorner(LLUtils::TopLeft);
+                description.monitorRect = {origin,
+                                           {origin.x + description.pixelSize.x / scale,
+                                            origin.y + description.pixelSize.y / scale}};
+                description.workRect = description.monitorRect;
+            }
         };
 
         static void outputGeometry(void* data, wl_output* output, int32_t x, int32_t y, int32_t physicalWidth,

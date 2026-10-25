@@ -1,8 +1,9 @@
-#ifdef LWS_PLATFORM_WAYLAND
+#if defined(LWS_PLATFORM_WAYLAND) || defined(LWS_PLATFORM_X11)
     #include <LWS/Clipboard.hpp>
-    #include <LWS/FileDialog.hpp>
     #include <LWS/NotificationIconGroup.hpp>
 
+// Only legacy clipboard formats and tray icons share this fallback. Native text clipboard and
+// portal dialogs retain their separate Wayland implementations.
 namespace LWS
 {
     class NotificationIconGroup::Impl

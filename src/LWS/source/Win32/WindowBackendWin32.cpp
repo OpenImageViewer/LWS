@@ -6,6 +6,8 @@
     #include <LLUtils/Exception.h>
     #include <LWS/Win32/ScopedWindowDpiContext.hpp>
     #include "internal/SharedWindowClass.hpp"
+    #include "internal/BgraDib.hpp"
+    #include <LWS/source/internal/BitmapPixels.hpp>
     #include <LWS/StringDefs.hpp>
 
     #include <algorithm>
@@ -749,22 +751,8 @@ namespace LWS
             for (uint32_t x = 0; x < icon->width; ++x)
                 if (icon->pixels[size_t(y) * icon->rowPitch + size_t(x) * 4 + 3] == std::byte{0})
                     maskBits[size_t(icon->height - 1 - y) * maskPitch + x / 8] |= std::byte(0x80U >> (x % 8));
-        BITMAPV5HEADER header{};
-        header.bV5Size = sizeof(header);
-        header.bV5Width = static_cast<LONG>(icon->width);
-        header.bV5Height = -static_cast<LONG>(icon->height);
-        header.bV5Planes = 1;
-        header.bV5BitCount = 32;
-        header.bV5Compression = BI_BITFIELDS;
-        header.bV5RedMask = 0x00FF0000;
-        header.bV5GreenMask = 0x0000FF00;
-        header.bV5BlueMask = 0x000000FF;
-        header.bV5AlphaMask = 0xFF000000;
         void* targetPixels{};
-        HDC screen = GetDC(nullptr);
-        HBITMAP color = CreateDIBSection(screen, reinterpret_cast<BITMAPINFO*>(&header), DIB_RGB_COLORS, &targetPixels,
-                                         nullptr, 0);
-        ReleaseDC(nullptr, screen);
+        HBITMAP color = internal::createBgraDib(icon->width, icon->height, targetPixels);
         if (color == nullptr || targetPixels == nullptr)
             return Result::Failure;
         const size_t rowBytes = static_cast<size_t>(icon->width) * 4U;
@@ -1288,12 +1276,7 @@ namespace LWS
                 const size_t bytes = rowSize * bitmap.height;
                 if (bytes != fPresentedPixelSize)
                     fPresentedPixels = std::make_unique_for_overwrite<std::byte[]>(bytes);
-                for (uint32_t y = 0; y < bitmap.height; ++y)
-                {
-                    const uint32_t sourceY = bitmap.rowOrder == BitmapRowOrder::TopDown ? y : bitmap.height - y - 1;
-                    std::memcpy(fPresentedPixels.get() + static_cast<size_t>(y) * rowSize,
-                                bitmap.pixels.data() + static_cast<size_t>(sourceY) * layout->rowPitch, rowSize);
-                }
+                internal::copyBitmapPixels(bitmap, *layout, fPresentedPixels.get());
                 fPresentedPixelSize = bytes;
                 fPresentedWidth = bitmap.width;
                 fPresentedHeight = bitmap.height;
@@ -2243,8 +2226,7 @@ namespace LWS
 
         updateWindowStyles();
         SetWindowPos(fHwnd, nullptr, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
-                     internal::WindowPosHelper::composeFlags(
-                         {internal::WindowPosOp::Placement, internal::WindowPosOp::UpdateFrame}));
+                     internal::WindowPosHelper::PlacementFlags | SWP_FRAMECHANGED);
     }
 
     LRESULT WindowBackendWin32::getCorner(POINTS points) const

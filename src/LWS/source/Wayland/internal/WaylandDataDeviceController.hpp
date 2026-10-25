@@ -27,19 +27,7 @@ namespace LWS::internal
         void bindManager(wl_registry* registry, uint32_t name, uint32_t version);
         void setSeat(wl_seat* seat);
         [[nodiscard]] bool supported() const { return fDataDevice != nullptr; }
-        ClipboardResult setClipboardText(Window& owner, std::string_view text)
-        {
-            return fClipboard.setText(owner, text);
-        }
-        void requestClipboardText(Window& owner, ClipboardTextCallback callback)
-        {
-            fClipboard.requestText(owner, std::move(callback));
-        }
-        void processClipboard() { fClipboard.process(); }
-        void appendClipboardPollDescriptors(std::vector<pollfd>& descriptors, int& timeoutMilliseconds) const
-        {
-            fClipboard.appendPollDescriptors(descriptors, timeoutMilliseconds);
-        }
+        [[nodiscard]] WaylandTextClipboard& clipboard() { return fClipboard; }
         [[nodiscard]] int pollDescriptor() const { return fDropDescriptor; }
         void processEvents(short events);
         void windowRemoved(WindowBackendWayland& window);

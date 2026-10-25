@@ -9,6 +9,7 @@
     #include "internal/CaptionRenderer.hpp"
     #include "internal/WindowFrame.hpp"
     #include "internal/IconPixels.hpp"
+    #include "internal/MappedShmBuffer.hpp"
     #ifdef LWS_HAS_TOPLEVEL_ICON
         #include "xdg-toplevel-icon-v1-client-protocol.h"
     #endif
@@ -20,7 +21,6 @@
     #include <limits>
     #include <optional>
     #include <sys/mman.h>
-    #include <sys/syscall.h>
     #include <unistd.h>
     #include <utility>
     #include <vector>
@@ -29,19 +29,6 @@
     #include <pointer-constraints-client-protocol.h>
     #include <relative-pointer-client-protocol.h>
     #include <xdg-shell-client-protocol.h>
-
-namespace
-{
-    int createAnonymousFile()
-    {
-    #ifdef SYS_memfd_create
-        return static_cast<int>(syscall(SYS_memfd_create, "lws-wayland-buffer", 0x0001U));
-    #else
-        errno = ENOSYS;
-        return -1;
-    #endif
-    }
-}  // namespace
 
 namespace LWS
 {
@@ -53,14 +40,6 @@ namespace LWS
         {
             explicit CaptionBuffer(NativeState& state) : owner(state) {}
 
-            ~CaptionBuffer()
-            {
-                if (buffer != nullptr)
-                    wl_buffer_destroy(buffer);
-                if (mapping != MAP_FAILED)
-                    munmap(mapping, mappingSize);
-            }
-
             static void released(void* data, wl_buffer*)
             {
                 auto* captionBuffer = static_cast<CaptionBuffer*>(data);
@@ -68,9 +47,7 @@ namespace LWS
             }
 
             NativeState& owner;
-            wl_buffer* buffer = nullptr;
-            void* mapping = MAP_FAILED;
-            size_t mappingSize = 0;
+            internal::MappedShmBuffer storage;
             Size size{};
             bool busy = false;
         };
@@ -78,13 +55,6 @@ namespace LWS
         struct PresentedBuffer
         {
             explicit PresentedBuffer(NativeState& state) : owner(state) {}
-            ~PresentedBuffer()
-            {
-                if (buffer != nullptr)
-                    wl_buffer_destroy(buffer);
-                if (mapping != MAP_FAILED)
-                    munmap(mapping, mappingSize);
-            }
             static void released(void* data, wl_buffer*)
             {
                 auto* presented = static_cast<PresentedBuffer*>(data);
@@ -92,9 +62,7 @@ namespace LWS
             }
 
             NativeState& owner;
-            wl_buffer* buffer = nullptr;
-            void* mapping = MAP_FAILED;
-            size_t mappingSize = 0;
+            internal::MappedShmBuffer storage;
             uint32_t width = 0;
             uint32_t height = 0;
             bool busy = false;
@@ -140,7 +108,7 @@ namespace LWS
                 return transparentBuffer;
 
             constexpr size_t bufferSize = sizeof(uint32_t);
-            const int fd = createAnonymousFile();
+            const int fd = internal::createAnonymousFile();
             if (fd < 0 || ftruncate(fd, bufferSize) != 0)
             {
                 if (fd >= 0)
@@ -187,17 +155,7 @@ namespace LWS
 
         void releaseBuffer()
         {
-            if (buffer != nullptr)
-            {
-                wl_buffer_destroy(buffer);
-                buffer = nullptr;
-            }
-            if (mapping != MAP_FAILED)
-            {
-                munmap(mapping, mappingSize);
-                mapping = MAP_FAILED;
-                mappingSize = 0;
-            }
+            background.reset();
             backgroundSize = {};
             bufferReleased = true;
         }
@@ -212,7 +170,7 @@ namespace LWS
         void submitBitmap(PresentedBuffer& presented)
         {
             presented.busy = true;
-            wl_surface_attach(surface, presented.buffer, 0, 0);
+            wl_surface_attach(surface, presented.storage.buffer, 0, 0);
             if (wl_surface_get_version(surface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
                 wl_surface_damage_buffer(surface, 0, 0, presented.width, presented.height);
             else
@@ -254,9 +212,9 @@ namespace LWS
                 zxdg_toplevel_decoration_v1_add_listener(decoration, &decorationListener, this);
                 const bool wantsCaption = (std::to_underlying(owner.fWindowStyles) &
                                            std::to_underlying(WindowStyle::Caption)) != 0;
-                zxdg_toplevel_decoration_v1_set_mode(
-                    decoration, wantsCaption ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
-                                             : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+                zxdg_toplevel_decoration_v1_set_mode(decoration, wantsCaption
+                                                                     ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+                                                                     : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
             }
             return true;
         }
@@ -313,7 +271,8 @@ namespace LWS
             // The anchor is client-area relative; the positioner works in parent surface coordinates. The 1x1 anchor
             // rect is pinned by its top-left corner so the derived anchor point equals the LWS anchor exactly, the
             // gravity names the direction the popup extends from it, and the offset shifts that anchor point.
-            const Point parentOffset = owner.fParentBackend != nullptr ? owner.fParentBackend->contentOffset() : Point{};
+            const Point parentOffset = owner.fParentBackend != nullptr ? owner.fParentBackend->contentOffset()
+                                                                       : Point{};
             xdg_positioner_set_size(positioner, placement.size.x, placement.size.y);
             xdg_positioner_set_anchor_rect(positioner, placement.anchor.x + parentOffset.x,
                                            placement.anchor.y + parentOffset.y, 1, 1);
@@ -322,11 +281,10 @@ namespace LWS
             xdg_positioner_set_offset(positioner, placement.offset.x, placement.offset.y);
             if (placement.adjustToScreen)
             {
-                xdg_positioner_set_constraint_adjustment(positioner,
-                                                         XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X |
-                                                             XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y |
-                                                             XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_X |
-                                                             XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y);
+                xdg_positioner_set_constraint_adjustment(positioner, XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X |
+                                                                         XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y |
+                                                                         XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_X |
+                                                                         XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y);
             }
             popup = xdg_surface_get_popup(shellSurface, parent, positioner);
             xdg_positioner_destroy(positioner);
@@ -351,10 +309,7 @@ namespace LWS
                 state.pendingPopupConfigure = Size{width, height};
         }
 
-        static void popupDone(void* data, xdg_popup*)
-        {
-            static_cast<NativeState*>(data)->owner.handlePopupDismissed();
-        }
+        static void popupDone(void* data, xdg_popup*) { static_cast<NativeState*>(data)->owner.handlePopupDismissed(); }
 
         static void popupRepositioned(void*, xdg_popup*, uint32_t) {}
 
@@ -490,9 +445,7 @@ namespace LWS
         zwp_locked_pointer_v1* lockedPointer = nullptr;
         zwp_relative_pointer_v1* relativePointer = nullptr;
         internal::WaylandDecorationMode decorationMode = internal::WaylandDecorationMode::None;
-        wl_buffer* buffer = nullptr;
-        void* mapping = MAP_FAILED;
-        size_t mappingSize = 0;
+        internal::MappedShmBuffer background;
         bool configured = false;
         bool bufferReleased = true;
         Size backgroundSize{};
@@ -708,10 +661,9 @@ namespace LWS
             {
                 if (fNativeState->popup == nullptr)
                 {
-                    xdg_surface* parentSurface =
-                        fParentBackend != nullptr && fParentBackend->fNativeState != nullptr
-                            ? fParentBackend->fNativeState->shellSurface
-                            : nullptr;
+                    xdg_surface* parentSurface = fParentBackend != nullptr && fParentBackend->fNativeState != nullptr
+                                                     ? fParentBackend->fNativeState->shellSurface
+                                                     : nullptr;
                     if (parentSurface == nullptr || !fNativeState->createPopupRole(*fPopupPlacement, parentSurface))
                     {
                         fNativeState->releaseShellRole();
@@ -947,19 +899,7 @@ namespace LWS
             fIconApplied = false;
             return Result::Success;
         }
-        struct Buffer
-        {
-            void* mapping = MAP_FAILED;
-            size_t bytes = 0;
-            wl_buffer* buffer = nullptr;
-            ~Buffer()
-            {
-                if (buffer)
-                    wl_buffer_destroy(buffer);
-                if (mapping != MAP_FAILED)
-                    munmap(mapping, bytes);
-            }
-        };
+        using Buffer = internal::MappedShmBuffer;
         try
         {
             // Buffers are immutable and never receive release events for icons.
@@ -975,30 +915,9 @@ namespace LWS
             {
                 auto pixels = internal::ScaleIcon(*bitmap, size);
                 auto buffer = std::make_unique<Buffer>();
-                buffer->bytes = pixels.size();
-                const int fd = createAnonymousFile();
-                if (fd < 0)
+                if (!buffer->create(platform.sharedMemory(), size, size))
                     return Result::Failure;
-                if (ftruncate(fd, off_t(buffer->bytes)) != 0)
-                {
-                    close(fd);
-                    return Result::Failure;
-                }
-                buffer->mapping = mmap(nullptr, buffer->bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-                if (buffer->mapping == MAP_FAILED)
-                {
-                    close(fd);
-                    return Result::Failure;
-                }
-                auto* pool = wl_shm_create_pool(platform.sharedMemory(), fd, int(buffer->bytes));
-                close(fd);
-                if (!pool)
-                    return Result::Failure;
-                buffer->buffer = wl_shm_pool_create_buffer(pool, 0, size, size, size * 4, WL_SHM_FORMAT_ARGB8888);
-                wl_shm_pool_destroy(pool);
-                if (!buffer->buffer)
-                    return Result::Failure;
-                std::memcpy(buffer->mapping, pixels.data(), buffer->bytes);
+                std::memcpy(buffer->mapping, pixels.data(), pixels.size());
                 buffers.push_back(std::move(buffer));
                 xdg_toplevel_icon_v1_add_buffer(icon.get(), buffers.back()->buffer, 1);
             }
@@ -1393,51 +1312,19 @@ namespace LWS
         else
         {
             auto newPresented = std::make_unique<NativeState::PresentedBuffer>(*fNativeState);
-            const int fd = createAnonymousFile();
-            if (fd < 0 || bufferSize > static_cast<size_t>(std::numeric_limits<off_t>::max()) ||
-                bufferSize > static_cast<size_t>(std::numeric_limits<int32_t>::max()) ||
-                ftruncate(fd, static_cast<off_t>(bufferSize)) != 0)
-            {
-                if (fd >= 0)
-                    close(fd);
+            if (!newPresented->storage.create(fPlatform.sharedMemory(), framebuffer.x, framebuffer.y))
                 return Result::Failure;
-            }
-
-            void* mapping = mmap(nullptr, bufferSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-            if (mapping == MAP_FAILED)
-            {
-                close(fd);
-                return Result::Failure;
-            }
-
-            wl_shm_pool* pool = wl_shm_create_pool(fPlatform.sharedMemory(), fd, static_cast<int32_t>(bufferSize));
-            wl_buffer* buffer = pool != nullptr ? wl_shm_pool_create_buffer(pool, 0, framebuffer.x, framebuffer.y,
-                                                                            static_cast<int32_t>(tightPitch),
-                                                                            WL_SHM_FORMAT_ARGB8888)
-                                                : nullptr;
-            if (pool != nullptr)
-                wl_shm_pool_destroy(pool);
-            close(fd);
-            if (buffer == nullptr)
-            {
-                munmap(mapping, bufferSize);
-                return Result::Failure;
-            }
-
-            newPresented->buffer = buffer;
-            newPresented->mapping = mapping;
-            newPresented->mappingSize = bufferSize;
             newPresented->width = bitmap.width;
             newPresented->height = bitmap.height;
             static constexpr wl_buffer_listener bufferListener{.release = NativeState::PresentedBuffer::released};
-            wl_buffer_add_listener(buffer, &bufferListener, newPresented.get());
+            wl_buffer_add_listener(newPresented->storage.buffer, &bufferListener, newPresented.get());
             presented = newPresented.get();
             presentedBuffers.push_back(std::move(newPresented));
         }
 
         // Keep the copying API: callers can reuse their pixels on return, without buffer leases or release
         // synchronization. Copy even a pending frame directly into shared memory, then submit that same buffer.
-        std::memcpy(presented->mapping, bitmap.pixels.data(), bufferSize);
+        std::memcpy(presented->storage.mapping, bitmap.pixels.data(), bufferSize);
         // Up to three busy buffers plus one idle pending buffer; repeated paints reuse that idle entry.
         constexpr int maxSubmittedBuffers = 3;
         const auto submitted = std::ranges::count_if(presentedBuffers, [](const auto& buffer) { return buffer->busy; });
@@ -2037,43 +1924,16 @@ namespace LWS
             return;
         }
 
-        void* mapping = fNativeState->mapping;
-        wl_buffer* buffer = fNativeState->buffer;
+        void* mapping = fNativeState->background.mapping;
+        wl_buffer* buffer = fNativeState->background.buffer;
         const Size dimensions{static_cast<int32_t>(width), bufferHeight};
         if (buffer == nullptr || fNativeState->backgroundSize != dimensions)
         {
             fNativeState->releaseBuffer();
-            const int fd = createAnonymousFile();
-            if (fd < 0 || ftruncate(fd, static_cast<off_t>(bufferSize)) != 0)
-            {
-                if (fd >= 0)
-                    close(fd);
+            if (!fNativeState->background.create(fPlatform.sharedMemory(), dimensions.x, dimensions.y))
                 return;
-            }
-
-            mapping = mmap(nullptr, bufferSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-            if (mapping == MAP_FAILED)
-            {
-                close(fd);
-                return;
-            }
-
-            wl_shm_pool* pool = wl_shm_create_pool(fPlatform.sharedMemory(), fd, static_cast<int32_t>(bufferSize));
-            buffer = pool != nullptr ? wl_shm_pool_create_buffer(pool, 0, static_cast<int32_t>(width), bufferHeight,
-                                                                 static_cast<int32_t>(stride), WL_SHM_FORMAT_ARGB8888)
-                                     : nullptr;
-            if (pool != nullptr)
-                wl_shm_pool_destroy(pool);
-            close(fd);
-            if (buffer == nullptr)
-            {
-                munmap(mapping, bufferSize);
-                return;
-            }
-
-            fNativeState->buffer = buffer;
-            fNativeState->mapping = mapping;
-            fNativeState->mappingSize = bufferSize;
+            buffer = fNativeState->background.buffer;
+            mapping = fNativeState->background.mapping;
             fNativeState->backgroundSize = dimensions;
             static constexpr wl_buffer_listener bufferListener{.release = NativeState::bufferRelease};
             wl_buffer_add_listener(buffer, &bufferListener, fNativeState.get());
@@ -2087,31 +1947,14 @@ namespace LWS
         {
             auto* pixels = static_cast<uint32_t*>(mapping);
             constexpr uint32_t captionColor = 0xff303030U;
-            constexpr uint32_t closeColor = 0xffc42b1cU;
-            constexpr uint32_t glyphColor = 0xffffffffU;
             const int32_t captionHeight = static_cast<int32_t>(std::lround(internal::waylandCaptionHeight * scale));
             std::fill_n(pixels, width * captionHeight, captionColor);
             if ((std::to_underlying(fWindowStyles) & std::to_underlying(WindowStyle::CloseButton)) != 0)
             {
                 const int32_t closeLeft = static_cast<int32_t>(
                     std::lround(std::max(fSize.x - internal::waylandCloseButtonWidth, 0) * scale));
-                for (int32_t y = 0; y < captionHeight; ++y)
-                    std::fill_n(pixels + static_cast<size_t>(y) * width + closeLeft,
-                                static_cast<int32_t>(width) - closeLeft, closeColor);
-                const int32_t centerX = closeLeft + (static_cast<int32_t>(width) - closeLeft) / 2;
-                const int32_t centerY = captionHeight / 2;
-                const int32_t glyphRadius = std::max(1, static_cast<int32_t>(std::lround(5.0 * scale)));
-                for (int32_t offset = -glyphRadius; offset <= glyphRadius; ++offset)
-                {
-                    const int32_t y = centerY + offset;
-                    if (y >= 0 && y < captionHeight)
-                    {
-                        if (centerX + offset >= 0 && centerX + offset < static_cast<int32_t>(width))
-                            pixels[static_cast<size_t>(y) * width + centerX + offset] = glyphColor;
-                        if (centerX - offset >= 0 && centerX - offset < static_cast<int32_t>(width))
-                            pixels[static_cast<size_t>(y) * width + centerX - offset] = glyphColor;
-                    }
-                }
+                internal::renderCaptionCloseButton({pixels, width * captionHeight}, static_cast<int32_t>(width),
+                                                   captionHeight, closeLeft, scale);
             }
         }
         fNativeState->bufferReleased = false;
@@ -2155,8 +1998,6 @@ namespace LWS
             return;
         const size_t width = static_cast<size_t>(scaledWidth);
         const int32_t captionHeight = static_cast<int32_t>(scaledHeight);
-        const size_t stride = width * bytesPerPixel;
-        const size_t bufferSize = stride * captionHeight;
         const Size dimensions{static_cast<int32_t>(width), captionHeight};
         auto& buffers = fNativeState->captionBuffers;
         std::erase_if(buffers, [&](const auto& buffer) { return !buffer->busy && buffer->size != dimensions; });
@@ -2174,51 +2015,18 @@ namespace LWS
         else
         {
             auto created = std::make_unique<NativeState::CaptionBuffer>(*fNativeState);
-            const int fd = createAnonymousFile();
-            if (fd < 0 || bufferSize > static_cast<size_t>(std::numeric_limits<off_t>::max()) ||
-                ftruncate(fd, static_cast<off_t>(bufferSize)) != 0)
-            {
-                if (fd >= 0)
-                    close(fd);
+            if (!created->storage.create(fPlatform.sharedMemory(), dimensions.x, dimensions.y))
                 return;
-            }
-
-            void* mapping = mmap(nullptr, bufferSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-            if (mapping == MAP_FAILED)
-            {
-                close(fd);
-                return;
-            }
-
-            wl_shm_pool* pool = wl_shm_create_pool(fPlatform.sharedMemory(), fd, static_cast<int32_t>(bufferSize));
-            wl_buffer* buffer = pool != nullptr
-                                    ? wl_shm_pool_create_buffer(pool, 0, static_cast<int32_t>(width), captionHeight,
-                                                                static_cast<int32_t>(stride), WL_SHM_FORMAT_ARGB8888)
-                                    : nullptr;
-            if (pool != nullptr)
-                wl_shm_pool_destroy(pool);
-            close(fd);
-            if (buffer == nullptr)
-            {
-                munmap(mapping, bufferSize);
-                return;
-            }
-
-            created->buffer = buffer;
-            created->mapping = mapping;
-            created->mappingSize = bufferSize;
             created->size = dimensions;
             static constexpr wl_buffer_listener bufferListener{.release = NativeState::CaptionBuffer::released};
-            wl_buffer_add_listener(buffer, &bufferListener, created.get());
+            wl_buffer_add_listener(created->storage.buffer, &bufferListener, created.get());
             caption = created.get();
             buffers.push_back(std::move(created));
         }
-        auto* buffer = caption->buffer;
-        auto* mapping = caption->mapping;
+        auto* buffer = caption->storage.buffer;
+        auto* mapping = caption->storage.mapping;
         auto* pixels = static_cast<uint32_t*>(mapping);
         constexpr uint32_t captionColor = 0xff303030U;
-        constexpr uint32_t closeColor = 0xffc42b1cU;
-        constexpr uint32_t glyphColor = 0xffffffffU;
         std::fill_n(pixels, width * captionHeight, captionColor);
         const bool closeButton = (std::to_underlying(fWindowStyles) & std::to_underlying(WindowStyle::CloseButton)) !=
                                  0;
@@ -2230,23 +2038,8 @@ namespace LWS
         {
             const int32_t closeLeft = static_cast<int32_t>(
                 std::lround(std::max(fSize.x - internal::waylandCloseButtonWidth, 0) * scale));
-            for (int32_t y = 0; y < captionHeight; ++y)
-                std::fill_n(pixels + static_cast<size_t>(y) * width + closeLeft,
-                            static_cast<int32_t>(width) - closeLeft, closeColor);
-            const int32_t centerX = closeLeft + (static_cast<int32_t>(width) - closeLeft) / 2;
-            const int32_t centerY = captionHeight / 2;
-            const int32_t glyphRadius = std::max(1, static_cast<int32_t>(std::lround(5.0 * scale)));
-            for (int32_t offset = -glyphRadius; offset <= glyphRadius; ++offset)
-            {
-                const int32_t y = centerY + offset;
-                if (y >= 0 && y < captionHeight)
-                {
-                    if (centerX + offset >= 0 && centerX + offset < static_cast<int32_t>(width))
-                        pixels[static_cast<size_t>(y) * width + centerX + offset] = glyphColor;
-                    if (centerX - offset >= 0 && centerX - offset < static_cast<int32_t>(width))
-                        pixels[static_cast<size_t>(y) * width + centerX - offset] = glyphColor;
-                }
-            }
+            internal::renderCaptionCloseButton({pixels, width * captionHeight}, static_cast<int32_t>(width),
+                                               captionHeight, closeLeft, scale);
         }
 
         caption->busy = true;

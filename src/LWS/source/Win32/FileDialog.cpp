@@ -8,7 +8,6 @@
     #include "../internal/WindowBackendAccess.hpp"
     #include <LLUtils/Warnings.h>
 
-    #include <sstream>
     #include <wrl/client.h>
     #include <filesystem>
     #include <memory>
@@ -29,19 +28,12 @@ namespace
         for (size_t i = 0; i < filters.size(); ++i)
         {
             storage[i].name = filters[i].description;
-            std::wstringstream extBuffer;
-            for (auto& extension : filters[i].extensions)
+            for (const auto& extension : filters[i].extensions)
             {
-                extBuffer << extension << L';';
+                if (!storage[i].spec.empty())
+                    storage[i].spec += L';';
+                storage[i].spec += extension;
             }
-
-            if (extBuffer.rdbuf()->in_avail() > 0)
-            {
-                extBuffer.seekp(-1, std::ios_base::end);
-                extBuffer << L'\0';
-            }
-
-            storage[i].spec = extBuffer.str();
             storage[i].filter.pszName = storage[i].name.c_str();
             storage[i].filter.pszSpec = storage[i].spec.c_str();
         }

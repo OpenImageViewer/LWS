@@ -6,6 +6,11 @@
 #include <functional>
 #include <memory>
 
+namespace LWS::internal
+{
+    class IHighPrecisionTimerBackend;
+}
+
 namespace LWS
 {
     class Timer
@@ -57,7 +62,6 @@ namespace LWS
       private:
 
         PlatformContext& platform_;
-        class Impl;
-        std::unique_ptr<Impl> impl_;
+        std::unique_ptr<internal::IHighPrecisionTimerBackend> backend_;
     };
 }  // namespace LWS

@@ -5,7 +5,8 @@
 
     #include <LWS/Platform.hpp>
     #include <LWS/Win32/Platform.hpp>
-    #include "internal/MonitorInfo.hpp"
+    #include "internal/PlatformBackendWin32.hpp"
+    #include "internal/WindowBackendWin32.hpp"
     #include "internal/PlatformState.hpp"
 
     #include <mutex>
@@ -366,7 +367,6 @@ namespace LWS::internal
 
 namespace LWS::internal::platform_backend
 {
-    using Feature = PlatformFeature;
     Result init()
     {
         if (g_platformThreadState.initCount != 0)
@@ -410,90 +410,100 @@ namespace LWS::internal::platform_backend
         }
     }
 
-    bool supports(Feature feature)
+}  // namespace LWS::internal::platform_backend
+
+namespace LWS::internal
+{
+    bool Win32PlatformBackendCommon::Supports(PlatformFeature feature) const
     {
         switch (feature)
         {
-            case Feature::AbsoluteWindowPosition:
-            case Feature::GlobalPointerPosition:
-            case Feature::PointerWarp:
-            case Feature::ProgrammaticActivation:
-            case Feature::AlwaysOnTop:
-            case Feature::MultiMonitorFullscreen:
-            case Feature::WindowIcon:
-            case Feature::Clipboard:
-            case Feature::TextClipboard:
-            case Feature::NotificationIcon:
-            case Feature::NotificationIconGeometry:
-            case Feature::ServerSideDecorations:
-            case Feature::HostWindowFrame:
+            case PlatformFeature::AbsoluteWindowPosition:
+            case PlatformFeature::GlobalPointerPosition:
+            case PlatformFeature::PointerWarp:
+            case PlatformFeature::ProgrammaticActivation:
+            case PlatformFeature::AlwaysOnTop:
+            case PlatformFeature::MultiMonitorFullscreen:
+            case PlatformFeature::WindowIcon:
+            case PlatformFeature::Clipboard:
+            case PlatformFeature::TextClipboard:
+            case PlatformFeature::NotificationIcon:
+            case PlatformFeature::NotificationIconGeometry:
+            case PlatformFeature::ServerSideDecorations:
+            case PlatformFeature::HostWindowFrame:
                 return true;
-            case Feature::DragAndDrop:
-            case Feature::FileDialog:
+            case PlatformFeature::DragAndDrop:
+            case PlatformFeature::FileDialog:
                 return internal::isOleInitializedForCurrentThread();
-            case Feature::PointerLock:
+            case PlatformFeature::PointerLock:
                 return false;
         }
         return false;
     }
 
-    bool isKeyPressed(KeyCode key)
+    bool Win32PlatformBackendCommon::IsKeyPressed(KeyCode key) const
     {
         if (key == KeyCode::Shift)
         {
-            return isKeyPressed(KeyCode::LShift) || isKeyPressed(KeyCode::RShift);
+            return IsKeyPressed(KeyCode::LShift) || IsKeyPressed(KeyCode::RShift);
         }
         if (key == KeyCode::Control)
         {
-            return isKeyPressed(KeyCode::LControl) || isKeyPressed(KeyCode::RControl);
+            return IsKeyPressed(KeyCode::LControl) || IsKeyPressed(KeyCode::RControl);
         }
         if (key == KeyCode::Alt)
         {
-            return isKeyPressed(KeyCode::LAlt) || isKeyPressed(KeyCode::RAlt);
+            return IsKeyPressed(KeyCode::LAlt) || IsKeyPressed(KeyCode::RAlt);
         }
 
         int virtualKey = virtualKeyFromKeyCode(key);
         return virtualKey != 0 && (GetKeyState(virtualKey) & 0x8000) != 0;
     }
 
-    bool isKeyToggled(KeyCode key)
+    bool Win32PlatformBackendCommon::IsKeyToggled(KeyCode key) const
     {
         int virtualKey = virtualKeyFromKeyCode(key);
         return virtualKey != 0 && (GetKeyState(virtualKey) & 0x0001) != 0;
     }
 
-    Point getMousePosition()
+    Point Win32PlatformBackendCommon::GetMousePosition() const
     {
         POINT point{};
         GetCursorPos(&point);
         return {point.x, point.y};
     }
 
-    void moveMouse(Point delta)
+    Result Win32PlatformBackendCommon::MoveMouse(Point delta)
     {
         POINT point{};
         GetCursorPos(&point);
         SetCursorPos(point.x + delta.x, point.y + delta.y);
+        return Result::Success;
     }
 
-    void refreshMonitors(internal::MonitorInfo& monitors)
+    Result Win32PlatformBackendCommon::RefreshMonitors()
     {
-        monitors.refresh();
+        monitors_.refresh();
+        return Result::Success;
     }
 
-    LWS::MonitorDesc getMonitorInfo(internal::MonitorInfo& monitors, uintptr_t monitorHandle, bool allowRefresh)
+    LWS::MonitorDesc Win32PlatformBackendCommon::GetMonitorInfo(uintptr_t monitorHandle, bool allowRefresh)
     {
-        return monitorDescFromWin32(monitors.getMonitorInfo(reinterpret_cast<HMONITOR>(monitorHandle), allowRefresh));
+        return monitorDescFromWin32(monitors_.getMonitorInfo(reinterpret_cast<HMONITOR>(monitorHandle), allowRefresh));
     }
 
-    LWS::MonitorDesc getPrimaryMonitor(internal::MonitorInfo& monitors, bool allowRefresh)
+    LWS::MonitorDesc Win32PlatformBackendCommon::GetPrimaryMonitor(bool allowRefresh)
     {
-        return monitorDescFromWin32(monitors.getPrimaryMonitor(allowRefresh));
+        return monitorDescFromWin32(monitors_.getPrimaryMonitor(allowRefresh));
     }
 
-    Rect getBoundingMonitorArea(internal::MonitorInfo& monitors)
+    Rect Win32PlatformBackendCommon::GetBoundingMonitorArea() const
     {
-        return rectFromWin32(monitors.getBoundingMonitorArea());
+        return rectFromWin32(monitors_.getBoundingMonitorArea());
     }
-}  // namespace LWS::internal::platform_backend
+    std::unique_ptr<IWindowBackend> Win32PlatformBackendCommon::CreateWindowBackend(Window& owner)
+    {
+        return std::make_unique<WindowBackendWin32>(owner, monitors_);
+    }
+}  // namespace LWS::internal
 #endif

@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <cstring>
 #include <utility>
+#include <memory>
+#include <type_traits>
 
 namespace LWS::internal
 {
@@ -70,43 +72,28 @@ namespace LWS::internal
                 }
                 else
                 {
-                    reset();
+                    handle_.reset();
                 }
             }
         }
 
-        GlobalMemory(GlobalMemory&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {}
-        GlobalMemory& operator=(GlobalMemory&& other) noexcept
-        {
-            if (this != &other)
-            {
-                reset();
-                handle_ = std::exchange(other.handle_, nullptr);
-            }
-            return *this;
-        }
-        ~GlobalMemory() { reset(); }
-
+        GlobalMemory(GlobalMemory&&) noexcept = default;
+        GlobalMemory& operator=(GlobalMemory&&) noexcept = default;
         GlobalMemory(const GlobalMemory&) = delete;
         GlobalMemory& operator=(const GlobalMemory&) = delete;
 
         explicit operator bool() const { return handle_ != nullptr; }
-        HGLOBAL get() const { return handle_; }
-        HGLOBAL release() { return std::exchange(handle_, nullptr); }
-        ScopedLock lock() const { return ScopedLock(handle_); }
+        HGLOBAL get() const { return handle_.get(); }
+        HGLOBAL release() { return handle_.release(); }
+        ScopedLock lock() const { return ScopedLock(handle_.get()); }
         static ScopedLock LockBorrowed(HGLOBAL handle) { return ScopedLock(handle); }
 
       private:
 
-        void reset()
+        struct Deleter
         {
-            if (handle_ != nullptr)
-            {
-                std::ignore = GlobalFree(handle_);
-                handle_ = nullptr;
-            }
-        }
-
-        HGLOBAL handle_ = nullptr;
+            void operator()(HGLOBAL handle) const noexcept { std::ignore = GlobalFree(handle); }
+        };
+        std::unique_ptr<std::remove_pointer_t<HGLOBAL>, Deleter> handle_;
     };
 }  // namespace LWS::internal

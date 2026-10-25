@@ -1,5 +1,5 @@
 #include <LWS/Bitmap.hpp>
-#include <LWS/source/internal/BitmapValidation.hpp>
+#include <LWS/source/internal/BitmapPixels.hpp>
 
 #include <LLUtils/Exception.h>
 
@@ -9,14 +9,6 @@
 #include <cstring>
 #include <limits>
 #include <memory>
-
-namespace
-{
-    uint8_t Premultiply(uint8_t channel, uint8_t alpha)
-    {
-        return static_cast<uint8_t>((static_cast<uint16_t>(channel) * alpha + 127U) / 255U);
-    }
-}  // namespace
 
 namespace LWS
 {
@@ -34,38 +26,7 @@ namespace LWS
             fWidth = source.width;
             fHeight = source.height;
             fPixels = std::make_unique_for_overwrite<std::byte[]>(static_cast<size_t>(fWidth) * fHeight * 4U);
-            if (source.format == BitmapPixelFormat::Bgra8Premultiplied)
-            {
-                const size_t rowSize = static_cast<size_t>(fWidth) * 4U;
-                for (uint32_t y = 0; y < fHeight; ++y)
-                {
-                    const uint32_t sourceY = source.rowOrder == BitmapRowOrder::TopDown ? y : fHeight - y - 1;
-                    std::memcpy(fPixels.get() + static_cast<size_t>(y) * rowSize,
-                                source.pixels.data() + static_cast<size_t>(sourceY) * sourceLayout->rowPitch, rowSize);
-                }
-                return;
-            }
-
-            for (uint32_t y = 0; y < fHeight; ++y)
-            {
-                const uint32_t sourceY = source.rowOrder == BitmapRowOrder::TopDown ? y : fHeight - y - 1;
-                const auto* sourceRow = reinterpret_cast<const uint8_t*>(source.pixels.data()) +
-                                        static_cast<size_t>(sourceY) * sourceLayout->rowPitch;
-                auto* targetRow = reinterpret_cast<uint8_t*>(fPixels.get()) + static_cast<size_t>(y) * fWidth * 4U;
-                for (uint32_t x = 0; x < fWidth; ++x)
-                {
-                    const auto* sourcePixel = sourceRow + static_cast<size_t>(x) * sourceLayout->bytesPerPixel;
-                    auto* targetPixel = targetRow + static_cast<size_t>(x) * 4U;
-                    const uint8_t alpha = sourceLayout->bytesPerPixel == 4 ? sourcePixel[3] : 255U;
-                    targetPixel[0] = source.format == BitmapPixelFormat::Bgra8 ? Premultiply(sourcePixel[0], alpha)
-                                                                               : sourcePixel[0];
-                    targetPixel[1] = source.format == BitmapPixelFormat::Bgra8 ? Premultiply(sourcePixel[1], alpha)
-                                                                               : sourcePixel[1];
-                    targetPixel[2] = source.format == BitmapPixelFormat::Bgra8 ? Premultiply(sourcePixel[2], alpha)
-                                                                               : sourcePixel[2];
-                    targetPixel[3] = alpha;
-                }
-            }
+            internal::copyBitmapPixels(source, *sourceLayout, fPixels.get());
         }
 
         Impl(uint32_t width, uint32_t height, std::unique_ptr<std::byte[]> pixels)
@@ -84,8 +45,9 @@ namespace LWS
 
             auto pixels = std::make_unique_for_overwrite<std::byte[]>(static_cast<size_t>(width) * height * 4U);
             const uint8_t alpha = background.A();
-            const std::array backgroundPixel{Premultiply(background.B(), alpha), Premultiply(background.G(), alpha),
-                                             Premultiply(background.R(), alpha), alpha};
+            const std::array backgroundPixel{internal::premultiply(background.B(), alpha),
+                                             internal::premultiply(background.G(), alpha),
+                                             internal::premultiply(background.R(), alpha), alpha};
 
             const double scale = std::min(
                 {1.0, static_cast<double>(width) / fWidth, static_cast<double>(height) / fHeight});

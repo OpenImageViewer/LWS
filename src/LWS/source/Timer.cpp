@@ -4,6 +4,29 @@
 
 #include "internal/WindowBackendAccess.hpp"
 
+namespace
+{
+    // Keep callback lifetime and exception handling identical for both timer backends.
+    LWS::Timer::Callback ProtectCallback(LWS::PlatformContext& context, LWS::Timer::Callback callback)
+    {
+        if (!callback)
+            return {};
+        return [platform = &context, callback = std::move(callback)]
+        {
+            const LWS::internal::PlatformContextAccess::DispatchScope dispatch(*platform);
+            try
+            {
+                if (platform->IsUsable())
+                    callback();
+            }
+            catch (...)
+            {
+                LWS::internal::PlatformContextAccess::ReportUnhandledException(*platform, std::current_exception());
+            }
+        };
+    }
+}  // namespace
+
 namespace LWS
 {
     class Timer::Impl
@@ -17,18 +40,6 @@ namespace LWS
         }
         std::unique_ptr<internal::ITimerBackend> backend;
         EventConnection targetConnection;
-    };
-
-    class HighPrecisionTimer::Impl
-    {
-      public:
-
-        Impl(PlatformContext& platform, internal::ITimerBackend::Callback callback)
-        {
-            platform.AssertCurrentThread();
-            backend = internal::createHighPrecisionTimerBackend(platform, std::move(callback));
-        }
-        std::unique_ptr<internal::IHighPrecisionTimerBackend> backend;
     };
 
     Timer::Timer(PlatformContext& platform) : platform_(platform), impl_(std::make_unique<Impl>(platform))
@@ -85,74 +96,44 @@ namespace LWS
     void Timer::SetCallback(Callback callback)
     {
         platform_.AssertCurrentThread();
-        if (!callback)
-        {
-            impl_->backend->setCallback({});
-            return;
-        }
-        impl_->backend->setCallback(
-            [platform = &platform_, callback = std::move(callback)]
-            {
-                const internal::PlatformContextAccess::DispatchScope dispatch(*platform);
-                try
-                {
-                    if (platform->IsUsable())
-                        callback();
-                }
-                catch (...)
-                {
-                    platform->ReportUnhandledException(std::current_exception());
-                }
-            });
+        impl_->backend->setCallback(ProtectCallback(platform_, std::move(callback)));
     }
 
-    HighPrecisionTimer::HighPrecisionTimer(PlatformContext& platform, Callback callback)
-        : platform_(platform),
-          impl_(std::make_unique<Impl>(platform,
-                                       [platform = &platform_, callback = std::move(callback)]
-                                       {
-                                           const internal::PlatformContextAccess::DispatchScope dispatch(*platform);
-                                           try
-                                           {
-                                               if (callback && platform->IsUsable())
-                                                   callback();
-                                           }
-                                           catch (...)
-                                           {
-                                               platform->ReportUnhandledException(std::current_exception());
-                                           }
-                                       }))
+    HighPrecisionTimer::HighPrecisionTimer(PlatformContext& platform, Callback callback) : platform_(platform)
     {
+        platform_.AssertCurrentThread();
+        backend_ = internal::createHighPrecisionTimerBackend(platform_,
+                                                             ProtectCallback(platform_, std::move(callback)));
         platform_.RegisterService();
     }
 
     HighPrecisionTimer::~HighPrecisionTimer()
     {
         platform_.AssertCurrentThread();
-        impl_.reset();
+        backend_.reset();
         platform_.UnregisterService();
     }
     void HighPrecisionTimer::SetRepeatInterval(uint32_t interval)
     {
         platform_.AssertCurrentThread();
         if (platform_.IsUsable())
-            impl_->backend->setRepeatInterval(interval);
+            backend_->setRepeatInterval(interval);
     }
     void HighPrecisionTimer::SetDueTime(uint32_t dueTime)
     {
         platform_.AssertCurrentThread();
         if (platform_.IsUsable())
-            impl_->backend->setDueTime(dueTime);
+            backend_->setDueTime(dueTime);
     }
     bool HighPrecisionTimer::GetEnabled() const
     {
         platform_.AssertCurrentThread();
-        return platform_.IsUsable() && impl_->backend->getEnabled();
+        return platform_.IsUsable() && backend_->getEnabled();
     }
     void HighPrecisionTimer::Enable(bool enabled)
     {
         platform_.AssertCurrentThread();
         if (platform_.IsUsable() || !enabled)
-            impl_->backend->enable(enabled);
+            backend_->enable(enabled);
     }
 }  // namespace LWS

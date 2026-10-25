@@ -71,16 +71,6 @@ namespace LWS::internal
         return it == mHMonitorToDesc.end() ? mEmptyDesc : it->second;
     }
 
-    const MonitorDesc& MonitorInfo::getMonitorInfo(size_t index, bool allowRefresh)
-    {
-        if (index >= mDisplayDevices.size() && allowRefresh)
-        {
-            refresh();
-        }
-
-        return index < mDisplayDevices.size() ? mDisplayDevices[index] : mEmptyDesc;
-    }
-
     const MonitorDesc& MonitorInfo::getPrimaryMonitor(bool allowRefresh)
     {
         if (allowRefresh)
@@ -89,11 +79,6 @@ namespace LWS::internal
         }
 
         return fPrimaryMonitorIt == mHMonitorToDesc.end() ? mEmptyDesc : fPrimaryMonitorIt->second;
-    }
-
-    size_t MonitorInfo::getMonitorsCount() const
-    {
-        return mDisplayDevices.size();
     }
 
     RECT MonitorInfo::getBoundingMonitorArea()

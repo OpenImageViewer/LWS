@@ -62,26 +62,21 @@ namespace LWS
 
         ~TimerBackendWin32() override { Unregister(); }
 
-        void setTargetWindow(Handle handle) override { SetTargetWindow(handle); }
-        uint32_t getInterval() const override { return GetInterval(); }
-        void setInterval(uint32_t interval) override { SetInterval(interval); }
-        void setCallback(Callback callback) override { SetCallback(std::move(callback)); }
-
-        void SetTargetWindow(Handle hwnd)
+        void setTargetWindow(Handle hwnd) override
         {
             const uint32_t interval = fInterval;
             Unregister();
             fWindowHandle = reinterpret_cast<HWND>(hwnd);
             fInterval = 0;
             if (fWindowHandle != nullptr)
-                SetInterval(interval);
+                setInterval(interval);
             else
                 fInterval = interval;
         }
 
-        uint32_t GetInterval() const { return fInterval; }
+        uint32_t getInterval() const override { return fInterval; }
 
-        void SetInterval(uint32_t interval)
+        void setInterval(uint32_t interval) override
         {
             if (fInterval == interval)
                 return;
@@ -105,7 +100,7 @@ namespace LWS
             fInterval = interval;
         }
 
-        void SetCallback(Callback callback)
+        void setCallback(Callback callback) override
         {
             fCallback = callback ? std::make_shared<Callback>(std::move(callback)) : nullptr;
         }
@@ -154,30 +149,30 @@ namespace LWS
             fClass.Release();
         }
 
-        void SetRepeatInterval(uint32_t repeatInterval)
+        void setRepeatInterval(uint32_t repeatInterval) override
         {
             if (fRepeatInterval != repeatInterval)
             {
                 fRepeatInterval = repeatInterval;
                 if (fEnabled)
                 {
-                    Enable(false);
-                    Enable(true);
+                    enable(false);
+                    enable(true);
                 }
             }
         }
 
-        void SetDueTime(uint32_t dueTime) { fDueTime = dueTime; }
+        void setDueTime(uint32_t dueTime) override { fDueTime = dueTime; }
 
-        bool GetEnabled() const { return fEnabled; }
+        bool getEnabled() const override { return fEnabled; }
 
-        void Enable(bool enable)
+        void enable(bool enabled) override
         {
-            if (enable == fEnabled)
+            if (enabled == fEnabled)
                 return;
 
             Stop();
-            if (enable)
+            if (enabled)
             {
                 fEnabled = true;
                 const uint32_t period = fRepeatInterval == INFINITE ? 0 : fRepeatInterval;
@@ -189,11 +184,6 @@ namespace LWS
                 }
             }
         }
-
-        void setRepeatInterval(uint32_t interval) override { SetRepeatInterval(interval); }
-        void setDueTime(uint32_t dueTime) override { SetDueTime(dueTime); }
-        bool getEnabled() const override { return GetEnabled(); }
-        void enable(bool enabled) override { Enable(enabled); }
 
       private:
 

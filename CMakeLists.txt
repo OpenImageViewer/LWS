@@ -99,7 +99,7 @@ endfunction()
 # ---------------------------------------------------------------------------
 # LWS library used by the main executable and tests
 # ---------------------------------------------------------------------------
-file(GLOB_RECURSE lwsLibSources
+file(GLOB_RECURSE lwsLibSources CONFIGURE_DEPENDS
     "./src/LWS/source/*.cpp"
     "./src/LWS/include/*.hpp"
 )

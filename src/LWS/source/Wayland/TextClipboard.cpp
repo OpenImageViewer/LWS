@@ -3,6 +3,7 @@
     #include <LLUtils/StringUtility.h>
     #include "internal/WaylandTextClipboard.hpp"
     #include "internal/PlatformState.hpp"
+    #include "internal/PipeReceive.hpp"
     #include <LWS/source/internal/WindowBackendAccess.hpp>
     #include <chrono>
     #include <cerrno>
@@ -200,35 +201,14 @@ namespace LWS::internal
                     done = true;
                 if (!done && r.fd.get() >= 0)
                 {
-                    char buffer[4096];
-                    // Match DnD fairness: large transfers yield to other ready UI work.
-                    for (size_t received = 0; received < 64 * 1024;)
+                    constexpr size_t limit = 16 * 1024 * 1024;
+                    const auto count = receivePipe(r.fd.get(), r.text, limit, 64 * 1024);
+                    if (r.text.size() > limit || (count < 0 && errno != EAGAIN))
+                        done = true;
+                    else if (count == 0)
                     {
-                        auto n = read(r.fd.get(), buffer, sizeof(buffer));
-                        if (n > 0)
-                        {
-                            received += size_t(n);
-                            r.text.append(buffer, size_t(n));
-                            if (r.text.size() > 16 * 1024 * 1024)
-                            {
-                                done = true;
-                                break;
-                            }
-                        }
-                        else if (n == 0)
-                        {
-                            done = true;
-                            result = IsValidText(r.text) ? ClipboardResult::Success : ClipboardResult::UnknownError;
-                            break;
-                        }
-                        else if (errno == EINTR)
-                            continue;
-                        else
-                        {
-                            if (errno != EAGAIN)
-                                done = true;
-                            break;
-                        }
+                        done = true;
+                        result = IsValidText(r.text) ? ClipboardResult::Success : ClipboardResult::UnknownError;
                     }
                 }
                 if (std::chrono::steady_clock::now() - r.start >= std::chrono::seconds(5))
@@ -386,7 +366,7 @@ namespace LWS
             return ClipboardResult::UnknownError;
         auto& platform = *static_cast<internal::WaylandPlatformState*>(
             internal::PlatformContextAccess::GetBackend(context));
-        return platform.dataDevice().setClipboardText(owner, text);
+        return platform.dataDevice().clipboard().setText(owner, text);
     }
     void RequestClipboardText(Window& owner, ClipboardTextCallback callback)
     {
@@ -397,7 +377,7 @@ namespace LWS
         {
             auto& platform = *static_cast<internal::WaylandPlatformState*>(
                 internal::PlatformContextAccess::GetBackend(context));
-            platform.dataDevice().requestClipboardText(owner, std::move(callback));
+            platform.dataDevice().clipboard().requestText(owner, std::move(callback));
             return;
         }
         internal::DeliverClipboardText(owner, callback, ClipboardResult::UnknownError, {});

@@ -416,7 +416,7 @@ namespace LWS::internal
         for (const auto& [descriptor, callback] : timers)
             descriptors.push_back({.fd = descriptor, .events = POLLIN, .revents = 0});
         // Native callbacks may have queued transfers. Wait for their readiness or actual deadline.
-        fDataDeviceController.appendClipboardPollDescriptors(descriptors, timeoutMilliseconds);
+        fDataDeviceController.clipboard().appendPollDescriptors(descriptors, timeoutMilliseconds);
         const int pollResult = poll(descriptors.data(), descriptors.size(), timeoutMilliseconds);
         const int pollError = errno;
         // Every successful prepare_read is paired before callbacks or early failure returns.
@@ -481,7 +481,7 @@ namespace LWS::internal
             wl_display_dispatch_pending(fDisplay) < 0)
             fail("wl_display_dispatch_pending");
         if (context.IsUsable())
-            fDataDeviceController.processClipboard();
+            fDataDeviceController.clipboard().process();
     }
 
     void WaylandPlatformState::releaseObjects()

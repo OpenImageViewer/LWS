@@ -106,11 +106,7 @@ namespace LWS::internal
             if (Output* item = manager.findOutput(output); item != nullptr)
             {
                 item->description.pixelSize = {width, height};
-                const Point position = item->description.monitorRect.GetCorner(LLUtils::TopLeft);
-                const int32_t logicalWidth = width / item->scale;
-                const int32_t logicalHeight = height / item->scale;
-                item->description.monitorRect = {position, {position.x + logicalWidth, position.y + logicalHeight}};
-                item->description.workRect = item->description.monitorRect;
+                item->updateLogicalSize();
                 item->description.displayFrequency = refresh > 0 ? static_cast<uint32_t>(refresh / 1000) : 0;
             }
         }
@@ -127,13 +123,7 @@ namespace LWS::internal
             item->description.contentScale = {static_cast<double>(item->scale), static_cast<double>(item->scale)};
             if (item->description.pixelSize.x > 0 && item->description.pixelSize.y > 0)
             {
-                const Point position = item->description.monitorRect.GetCorner(LLUtils::TopLeft);
-                item->description.monitorRect = {
-                    position,
-                    {position.x + item->description.pixelSize.x / item->scale,
-                     position.y + item->description.pixelSize.y / item->scale},
-                };
-                item->description.workRect = item->description.monitorRect;
+                item->updateLogicalSize();
             }
             manager.fPlatform.outputChanged(output, false);
         }

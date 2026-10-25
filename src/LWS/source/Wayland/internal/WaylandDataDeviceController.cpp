@@ -4,6 +4,7 @@
 
     #include "PlatformState.hpp"
     #include "UriList.hpp"
+    #include "PipeReceive.hpp"
 
     #include <LWS/source/Wayland/internal/WindowBackendWayland.hpp>
 
@@ -229,21 +230,7 @@ namespace LWS::internal
         if (fDropDescriptor < 0 || (events & (POLLIN | POLLHUP | POLLERR)) == 0)
             return;
 
-        char buffer[4096];
-        ssize_t readSize = 0;
-        size_t readThisDispatch = 0;
-        do
-        {
-            do
-            {
-                readSize = read(fDropDescriptor, buffer, sizeof(buffer));
-            } while (readSize < 0 && errno == EINTR);
-            if (readSize > 0)
-            {
-                fDropData.append(buffer, static_cast<size_t>(readSize));
-                readThisDispatch += static_cast<size_t>(readSize);
-            }
-        } while (readSize > 0 && readThisDispatch < MaxReadPerDispatch && fDropData.size() <= MaxDropDataSize);
+        const auto readSize = receivePipe(fDropDescriptor, fDropData, MaxDropDataSize, MaxReadPerDispatch);
 
         if (fDropData.size() > MaxDropDataSize)
         {

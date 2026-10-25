@@ -10,6 +10,29 @@
 
 namespace LWS::internal
 {
+    void renderCaptionCloseButton(std::span<uint32_t> pixels, int32_t width, int32_t height, int32_t closeLeft,
+                                  double scale)
+    {
+        constexpr uint32_t closeColor = 0xffc42b1cU;
+        constexpr uint32_t glyphColor = 0xffffffffU;
+        for (int32_t y = 0; y < height; ++y)
+            std::fill_n(pixels.data() + static_cast<size_t>(y) * width + closeLeft, width - closeLeft, closeColor);
+        const int32_t centerX = closeLeft + (width - closeLeft) / 2;
+        const int32_t centerY = height / 2;
+        const int32_t radius = std::max(1, static_cast<int32_t>(std::lround(5.0 * scale)));
+        for (int32_t offset = -radius; offset <= radius; ++offset)
+        {
+            const int32_t y = centerY + offset;
+            if (y >= 0 && y < height)
+            {
+                if (centerX + offset >= 0 && centerX + offset < width)
+                    pixels[static_cast<size_t>(y) * width + centerX + offset] = glyphColor;
+                if (centerX - offset >= 0 && centerX - offset < width)
+                    pixels[static_cast<size_t>(y) * width + centerX - offset] = glyphColor;
+            }
+        }
+    }
+
     void renderCaptionTitle(std::span<uint32_t> pixels, int32_t width, int32_t height, std::string_view title,
                             int32_t rightEdge, double scale)
     {
@@ -29,8 +52,7 @@ namespace LWS::internal
 
         const int32_t stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, width);
         cairo_surface_t* surface = cairo_image_surface_create_for_data(reinterpret_cast<unsigned char*>(pixels.data()),
-                                                                       CAIRO_FORMAT_ARGB32, width, height,
-                                                                       stride);
+                                                                       CAIRO_FORMAT_ARGB32, width, height, stride);
         cairo_t* context = cairo_create(surface);
         cairo_rectangle(context, titleLeft, 0, titleRight - titleLeft, height);
         cairo_clip(context);
