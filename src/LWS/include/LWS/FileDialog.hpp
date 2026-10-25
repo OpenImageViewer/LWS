@@ -36,6 +36,7 @@ namespace LWS
       public:
 
         // Select one path. Outputs are replaced only on success.
+        // defaultExtension is a suffix such as "png", not a filter glob such as "*.png".
         static FileDialogResult Show(FileDialogType dialogType, const ListFileDialogFilters& filters,
                                      const file_dialog_string_type& title, Window& ownerWindow,
                                      const file_dialog_string_type& defaultExtension, uint32_t filterIndex,

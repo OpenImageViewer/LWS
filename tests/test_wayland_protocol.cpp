@@ -2,14 +2,18 @@
     #include <catch2/catch_test_macros.hpp>
     #include <LWS/Platform.hpp>
     #include <LWS/Window.hpp>
-#ifdef LWS_TEST_UI
-    #include <LWSUI/UIHost.hpp>
-    #include "source/MenuHost.hpp"
-#endif
+    #ifdef LWS_TEST_UI
+        #include <LWSUI/UIHost.hpp>
+        #include "source/MenuHost.hpp"
+    #endif
     #include <LWS/source/internal/WindowBackendAccess.hpp>
     #include <LWS/source/Wayland/internal/WindowBackendWayland.hpp>
     #include <LWS/source/Wayland/internal/WindowFrame.hpp>
     #include <LWS/TextClipboard.hpp>
+    #include <LWS/FileDialog.hpp>
+    #include "PortalTestService.hpp"
+    #include <condition_variable>
+    #include <cstdio>
     #include <LWS/Wayland/WindowExtensions.hpp>
     #include <wayland-server.h>
     #include <wayland-client.h>
@@ -514,8 +518,7 @@ namespace
                             if (surface.popup && !surface.configured && surface.server->configureOnCommit)
                             {
                                 surface.configured = true;
-                                const LWS::Size size =
-                                    surface.server->popupConfigureSize.value_or(surface.popupSize);
+                                const LWS::Size size = surface.server->popupConfigureSize.value_or(surface.popupSize);
                                 xdg_popup_send_configure(surface.popup, surface.popupAnchorRectX,
                                                          surface.popupAnchorRectY, size.x, size.y);
                                 xdg_surface_send_configure(surface.shell, 1);
@@ -583,11 +586,9 @@ namespace
                             state.anchorWidth = width;
                             state.anchorHeight = height;
                         },
-                        .set_anchor =
-                            [](wl_client*, wl_resource* resource, uint32_t anchor)
+                        .set_anchor = [](wl_client*, wl_resource* resource, uint32_t anchor)
                         { static_cast<Positioner*>(wl_resource_get_user_data(resource))->anchor = anchor; },
-                        .set_gravity =
-                            [](wl_client*, wl_resource* resource, uint32_t gravity)
+                        .set_gravity = [](wl_client*, wl_resource* resource, uint32_t gravity)
                         { static_cast<Positioner*>(wl_resource_get_user_data(resource))->gravity = gravity; },
                         .set_constraint_adjustment =
                             [](wl_client*, wl_resource* resource, uint32_t adjustment)
@@ -606,8 +607,7 @@ namespace
                         .set_parent_size = nullptr,
                         .set_parent_configure = nullptr};
                     wl_resource_set_implementation(
-                        positioner, &placement, state,
-                        [](wl_resource* resource)
+                        positioner, &placement, state, [](wl_resource* resource)
                         { delete static_cast<Positioner*>(wl_resource_get_user_data(resource)); });
                 },
                 .get_xdg_surface =
@@ -616,7 +616,8 @@ namespace
                     auto& surface = *static_cast<Surface*>(wl_resource_get_user_data(native));
                     surface.shell = wl_resource_create(client, &xdg_surface_interface, 1, id);
                     static const struct xdg_surface_interface shell{
-                        .destroy = [](wl_client*, wl_resource* resource)
+                        .destroy =
+                            [](wl_client*, wl_resource* resource)
                         {
                             auto& surface = *static_cast<Surface*>(wl_resource_get_user_data(resource));
                             if (surface.toplevel || surface.popup)
@@ -649,7 +650,8 @@ namespace
                                 .set_app_id = [](wl_client*, wl_resource* resource, const char* appId)
                                 { static_cast<Surface*>(wl_resource_get_user_data(resource))->appId = appId; },
                                 .show_window_menu = nullptr,
-                                .move = [](wl_client*, wl_resource* resource, wl_resource* seat, uint32_t serial)
+                                .move =
+                                    [](wl_client*, wl_resource* resource, wl_resource* seat, uint32_t serial)
                                 {
                                     auto& surface = *static_cast<Surface*>(wl_resource_get_user_data(resource));
                                     surface.moveSerial = serial;
@@ -793,17 +795,98 @@ namespace
     }
 }  // namespace
 
+TEST_CASE("Wayland portal dialogs preserve selection, cancellation and owner lifetime", "[wayland][protocol][portal]")
+{
+    if (!std::getenv("LWS_TEST_PORTAL_BUS"))
+        SKIP("Run on the private portal-session.conf bus with LWS_TEST_PORTAL_BUS=1");
+    ProtocolServer server;
+    LWS::PlatformContext context;
+    REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
+    LWS::Window owner(context);
+    auto config = Config();
+    config.visible = true;
+    REQUIRE(owner.Create(config) == LWS::Result::Success);
+    server.Settle(context);
+    // A missing protocol response must fail the test rather than stall CI indefinitely.
+    std::mutex mutex;
+    std::condition_variable_any condition;
+    std::jthread deadline(
+        [&](std::stop_token stop)
+        {
+            std::unique_lock lock(mutex);
+            condition.wait_for(lock, stop, std::chrono::seconds(15), [] { return false; });
+            if (!stop.stop_requested())
+            {
+                std::fputs("Portal regression timed out\n", stderr);
+                std::_Exit(EXIT_FAILURE);
+            }
+        });
+    const LWS::ListFileDialogFilters filters{{"Images", {"*.png", "*.jpg"}}, {"All", {"*.*"}}};
+    {
+        PortalTestService portal;
+        std::string output = "unchanged";
+        REQUIRE(LWS::FileDialog::Show(LWS::FileDialogType::OpenFile, filters, "Pick an image", owner, "png", 2, "/tmp",
+                                      output) == LWS::FileDialogResult::Success);
+        CHECK(output == "/tmp/lws portal.png");
+        auto request = portal.LastRequest();
+        CHECK(request.method == "OpenFile");
+        CHECK(request.title == "Pick an image");
+        CHECK(request.filters == 2);
+        CHECK(request.selectedFilter == "All");
+        // The portal must receive the glob that includes extensionless files.
+        CHECK(request.selectedPatterns == std::vector<std::string>{"*"});
+        CHECK_FALSE(request.multiple);
+        LWS::ListFileDialogFileNames outputs{"unchanged"};
+        REQUIRE(LWS::FileDialog::Show(LWS::FileDialogType::OpenFile, filters, "Multiple", owner, "png", 1, "/tmp",
+                                      outputs) == LWS::FileDialogResult::Success);
+        CHECK(outputs == LWS::ListFileDialogFileNames{"/tmp/lws portal.png", "/tmp/lws-portal-second.jpg"});
+        CHECK(portal.LastRequest().multiple);
+        CHECK(portal.LastRequest().selectedPatterns == std::vector<std::string>{"*.png", "*.jpg"});
+        REQUIRE(LWS::FileDialog::Show(LWS::FileDialogType::SaveFile, filters, "Save", owner, "png", 1, "/tmp/suggested",
+                                      output) == LWS::FileDialogResult::Success);
+        CHECK(output == "/tmp/lws-portal-saved.png");
+        CHECK(portal.LastRequest().currentName == "suggested.png");
+        for (const auto response : {PortalTestService::Response::Cancel, PortalTestService::Response::Error})
+        {
+            portal.SetResponse(response);
+            outputs = {"unchanged"};
+            const auto expected = response == PortalTestService::Response::Cancel ? LWS::FileDialogResult::UserCanceled
+                                                                                  : LWS::FileDialogResult::UnknownError;
+            CHECK(LWS::FileDialog::Show(LWS::FileDialogType::OpenFile, filters, "Cancel", owner, "", 0, "", outputs) ==
+                  expected);
+            CHECK(outputs == LWS::ListFileDialogFileNames{"unchanged"});
+        }
+        portal.SetResponse(PortalTestService::Response::OwnerClose);
+        REQUIRE(context.PostTask([&] { std::ignore = owner.Destroy(); }) == LWS::Result::Success);
+        output = "unchanged";
+        CHECK(LWS::FileDialog::Show(LWS::FileDialogType::OpenFile, filters, "Close", owner, "", 0, "", output) ==
+              LWS::FileDialogResult::UserCanceled);
+        CHECK(output == "unchanged");
+    }
+    // A desktop without the required portal returns an error, never a successful empty selection.
+    LWS::Window replacement(context);
+    REQUIRE(replacement.Create(config) == LWS::Result::Success);
+    server.Settle(context);
+    std::string output = "unchanged";
+    CHECK(LWS::FileDialog::Show(LWS::FileDialogType::OpenFile, {}, "Unavailable", replacement, "", 0, "", output) ==
+          LWS::FileDialogResult::UnknownError);
+    CHECK(output == "unchanged");
+}
+
 TEST_CASE("Wayland shell roles are released before their shared surface", "[wayland][protocol][lifetime]")
 {
     ProtocolServer server;
     LWS::PlatformContext context;
     REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
     LWS::Window window(context), popup(context);
-    auto config = Config(); config.visible = true;
+    auto config = Config();
+    config.visible = true;
     REQUIRE(window.Create(config) == LWS::Result::Success);
     server.Settle(context);
-    REQUIRE(popup.Create({.parent = &window, .visible = true,
-                          .popupPlacement = LWS::PopupPlacement{.anchor = {1, 1}, .size = {50, 50}}}) == LWS::Result::Success);
+    REQUIRE(popup.Create({.parent = &window,
+                          .visible = true,
+                          .popupPlacement = LWS::PopupPlacement{.anchor = {1, 1}, .size = {50, 50}}}) ==
+            LWS::Result::Success);
     server.Settle(context);
     REQUIRE(window.Destroy() == LWS::Result::Success);
     server.Settle(context);
@@ -819,14 +902,16 @@ TEST_CASE("Wayland configure callbacks may destroy their window", "[wayland][pro
     LWS::PlatformContext context;
     REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
     LWS::Window window(context);
-    auto config = Config(); config.visible = true;
+    auto config = Config();
+    config.visible = true;
     REQUIRE(window.Create(config) == LWS::Result::Success);
-    auto listener = window.Listen([&](const LWS::AnyEvent& event)
-    {
-        if (std::holds_alternative<LWS::EventClientAreaSizeChanged>(event))
-            REQUIRE(window.Destroy() == LWS::Result::Success);
-        return LWS::EventResponse::Unhandled;
-    });
+    auto listener = window.Listen(
+        [&](const LWS::AnyEvent& event)
+        {
+            if (std::holds_alternative<LWS::EventClientAreaSizeChanged>(event))
+                REQUIRE(window.Destroy() == LWS::Result::Success);
+            return LWS::EventResponse::Unhandled;
+        });
     REQUIRE(listener.has_value());
     server.Settle(context);
     REQUIRE_FALSE(window.IsCreated());
@@ -1979,18 +2064,15 @@ TEST_CASE("Wayland popup positioner maps gravity, anchor, and offset", "[wayland
     REQUIRE(gravity == XDG_POSITIONER_GRAVITY_BOTTOM_LEFT);
     REQUIRE(offsetX == 5);
     REQUIRE(offsetY == -7);
-    REQUIRE(adjustment == (XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X |
-                           XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y |
-                           XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_X |
-                           XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y));
+    REQUIRE(adjustment == (XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X | XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y |
+                           XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_X | XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y));
     REQUIRE(popup.IsConfigured());
     REQUIRE(popup.GetClientAreaMetrics().logical == LWS::LogicalSize{200, 150});
     REQUIRE(popup.GetClientAreaMetrics().pixels == LWS::PixelSize{200, 150});
     REQUIRE(popup.RequestPlacement({.clientSize = LWS::LogicalSize{300, 200}}) == LWS::Result::NotSupported);
 }
 
-TEST_CASE("Wayland popup adopts compositor configure sizes and restates them on reopen",
-          "[wayland][protocol][popup]")
+TEST_CASE("Wayland popup adopts compositor configure sizes and restates them on reopen", "[wayland][protocol][popup]")
 {
     ProtocolServer server;
     server.Invoke([&] { server.popupConfigureSize = LWS::Size{260, 190}; });
@@ -2081,8 +2163,7 @@ TEST_CASE("Wayland popup grabs the seat only after a pointer button", "[wayland]
     }
 }
 
-TEST_CASE("Wayland popup dismissal destroys the window and releases native resources",
-          "[wayland][protocol][popup]")
+TEST_CASE("Wayland popup dismissal destroys the window and releases native resources", "[wayland][protocol][popup]")
 {
     ProtocolServer server;
     LWS::PlatformContext context;
@@ -2148,39 +2229,43 @@ TEST_CASE("Wayland popup requires a toplevel parent", "[wayland][protocol][popup
     REQUIRE(popup.Create(config) == LWS::Result::NotSupported);
     REQUIRE_FALSE(popup.IsCreated());
 }
-#ifdef LWS_TEST_UI
+    #ifdef LWS_TEST_UI
 TEST_CASE("Menu popup hosts repaint keyboard selection and retain their focus chain", "[ui][menu][wayland][protocol]")
 {
     ProtocolServer server;
     LWS::PlatformContext context;
     REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
     LWS::Window window(context);
-    auto config = Config(); config.visible = true;
+    auto config = Config();
+    config.visible = true;
     REQUIRE(window.Create(config) == LWS::Result::Success);
     server.Settle(context);
     LWSUI::UIHost host(window);
-    host.SetMainMenu(std::make_unique<LWSUI::MenuBar>(std::vector<LWSUI::MenuBarItem>{
-        {"File", {{"First", "", [] {}}, {"Second", "", [] {}}}}}));
+    host.SetMainMenu(std::make_unique<LWSUI::MenuBar>(
+        std::vector<LWSUI::MenuBarItem>{{"File", {{"First", "", [] {}}, {"Second", "", [] {}}}}}));
     host.Update();
     const auto id = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*LWS::Wayland::GetSurface(window)));
-    server.Invoke([&]
-    {
-        wl_array keys{};
-        wl_keyboard_send_enter(server.seats[0]->keyboards.at(0), 500, server.surfaces.at(id)->surface, &keys);
-        server.Enter(0, id, 501);
-        server.Button(0, 502);
-    });
+    server.Invoke(
+        [&]
+        {
+            wl_array keys{};
+            wl_keyboard_send_enter(server.seats[0]->keyboards.at(0), 500, server.surfaces.at(id)->surface, &keys);
+            server.Enter(0, id, 501);
+            server.Button(0, 502);
+        });
     server.Settle(context);
     auto& session = LWSUI::internal::MenuSessionAccess::Get(host);
     REQUIRE(session.LevelCount() == 1);
-    const auto popupId = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*LWS::Wayland::GetSurface(*session.LevelWindow(0))));
-    server.Invoke([&]
-    {
-        auto* keyboard = server.seats[0]->keyboards.at(0);
-        wl_array keys{};
-        wl_keyboard_send_leave(keyboard, 503, server.surfaces.at(id)->surface);
-        wl_keyboard_send_enter(keyboard, 504, server.surfaces.at(popupId)->surface, &keys);
-    });
+    const auto popupId = wl_proxy_get_id(
+        reinterpret_cast<wl_proxy*>(*LWS::Wayland::GetSurface(*session.LevelWindow(0))));
+    server.Invoke(
+        [&]
+        {
+            auto* keyboard = server.seats[0]->keyboards.at(0);
+            wl_array keys{};
+            wl_keyboard_send_leave(keyboard, 503, server.surfaces.at(id)->surface);
+            wl_keyboard_send_enter(keyboard, 504, server.surfaces.at(popupId)->surface, &keys);
+        });
     server.Settle(context);
     host.Update();
     REQUIRE(session.LevelCount() == 1);
@@ -2196,8 +2281,8 @@ TEST_CASE("Menu popup hosts repaint keyboard selection and retain their focus ch
     server.Invoke([&] { after = server.surfaces.at(popupId)->submittedBuffers.size(); });
     REQUIRE(after > before);
     // Leaving the entire focus group still dismisses a keyboard-opened or grabbed menu.
-    server.Invoke([&] { wl_keyboard_send_leave(server.seats[0]->keyboards.at(0), 505,
-                                              server.surfaces.at(popupId)->surface); });
+    server.Invoke(
+        [&] { wl_keyboard_send_leave(server.seats[0]->keyboards.at(0), 505, server.surfaces.at(popupId)->surface); });
     server.Settle(context);
     host.Update();
     REQUIRE_FALSE(host.HasOpenMenu());
@@ -2345,13 +2430,15 @@ TEST_CASE("Wayland configure redraw uses current size and scale without draining
     REQUIRE(posted);
 }
 
-TEST_CASE("Menu bar dragging sends the Wayland move request with the pointer serial", "[ui][menu][window-controls][wayland][protocol]")
+TEST_CASE("Menu bar dragging sends the Wayland move request with the pointer serial",
+          "[ui][menu][window-controls][wayland][protocol]")
 {
     ProtocolServer server;
     LWS::PlatformContext context;
     REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
     LWS::Window window(context);
-    auto config = Config(); config.visible = true;
+    auto config = Config();
+    config.visible = true;
     REQUIRE(window.Create(config) == LWS::Result::Success);
     server.Settle(context);
     LWSUI::UIHost host(window);
@@ -2363,16 +2450,24 @@ TEST_CASE("Menu bar dragging sends the Wayland move request with the pointer ser
     const auto id = wl_proxy_get_id(reinterpret_cast<wl_proxy*>(*native));
     unsigned errors = 0;
     auto error = host.OnError.Connect([&](const std::string&) { ++errors; });
-    server.Invoke([&] { server.Enter(0, id, 400); server.Button(0, 401); });
+    server.Invoke(
+        [&]
+        {
+            server.Enter(0, id, 400);
+            server.Button(0, 401);
+        });
     server.Settle(context);
     unsigned moves{};
     uint32_t serial{}, seat{}, expectedSeat{};
-    server.Invoke([&]
-    {
-        const auto& surface = *server.surfaces.at(id);
-        moves = surface.moves; serial = surface.moveSerial; seat = surface.moveSeat;
-        expectedSeat = wl_resource_get_id(server.seats.at(0)->bindings.at(0));
-    });
+    server.Invoke(
+        [&]
+        {
+            const auto& surface = *server.surfaces.at(id);
+            moves = surface.moves;
+            serial = surface.moveSerial;
+            seat = surface.moveSeat;
+            expectedSeat = wl_resource_get_id(server.seats.at(0)->bindings.at(0));
+        });
     REQUIRE(moves == 1);
     REQUIRE(serial == 401);
     REQUIRE(seat == expectedSeat);
@@ -2391,14 +2486,15 @@ TEST_CASE("Menu bar dragging sends the Wayland move request with the pointer ser
     };
     const auto configure = [&](bool maximized, uint32_t serial)
     {
-        server.Invoke([&]
-        {
-            auto& native = *server.surfaces.at(id);
-            uint32_t value = XDG_TOPLEVEL_STATE_MAXIMIZED;
-            wl_array states{maximized ? sizeof(value) : 0, sizeof(value), &value};
-            xdg_toplevel_send_configure(native.toplevel, 101, 51, &states);
-            xdg_surface_send_configure(native.shell, serial);
-        });
+        server.Invoke(
+            [&]
+            {
+                auto& native = *server.surfaces.at(id);
+                uint32_t value = XDG_TOPLEVEL_STATE_MAXIMIZED;
+                wl_array states{maximized ? sizeof(value) : 0, sizeof(value), &value};
+                xdg_toplevel_send_configure(native.toplevel, 101, 51, &states);
+                xdg_surface_send_configure(native.shell, serial);
+            });
         server.Settle(context);
         host.Update();
     };
@@ -2418,5 +2514,5 @@ TEST_CASE("Menu bar dragging sends the Wayland move request with the pointer ser
     REQUIRE(window.GetShowState() == LWS::WindowShowState::Restored);
     REQUIRE(errors == 0);
 }
-#endif
+    #endif
 #endif

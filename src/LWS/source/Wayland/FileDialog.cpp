@@ -39,29 +39,33 @@ namespace LWS
             const char* value = text.c_str();
             dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &value);
         }
-        void Option(DBusMessageIter& dict, const char* key, const std::string& value)
+        // Keep D-Bus container pairing in one place while each option writes its own wire value.
+        void Option(DBusMessageIter& dict, const char* key, const char* signature, auto&& append)
         {
             DBusMessageIter entry, variant;
             dbus_message_iter_open_container(&dict, DBUS_TYPE_DICT_ENTRY, nullptr, &entry);
             dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
-            dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "s", &variant);
-            String(variant, value);
+            dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, signature, &variant);
+            append(variant);
             dbus_message_iter_close_container(&entry, &variant);
             dbus_message_iter_close_container(&dict, &entry);
         }
+        void Option(DBusMessageIter& dict, const char* key, const std::string& value)
+        {
+            Option(dict, key, "s", [&](auto& valueIter) { String(valueIter, value); });
+        }
         void PathOption(DBusMessageIter& dict, const char* key, const std::filesystem::path& path)
         {
-            const auto& bytes = path.native();
-            DBusMessageIter entry, variant, array;
-            dbus_message_iter_open_container(&dict, DBUS_TYPE_DICT_ENTRY, nullptr, &entry);
-            dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
-            dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "ay", &variant);
-            dbus_message_iter_open_container(&variant, DBUS_TYPE_ARRAY, "y", &array);
-            const char* data = bytes.c_str();
-            dbus_message_iter_append_fixed_array(&array, DBUS_TYPE_BYTE, &data, int(bytes.size() + 1));
-            dbus_message_iter_close_container(&variant, &array);
-            dbus_message_iter_close_container(&entry, &variant);
-            dbus_message_iter_close_container(&dict, &entry);
+            Option(dict, key, "ay",
+                   [&](auto& value)
+                   {
+                       DBusMessageIter array;
+                       dbus_message_iter_open_container(&value, DBUS_TYPE_ARRAY, "y", &array);
+                       const auto& bytes = path.native();
+                       const char* data = bytes.c_str();
+                       dbus_message_iter_append_fixed_array(&array, DBUS_TYPE_BYTE, &data, int(bytes.size() + 1));
+                       dbus_message_iter_close_container(&value, &array);
+                   });
         }
         void Filter(DBusMessageIter& parent, const FileDialogFilter& filter)
         {
@@ -71,6 +75,9 @@ namespace LWS
             dbus_message_iter_open_container(&item, DBUS_TYPE_ARRAY, "(us)", &patterns);
             for (auto pattern : filter.extensions)
             {
+                // Windows treats *.* as all files. Portal globs need * to include extensionless names.
+                if (pattern == "*.*")
+                    pattern = "*";
                 if (pattern.find('*') == std::string::npos)
                     pattern = pattern.starts_with(".") ? "*" + pattern : "*." + pattern;
                 DBusMessageIter p;
@@ -199,37 +206,25 @@ namespace LWS
                         Option(dict, "current_name", currentName);
                 }
                 if (type == FileDialogType::OpenFile && multiple)
-                {
-                    const char* key = "multiple";
-                    dbus_bool_t yes = true;
-                    DBusMessageIter entry, variant;
-                    dbus_message_iter_open_container(&dict, DBUS_TYPE_DICT_ENTRY, nullptr, &entry);
-                    dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
-                    dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "b", &variant);
-                    dbus_message_iter_append_basic(&variant, DBUS_TYPE_BOOLEAN, &yes);
-                    dbus_message_iter_close_container(&entry, &variant);
-                    dbus_message_iter_close_container(&dict, &entry);
-                }
+                    Option(dict, "multiple", "b",
+                           [](auto& value)
+                           {
+                               dbus_bool_t yes = true;
+                               dbus_message_iter_append_basic(&value, DBUS_TYPE_BOOLEAN, &yes);
+                           });
                 if (!filters.empty())
                 {
-                    const char* key = "filters";
-                    DBusMessageIter entry, variant, array;
-                    dbus_message_iter_open_container(&dict, DBUS_TYPE_DICT_ENTRY, nullptr, &entry);
-                    dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
-                    dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "a(sa(us))", &variant);
-                    dbus_message_iter_open_container(&variant, DBUS_TYPE_ARRAY, "(sa(us))", &array);
-                    for (const auto& filter : filters)
-                        Filter(array, filter);
-                    dbus_message_iter_close_container(&variant, &array);
-                    dbus_message_iter_close_container(&entry, &variant);
-                    dbus_message_iter_close_container(&dict, &entry);
-                    key = "current_filter";
-                    dbus_message_iter_open_container(&dict, DBUS_TYPE_DICT_ENTRY, nullptr, &entry);
-                    dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
-                    dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT, "(sa(us))", &variant);
-                    Filter(variant, filters[filterIndex == 0 ? 0 : filterIndex - 1]);
-                    dbus_message_iter_close_container(&entry, &variant);
-                    dbus_message_iter_close_container(&dict, &entry);
+                    Option(dict, "filters", "a(sa(us))",
+                           [&](auto& value)
+                           {
+                               DBusMessageIter array;
+                               dbus_message_iter_open_container(&value, DBUS_TYPE_ARRAY, "(sa(us))", &array);
+                               for (const auto& filter : filters)
+                                   Filter(array, filter);
+                               dbus_message_iter_close_container(&value, &array);
+                           });
+                    Option(dict, "current_filter", "(sa(us))",
+                           [&](auto& value) { Filter(value, filters[filterIndex == 0 ? 0 : filterIndex - 1]); });
                 }
                 dbus_message_iter_close_container(&args, &dict);
                 Message reply(dbus_connection_send_with_reply_and_block(connection.get(), call.get(), 5000, &error));

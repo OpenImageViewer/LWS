@@ -35,79 +35,34 @@ elseif(UNIX)
     )
 
     set(LWS_WAYLAND_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/wayland")
-    set(LWS_XDG_SHELL_XML "${WAYLAND_PROTOCOLS_DIRECTORY}/stable/xdg-shell/xdg-shell.xml")
-    set(LWS_XDG_SHELL_HEADER "${LWS_WAYLAND_GENERATED_DIR}/xdg-shell-client-protocol.h")
-    set(LWS_XDG_SHELL_SOURCE "${LWS_WAYLAND_GENERATED_DIR}/xdg-shell-protocol.c")
-    set(LWS_XDG_DECORATION_XML
-        "${WAYLAND_PROTOCOLS_DIRECTORY}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml")
-    set(LWS_XDG_DECORATION_HEADER "${LWS_WAYLAND_GENERATED_DIR}/xdg-decoration-client-protocol.h")
-    set(LWS_XDG_DECORATION_SOURCE "${LWS_WAYLAND_GENERATED_DIR}/xdg-decoration-protocol.c")
-    set(LWS_RELATIVE_POINTER_XML
-        "${WAYLAND_PROTOCOLS_DIRECTORY}/unstable/relative-pointer/relative-pointer-unstable-v1.xml")
-    set(LWS_RELATIVE_POINTER_HEADER "${LWS_WAYLAND_GENERATED_DIR}/relative-pointer-client-protocol.h")
-    set(LWS_RELATIVE_POINTER_SOURCE "${LWS_WAYLAND_GENERATED_DIR}/relative-pointer-protocol.c")
-    set(LWS_POINTER_CONSTRAINTS_XML
-        "${WAYLAND_PROTOCOLS_DIRECTORY}/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml")
-    set(LWS_POINTER_CONSTRAINTS_HEADER "${LWS_WAYLAND_GENERATED_DIR}/pointer-constraints-client-protocol.h")
-    set(LWS_POINTER_CONSTRAINTS_SOURCE "${LWS_WAYLAND_GENERATED_DIR}/pointer-constraints-protocol.c")
-    set(LWS_FRACTIONAL_SCALE_XML
-        "${WAYLAND_PROTOCOLS_DIRECTORY}/staging/fractional-scale/fractional-scale-v1.xml")
-    set(LWS_FRACTIONAL_SCALE_HEADER "${LWS_WAYLAND_GENERATED_DIR}/fractional-scale-v1-client-protocol.h")
-    set(LWS_FRACTIONAL_SCALE_SOURCE "${LWS_WAYLAND_GENERATED_DIR}/fractional-scale-v1-protocol.c")
-    set(LWS_VIEWPORTER_XML "${WAYLAND_PROTOCOLS_DIRECTORY}/stable/viewporter/viewporter.xml")
-    set(LWS_VIEWPORTER_HEADER "${LWS_WAYLAND_GENERATED_DIR}/viewporter-client-protocol.h")
-    set(LWS_VIEWPORTER_SOURCE "${LWS_WAYLAND_GENERATED_DIR}/viewporter-protocol.c")
-
-    add_custom_command(
-        OUTPUT "${LWS_XDG_SHELL_HEADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${LWS_WAYLAND_GENERATED_DIR}"
-        COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" client-header "${LWS_XDG_SHELL_XML}" "${LWS_XDG_SHELL_HEADER}"
-        DEPENDS "${LWS_XDG_SHELL_XML}"
-        VERBATIM
-    )
-    add_custom_command(
-        OUTPUT "${LWS_XDG_SHELL_SOURCE}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${LWS_WAYLAND_GENERATED_DIR}"
-        COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" private-code "${LWS_XDG_SHELL_XML}" "${LWS_XDG_SHELL_SOURCE}"
-        DEPENDS "${LWS_XDG_SHELL_XML}"
-        VERBATIM
-    )
-    add_custom_command(
-        OUTPUT "${LWS_XDG_DECORATION_HEADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${LWS_WAYLAND_GENERATED_DIR}"
-        COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" client-header "${LWS_XDG_DECORATION_XML}"
-                "${LWS_XDG_DECORATION_HEADER}"
-        DEPENDS "${LWS_XDG_DECORATION_XML}"
-        VERBATIM
-    )
-    add_custom_command(
-        OUTPUT "${LWS_XDG_DECORATION_SOURCE}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${LWS_WAYLAND_GENERATED_DIR}"
-        COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" private-code "${LWS_XDG_DECORATION_XML}"
-                "${LWS_XDG_DECORATION_SOURCE}"
-        DEPENDS "${LWS_XDG_DECORATION_XML}"
-        VERBATIM
-    )
-    foreach(protocol RELATIVE_POINTER POINTER_CONSTRAINTS FRACTIONAL_SCALE VIEWPORTER)
-      add_custom_command(
-          OUTPUT "${LWS_${protocol}_HEADER}"
+    # Every protocol uses the same scanner commands and publishes its generated outputs once.
+    function(lws_generate_protocol name xml stem)
+      set(header "${LWS_WAYLAND_GENERATED_DIR}/${stem}-client-protocol.h")
+      set(source "${LWS_WAYLAND_GENERATED_DIR}/${stem}-protocol.c")
+      foreach(mode client-header private-code)
+        if(mode STREQUAL "client-header")
+          set(output "${header}")
+        else()
+          set(output "${source}")
+        endif()
+        add_custom_command(OUTPUT "${output}"
           COMMAND "${CMAKE_COMMAND}" -E make_directory "${LWS_WAYLAND_GENERATED_DIR}"
-          COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" client-header "${LWS_${protocol}_XML}"
-                  "${LWS_${protocol}_HEADER}"
-          DEPENDS "${LWS_${protocol}_XML}"
-          VERBATIM
-      )
-      add_custom_command(
-          OUTPUT "${LWS_${protocol}_SOURCE}"
-          COMMAND "${CMAKE_COMMAND}" -E make_directory "${LWS_WAYLAND_GENERATED_DIR}"
-          COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" private-code "${LWS_${protocol}_XML}"
-                  "${LWS_${protocol}_SOURCE}"
-          DEPENDS "${LWS_${protocol}_XML}"
-          VERBATIM
-      )
-    endforeach()
+          COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" ${mode} "${xml}" "${output}"
+          DEPENDS "${xml}" VERBATIM)
+      endforeach()
+      set(LWS_${name}_XML "${xml}" PARENT_SCOPE)
+      set(LWS_${name}_HEADER "${header}" PARENT_SCOPE)
+      set(LWS_${name}_SOURCE "${source}" PARENT_SCOPE)
+      set(LWS_WAYLAND_GENERATED_FILES ${LWS_WAYLAND_GENERATED_FILES} "${header}" "${source}" PARENT_SCOPE)
+    endfunction()
+    lws_generate_protocol(XDG_SHELL "${WAYLAND_PROTOCOLS_DIRECTORY}/stable/xdg-shell/xdg-shell.xml" xdg-shell)
+    lws_generate_protocol(XDG_DECORATION "${WAYLAND_PROTOCOLS_DIRECTORY}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml" xdg-decoration)
+    lws_generate_protocol(RELATIVE_POINTER "${WAYLAND_PROTOCOLS_DIRECTORY}/unstable/relative-pointer/relative-pointer-unstable-v1.xml" relative-pointer)
+    lws_generate_protocol(POINTER_CONSTRAINTS "${WAYLAND_PROTOCOLS_DIRECTORY}/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml" pointer-constraints)
+    lws_generate_protocol(FRACTIONAL_SCALE "${WAYLAND_PROTOCOLS_DIRECTORY}/staging/fractional-scale/fractional-scale-v1.xml" fractional-scale-v1)
+    lws_generate_protocol(VIEWPORTER "${WAYLAND_PROTOCOLS_DIRECTORY}/stable/viewporter/viewporter.xml" viewporter)
   else()
-    message(WARNING "Wayland not found — building the unavailable X11 scaffold")
+    message(WARNING "Wayland not found: building the unavailable X11 scaffold")
     set(LWS_PLATFORM_X11 ON)
   endif()
 endif()
@@ -167,34 +122,13 @@ else()
   add_library(LWSLib STATIC ${lwsLibSources})
 endif()
 if(LWS_PLATFORM_WAYLAND)
-  target_sources(LWSLib PRIVATE
-      "${LWS_XDG_SHELL_HEADER}"
-      "${LWS_XDG_SHELL_SOURCE}"
-      "${LWS_XDG_DECORATION_HEADER}"
-      "${LWS_XDG_DECORATION_SOURCE}"
-      "${LWS_RELATIVE_POINTER_HEADER}"
-      "${LWS_RELATIVE_POINTER_SOURCE}"
-      "${LWS_POINTER_CONSTRAINTS_HEADER}"
-      "${LWS_POINTER_CONSTRAINTS_SOURCE}"
-      "${LWS_FRACTIONAL_SCALE_HEADER}"
-      "${LWS_FRACTIONAL_SCALE_SOURCE}"
-      "${LWS_VIEWPORTER_HEADER}"
-      "${LWS_VIEWPORTER_SOURCE}"
-  )
   # Optional: older wayland-protocols packages still build with header icons only.
   set(LWS_TOPLEVEL_ICON_XML "${WAYLAND_PROTOCOLS_DIRECTORY}/staging/xdg-toplevel-icon/xdg-toplevel-icon-v1.xml")
   if(EXISTS "${LWS_TOPLEVEL_ICON_XML}")
-    set(LWS_TOPLEVEL_ICON_HEADER "${LWS_WAYLAND_GENERATED_DIR}/xdg-toplevel-icon-v1-client-protocol.h")
-    set(LWS_TOPLEVEL_ICON_SOURCE "${LWS_WAYLAND_GENERATED_DIR}/xdg-toplevel-icon-v1-protocol.c")
-    add_custom_command(OUTPUT "${LWS_TOPLEVEL_ICON_HEADER}"
-      COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" client-header "${LWS_TOPLEVEL_ICON_XML}" "${LWS_TOPLEVEL_ICON_HEADER}"
-      DEPENDS "${LWS_TOPLEVEL_ICON_XML}" VERBATIM)
-    add_custom_command(OUTPUT "${LWS_TOPLEVEL_ICON_SOURCE}"
-      COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" private-code "${LWS_TOPLEVEL_ICON_XML}" "${LWS_TOPLEVEL_ICON_SOURCE}"
-      DEPENDS "${LWS_TOPLEVEL_ICON_XML}" VERBATIM)
-    target_sources(LWSLib PRIVATE "${LWS_TOPLEVEL_ICON_HEADER}" "${LWS_TOPLEVEL_ICON_SOURCE}")
+    lws_generate_protocol(TOPLEVEL_ICON "${LWS_TOPLEVEL_ICON_XML}" xdg-toplevel-icon-v1)
     target_compile_definitions(LWSLib PRIVATE LWS_HAS_TOPLEVEL_ICON)
   endif()
+  target_sources(LWSLib PRIVATE ${LWS_WAYLAND_GENERATED_FILES})
   target_include_directories(LWSLib PRIVATE "${LWS_WAYLAND_GENERATED_DIR}")
   target_link_libraries(LWSLib PRIVATE Wayland::Client PkgConfig::CaptionText PkgConfig::TextInput)
   if(TARGET Wayland::Cursor)
@@ -231,7 +165,7 @@ if(LWS_BUILD_TESTS)
     FetchContent_MakeAvailable(Catch2)
   endif()
 
-  file(GLOB_RECURSE testSources "./tests/*.cpp")
+  file(GLOB_RECURSE testSources CONFIGURE_DEPENDS "./tests/*.cpp")
   if(testSources)
     add_executable(LWSTests ${testSources})
     target_link_libraries(LWSTests PRIVATE LWSLib Catch2::Catch2WithMain)

@@ -717,3 +717,16 @@ million-row external model. Single-click mode commits checkbox toggles and custo
 progress-bar value actions immediately through normal validation and events.
 `--smoke` exercises all presets, while `--snapshot`
 also writes `grid-<preset>.ppm`. Run `LWSTests "[grid]"` for the focused tests.
+
+## Portal dialog integration tests
+
+The core Wayland tests use a private compositor. Portal scenarios additionally need the `dbus-daemon`
+test utility and a private session bus with no service activation. From the LWS directory, run:
+
+```sh
+dbus-run-session --config-file=tests/portal-session.conf -- env LWS_TEST_PORTAL_BUS=1 build/LWSTests
+```
+
+The fake portal checks selection, multiple paths, filters, default extensions, cancellation, service failure
+and native owner destruction without displaying desktop dialogs. It does not replace production functions.
+Applications using the real file picker require `xdg-desktop-portal` and an appropriate desktop backend.

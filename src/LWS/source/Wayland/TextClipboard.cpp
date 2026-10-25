@@ -1,5 +1,6 @@
 #ifdef LWS_PLATFORM_WAYLAND
     #include <LWS/TextClipboard.hpp>
+    #include <LLUtils/StringUtility.h>
     #include "internal/WaylandTextClipboard.hpp"
     #include "internal/PlatformState.hpp"
     #include <LWS/source/internal/WindowBackendAccess.hpp>
@@ -34,49 +35,9 @@ namespace LWS::internal
         }
         bool IsValidText(std::string_view text)
         {
-            for (size_t index = 0; index < text.size();)
-            {
-                const auto first = static_cast<unsigned char>(text[index++]);
-                if (first == 0)
-                    return false;
-                if (first < 0x80)
-                    continue;
-                uint32_t scalar = 0, minimum = 0;
-                size_t remaining = 0;
-                if ((first & 0xe0) == 0xc0)
-                {
-                    scalar = first & 0x1f;
-                    minimum = 0x80;
-                    remaining = 1;
-                }
-                else if ((first & 0xf0) == 0xe0)
-                {
-                    scalar = first & 0x0f;
-                    minimum = 0x800;
-                    remaining = 2;
-                }
-                else if ((first & 0xf8) == 0xf0)
-                {
-                    scalar = first & 0x07;
-                    minimum = 0x10000;
-                    remaining = 3;
-                }
-                else
-                    return false;
-                if (remaining > text.size() - index)
-                    return false;
-                for (size_t offset = 0; offset < remaining; ++offset)
-                {
-                    const auto next = static_cast<unsigned char>(text[index++]);
-                    if ((next & 0xc0) != 0x80)
-                        return false;
-                    scalar = (scalar << 6) | (next & 0x3f);
-                }
-                if (scalar < minimum || scalar > 0x10ffff || (scalar >= 0xd800 && scalar <= 0xdfff))
-                    return false;
-            }
-            return true;
+            return text.find('\0') == std::string_view::npos && LLUtils::StringUtility::IsValidUtf8(text);
         }
+
         class FileDescriptor
         {
           public:
