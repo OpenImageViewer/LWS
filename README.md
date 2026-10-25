@@ -328,9 +328,28 @@ DPI scenarios run in separate child processes because process DPI initialization
 The optional `LWSUI::LWSUI` target provides controls, layout, text rendering, popups,
 focus/capture and bitmap presentation without a JSON dependency. `LWS_BUILD_UI` defaults
 on for Windows/Wayland and off for the unavailable X11 scaffold. `LWSUI_BUILD_DEMO`
-controls the [multi-window control showcase](src/LWSUI/demo/README.md),
+controls the simple example below and the [multi-window control showcase](src/LWSUI/demo/README.md),
 with fixed and resizable native child panes and a complete control catalog. Dependency builds compile LWSUI only when linked
 (or explicitly requested); standalone builds include it. LWSSettings is a separate consumer.
+
+### Simple LWSUI example
+
+Start with [simple.cpp](src/LWSUI/examples/simple.cpp) for a complete, single-window
+example using only public APIs. A height-limited split panel contains two multiline
+text boxes, followed by a name field, greeting label, and Clear button in a vertical
+stack. Event connections are retained in local variables. Typing in the name field
+previews the greeting, Enter commits the name, Escape restores the last committed
+name, and Clear resets the name and greeting. Tab moves between the controls.
+
+```sh
+cmake -S . -B build -DLWS_BUILD_UI=ON -DLWSUI_BUILD_DEMO=ON
+cmake --build build --target LWSUISimpleExample
+```
+
+Run `build/LWSUISimpleExample.exe` on Windows or `build/LWSUISimpleExample` on
+Wayland. Multi-configuration generators place the executable in the selected
+configuration directory, for example `build/Debug/LWSUISimpleExample.exe`.
+Closing the window exits the example; it does not read or write any files.
 
 ### Control size limits
 
