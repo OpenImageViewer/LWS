@@ -306,15 +306,44 @@ namespace LWSUI
         float textWidth_ = 0, caretX_ = 0;
         size_t geometryCaret_ = std::string::npos;
     };
-    class Slider : public Control
+    enum class SliderValueMode
+    {
+        Hidden,
+        ReadOnly,
+        Editable
+    };
+    template <class T>
+    struct NumericSpec;
+    template <class T>
+    class SliderValue;
+    namespace internal
+    {
+        struct SliderValueBinding
+        {
+            virtual ~SliderValueBinding() = default;
+            virtual void SetNormalized(double) = 0;
+            virtual void Begin() = 0;
+            virtual void Changed(double, EditPhase) = 0;
+            virtual bool Finish(EditPhase) = 0;
+            virtual void Step(int, int) = 0;
+            virtual void Display(SliderValueMode) = 0;
+            virtual Control* Field() const = 0;
+        };
+    }  // namespace internal
+    class Slider : public Container
     {
       public:
 
-        void SetValue(double value)
-        {
-            value_ = std::clamp(value, 0.0, 1.0);
-            Invalidate();
-        }
+        Slider();
+        ~Slider() override;
+        void SetValue(double value);
+        // Normalized Value/OnEdit stay source compatible; configured typed values never pass through double storage.
+        template <class T>
+        SliderValue<T>& ConfigureValue(NumericSpec<T> spec, T value, SliderValueMode mode = SliderValueMode::Editable);
+        void SetValueDisplay(SliderValueMode mode);
+        SliderValueMode ValueDisplay() const { return valueMode_; }
+        Control* ValueField() const;
+        Rect TrackBounds() const;
         double Value() const { return value_; }
         bool filled = false;
         double keyboardStep = .01;
@@ -324,11 +353,29 @@ namespace LWSUI
 
       protected:
 
+        Size OnMeasure(Size available) override;
+        void OnArrange() override;
+        void OnDetach() override { Abort(); }
+        void Abort();
         void OnRender(Canvas&) override;
         bool OnInput(const Input&) override;
         virtual double Fraction(float x, float y) const;
         bool dragging_ = false;
         double value_ = 0, start_ = 0;
+
+      private:
+
+        template <class T>
+        friend class SliderValue;
+        using Container::Add;
+        using Container::Clear;
+        using Container::Emplace;
+        using Container::Remove;
+        void Publish(EditPhase);
+        float FieldWidth() const;
+        float grab_ = 0;
+        SliderValueMode valueMode_ = SliderValueMode::Hidden;
+        std::unique_ptr<internal::SliderValueBinding> valueBinding_;
     };
     class ScrollBar : public Slider
     {
@@ -348,6 +395,8 @@ namespace LWSUI
 
       private:
 
+        using Slider::ConfigureValue;
+        using Slider::SetValueDisplay;
         Rect Thumb() const;
         double page_ = 1;
         float grab_ = 0.5f;

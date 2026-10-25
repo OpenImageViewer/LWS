@@ -159,62 +159,10 @@ namespace LWSUI
 
 
 
-    double Slider::Fraction(float x, float) const
-    {
-        return std::clamp((x - Bounds().x) / std::max(1.f, Bounds().width), 0.f, 1.f);
-    }
-    bool Slider::Finish(EditPhase phase)
-    {
-        if (dragging_)
-        {
-            dragging_ = false;
-            ReleaseCapture();
-            if (phase == EditPhase::Cancel)
-                SetValue(start_);
-            OnEdit.Raise(value_, phase);
-        }
-        return true;
-    }
-    bool Slider::OnInput(const Input& e)
-    {
-        if (e.kind == InputKind::Down)
-        {
-            start_ = value_;
-            dragging_ = true;
-            Capture();
-        }
-        if ((e.kind == InputKind::Down || e.kind == InputKind::Move) && dragging_)
-        {
-            SetValue(Fraction(e.x, e.y));
-            OnEdit.Raise(value_, EditPhase::Preview);
-            return true;
-        }
-        if (e.kind == InputKind::Up)
-            return Finish(EditPhase::Commit);
-        if (e.kind == InputKind::Cancel || (e.kind == InputKind::KeyDown && e.key == LWS::KeyCode::Escape))
-            return Finish(EditPhase::Cancel);
-        if (e.kind == InputKind::KeyDown && (e.key == LWS::KeyCode::Left || e.key == LWS::KeyCode::Right))
-        {
-            SetValue(value_ + (e.key == LWS::KeyCode::Left ? -1 : 1) * keyboardStep * (e.shift ? 10 : 1));
-            OnEdit.Raise(value_, EditPhase::Commit);
-            return true;
-        }
-        return false;
-    }
-    void Slider::OnRender(Canvas& c)
-    {
-        auto b = Bounds();
-        if (filled)
-        {
-            c.Fill(b.x, b.y, b.width, b.height, Style().surface);
-            c.Fill(b.x, b.y, float(value_) * b.width, b.height, Style().accent);
-            return;
-        }
-        c.Fill(b.x, b.y + b.height / 2 - Style().sliderThickness / 2, b.width, Style().sliderThickness,
-               Style().surface);
-        c.Fill(b.x + float(value_) * std::max(0.f, b.width - Style().sliderThumbWidth), b.y + Style().labelPadding,
-               Style().sliderThumbWidth, b.height - 2 * Style().labelPadding, Style().accent);
-    }
+
+
+
+
     Rect ScrollBar::Thumb() const
     {
         auto bounds = Bounds();

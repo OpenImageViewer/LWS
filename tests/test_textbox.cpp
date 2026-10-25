@@ -1,4 +1,5 @@
 #ifdef LWS_TEST_UI
+#include <LWSUI/Composites.hpp>
     #include <catch2/catch_test_macros.hpp>
     #include <catch2/catch_approx.hpp>
     #include <LWSUI/Containers.hpp>
@@ -374,7 +375,12 @@ TEST_CASE("Numeric filters accept partial drafts and allow deletion repairs", "[
     REQUIRE_FALSE(InputFilters::Number(false, false, false)("1e2", TextEditOrigin::Typing));
     REQUIRE(InputFilters::Hexadecimal(true)("#a0FF", TextEditOrigin::Typing));
     REQUIRE_FALSE(InputFilters::Hexadecimal(true)("#001122334", TextEditOrigin::Paste));
-
+    NumericEdit<int> numeric;
+    auto& field = static_cast<TextBox&>(numeric.FocusTarget());
+    REQUIRE(field.Dispatch({.kind = InputKind::KeyDown, .key = K::A, .control = true}));
+    REQUIRE(field.Dispatch({.kind = InputKind::Text, .text = "bad"}));
+    REQUIRE(field.Text() == "0");
+    REQUIRE(numeric.Draft() == 0);
 }
 
 TEST_CASE("Fixed masks insert literals and clear slots without shifting fields", "[ui][text][mask]")
@@ -615,4 +621,7 @@ TEST_CASE("Insert clipboard aliases use existing text paths and honor read-only"
     LWS::RequestClipboardText(*env.window, [&](auto, auto value) { copied = std::move(value); });
     REQUIRE(copied == "copy me");
 }
+
+
+
 #endif
