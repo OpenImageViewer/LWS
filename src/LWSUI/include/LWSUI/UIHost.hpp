@@ -8,6 +8,7 @@ namespace LWSUI
     {
         class MenuSession;
         struct MenuSessionAccess;
+        struct UIHostTestAccess;
     }
     // Window must outlive host. The host owns root and popup trees; focus/capture
     // and popup owners are checked non-owning handles. Callbacks run on the UI thread.
@@ -27,8 +28,11 @@ namespace LWSUI
             theme_ = std::move(theme);
             Invalidate(true);
         }
-        void Invalidate(bool layout = false);
+        void Invalidate(bool recalculateLayout = false);
         void Update();
+        // Opt-in synchronous rendering on size notifications; never runs deferred application work.
+        // Windows uses native window DPI, not a ratio distorted by rounded logical dimensions.
+        // Arrangement and painting must use the same scale. Other backends retain paired metrics.
         std::optional<LWS::ContentScale> DrawingScale() const;
         Size MeasureText(std::string_view text, float width, bool wrap, const FontSpec& font);
         size_t HitTestText(std::string_view text, float x, const FontSpec& font);
@@ -81,10 +85,13 @@ namespace LWSUI
         friend class Control;
         friend class internal::MenuSession;
         friend struct internal::MenuSessionAccess;
+        friend struct internal::UIHostTestAccess;
         void Capture(Control* control);
         void ReleaseCapture(Control* control);
         void Detached(Control& control);
         void ScheduleUpdate();
+        void UpdateCore(bool processDeferred);
+        bool RenderFrame();
         bool Event(const LWS::AnyEvent&);
         bool InPopup(Control* control) const;
         bool RequestContextMenu(Input input, bool keyboard);
@@ -100,6 +107,7 @@ namespace LWSUI
         Theme theme_;
         std::optional<Theme> popupStyle_;
         Canvas canvas_;
+        uint64_t layoutGeneration_ = 0;
         std::unique_ptr<Control> root_, popup_, contextMenu_;
         // Retired popups survive until the next update, so a popup may close itself.
         std::vector<std::unique_ptr<Control>> retired_;
@@ -117,6 +125,7 @@ namespace LWSUI
         float floatingX_ = 0, floatingY_ = 0;
         Rect barBounds_, rootBounds_;
         bool layoutDirty_ = true, paintDirty_ = true, updating_ = false;
+        bool redrawOnResize_ = false, resizePending_ = false;
         LWS::EventConnection listener_;
         bool updatePending_ = false;
         std::shared_ptr<UIHost*> lifetime_ = std::make_shared<UIHost*>(this);

@@ -1,6 +1,8 @@
 #include <LWSUI/Control.hpp>
 #include <LWSUI/UIHost.hpp>
 #include <algorithm>
+#include <cmath>
+#include <stdexcept>
 namespace LWSUI
 {
     Control::Control() : lifetime_(std::make_shared<ControlHandle::Lifetime>(ControlHandle::Lifetime{this})) {}
@@ -60,10 +62,48 @@ namespace LWSUI
     {
         return foreground_.value_or(style_ ? style_->foreground : parent_ ? parent_->Foreground() : Style().foreground);
     }
-    Size Control::Measure(Size available)
+    Size Control::Measure(Size available) { return MeasureCore(available, false); }
+    Size Control::MeasureContent(Size available) { return MeasureCore(available, true); }
+    Size Control::MeasureCore(Size available, bool content)
     {
-        desired_ = visible_ ? OnMeasure(available) : Size{};
+        available = ConstrainSize(available);
+        if (allocationHint_ && host_ && allocationHint_->generation != host_->layoutGeneration_)
+            allocationHint_.reset();
+        measureRequest_ = available;
+        measuredContent_ = content;
+        // Intrinsic and allocated-width probes can alternate within one parent measure.
+        // Only reuse the allocation correction for its matching request, keeping probes independent.
+        if (allocationHint_ && allocationHint_->requestedWidth == available.width && allocationHint_->content == content)
+            available.width = allocationHint_->arrangedWidth;
+        measuredWidth_ = available.width;
+        desired_ = visible_ ? ConstrainSize(content ? OnMeasureContent(available) : OnMeasure(available)) : Size{};
         return desired_;
+    }
+    void Control::SetMaxWidth(std::optional<float> width)
+    {
+        if (width && (!std::isfinite(*width) || *width < 0))
+            throw std::invalid_argument("Invalid maximum control width");
+        if (maxWidth_ == width)
+            return;
+        maxWidth_ = width;
+        Invalidate(true);
+    }
+    void Control::SetMaxHeight(std::optional<float> height)
+    {
+        if (height && (!std::isfinite(*height) || *height < 0))
+            throw std::invalid_argument("Invalid maximum control height");
+        if (maxHeight_ == height)
+            return;
+        maxHeight_ = height;
+        Invalidate(true);
+    }
+    Size Control::ConstrainSize(Size size) const
+    {
+        if (maxWidth_)
+            size.width = std::min(size.width, *maxWidth_);
+        if (maxHeight_)
+            size.height = std::min(size.height, *maxHeight_);
+        return size;
     }
     Size Control::OnMeasure(Size available)
     {
@@ -73,7 +113,29 @@ namespace LWSUI
     }
     void Control::Arrange(Rect bounds)
     {
-        bounds_ = bounds;
+        const auto size = ConstrainSize({bounds.width, bounds.height});
+        bounds_ = {bounds.x, bounds.y, size.width, size.height};
+        if (visible_ && measureRequest_ && measuredWidth_ != bounds_.width)
+        {
+            // Parent allocation and pixel snapping can change the width after measurement.
+            // Reconcile it here for every control, including grids, flows and wrapped labels.
+            // Retain this width for the same measure request so later passes do not oscillate.
+            const auto before = desired_;
+            const auto requested = *measureRequest_;
+            allocationHint_ = AllocationHint{requested.width, bounds_.width, measuredContent_, host_ ? host_->layoutGeneration_ : 0};
+            MeasureCore(requested, measuredContent_);
+            // Normal width is already allocated by the parent. Its pixel adjustment alone must
+            // not restart layout on every intrinsic/allocated probe. Height and intrinsic demand do.
+            if (host_ && (before.height != desired_.height || (measuredContent_ && before.width != desired_.width)))
+            {
+                // This is reconciliation, not a policy change. Preserve hints for the next pass.
+                host_->layoutDirty_ = true;
+                host_->Invalidate();
+            }
+        }
+        else if (allocationHint_ && measureRequest_ &&
+                 (allocationHint_->requestedWidth != measureRequest_->width || allocationHint_->content != measuredContent_))
+            allocationHint_.reset();
         OnArrange();
     }
     void Control::Render(Canvas& canvas)
@@ -109,10 +171,17 @@ namespace LWSUI
         enabled_ = value;
         Invalidate();
     }
-    void Control::Invalidate(bool layout)
+    void Control::Invalidate(bool recalculateLayout)
     {
+        // Detached trees need the same invalidation semantics without a host generation.
+        if (recalculateLayout)
+            for (auto* control = this; control; control = control->parent_)
+            {
+                control->allocationHint_.reset();
+                ++control->layoutRevision_;
+            }
         if (host_)
-            host_->Invalidate(layout);
+            host_->Invalidate(recalculateLayout);
     }
     void Control::Capture()
     {
@@ -185,23 +254,6 @@ namespace LWSUI
                 return hit;
         return hitTestBackground ? this : nullptr;
     }
-    void Container::OnRender(Canvas& c)
-    {
-        for (auto& child : children_)
-            child->Render(c);
-    }
-    bool Container::Finish(EditPhase phase)
-    {
-        for (auto& child : children_)
-            if (!child->Finish(phase))
-                return false;
-        return true;
-    }
-    Size Control::MeasureContent(Size available)
-    {
-        desired_ = visible_ ? OnMeasureContent(available) : Size{};
-        return desired_;
-    }
     bool Container::OnPreviewInput(const Input& input)
     {
         for (auto it = children_.rbegin(); it != children_.rend(); ++it)
@@ -213,5 +265,17 @@ namespace LWSUI
                 return true;
         }
         return false;
+    }
+    void Container::OnRender(Canvas& c)
+    {
+        for (auto& child : children_)
+            child->Render(c);
+    }
+    bool Container::Finish(EditPhase phase)
+    {
+        for (auto& child : children_)
+            if (!child->Finish(phase))
+                return false;
+        return true;
     }
 }  // namespace LWSUI

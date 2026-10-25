@@ -23,6 +23,7 @@ namespace LWSUI
         Vertical,
         Horizontal
     };
+
     enum class EditPhase
     {
         Preview,
@@ -76,6 +77,7 @@ namespace LWSUI
         };
         std::weak_ptr<Lifetime> lifetime_;
     };
+
     struct ContextMenuRequest
     {
         ControlHandle target;
@@ -111,6 +113,13 @@ namespace LWSUI
         Control& operator=(const Control&) = delete;
         Size Measure(Size available);
         Size MeasureContent(Size available);
+        // Optional maximum dimensions in logical pixels; nullopt removes a limit.
+        // Limits apply to measurement and arrangement, retaining the assigned origin.
+        // Values must be finite and nonnegative. Changes invalidate layout.
+        void SetMaxWidth(std::optional<float> width);
+        void SetMaxHeight(std::optional<float> height);
+        std::optional<float> MaxWidth() const { return maxWidth_; }
+        std::optional<float> MaxHeight() const { return maxHeight_; }
         void Arrange(Rect bounds);
         void Render(Canvas& canvas);
         bool Dispatch(const Input& input);
@@ -162,6 +171,7 @@ namespace LWSUI
         bool Visible() const { return visible_; }
         bool Enabled() const { return enabled_; }
         bool Hovered() const { return hovered_; }
+        // Filtering can preserve drafts when the containing form owns their transactions.
         void SetVisible(bool value);
         void SetEnabled(bool value);
         void SetForeground(std::optional<LLUtils::Color> color)
@@ -172,11 +182,15 @@ namespace LWSUI
             Invalidate();
         }
         LLUtils::Color Foreground() const;
-        void Invalidate(bool layout = false);
+        void Invalidate(bool recalculateLayout = false);
         // Action controls such as Cancel may discard the previous focused draft.
+        // Form actions inspect drafts before deciding whether to finish them.
+        // Explicit opt-in for actions outside an active popup. Normal input routing still applies.
         EditPhase focusLossPhase = EditPhase::Commit;
         virtual bool Focusable() const { return false; }
         virtual bool Finish(EditPhase) { return true; }
+        // The nearest override wins. An empty policy inherits from the host or parent.
+        // Composite editors can validate a transaction before focus leaves their subtree.
         virtual bool PrepareFocusLoss(Control*, EditPhase) { return true; }
         LWSUI::Event<void()> OnHover, OnLeave;
         // Replaces the default provider. An empty result suppresses ancestor menus.
@@ -193,6 +207,8 @@ namespace LWSUI
         virtual void OnPointerLeave() {}
         virtual void OnAttach() {}
         virtual void OnDetach() {}
+        // Changes when this subtree explicitly invalidates intrinsic layout.
+        uint64_t LayoutRevision() const { return layoutRevision_; }
         void Capture();
         void ReleaseCapture();
 
@@ -201,10 +217,24 @@ namespace LWSUI
         friend class Container;
         friend class UIHost;
         void Attach(UIHost* host, Container* parent);
+        Size ConstrainSize(Size size) const;
+        Size MeasureCore(Size available, bool content);
         ContextMenuProvider contextMenuProvider_;
         std::string tooltip_;
         Rect bounds_;
         Size desired_;
+        uint64_t layoutRevision_ = 0;
+        std::optional<Size> measureRequest_;
+        struct AllocationHint
+        {
+            float requestedWidth, arrangedWidth;
+            bool content;
+            uint64_t generation;
+        };
+        std::optional<AllocationHint> allocationHint_;
+        float measuredWidth_ = 0;
+        bool measuredContent_ = false;
+        std::optional<float> maxWidth_, maxHeight_;
         bool visible_ = true, enabled_ = true, hovered_ = false;
         std::optional<LLUtils::Color> foreground_;
         std::optional<Theme> style_;

@@ -1,9 +1,9 @@
+#include <LWSUI/internal/ControlTree.hpp>
 #include <LWSUI/UIHost.hpp>
 #include "ContextMenu.hpp"
 #include "MenuHost.hpp"
 #include <LWS/Platform.hpp>
 #include <LWS/Cursor.hpp>
-#include <LWSUI/internal/ControlTree.hpp>
 #include <algorithm>
 #ifdef LWS_HAS_WIN32_BACKEND
     #include <LWS/Win32/WindowExtensions.hpp>
@@ -132,8 +132,6 @@ namespace LWSUI
         if (menuSession_)
             menuSession_->Close();
     }
-
-
     Theme UIHost::MenuPanelStyle() const
     {
         auto style = PopupStyle();
@@ -146,10 +144,13 @@ namespace LWSUI
         deferred_.push_back({std::move(owner), std::move(callback)});
         ScheduleUpdate();
     }
-    void UIHost::Invalidate(bool layout)
+    void UIHost::Invalidate(bool recalculateLayout)
     {
         paintDirty_ = true;
-        layoutDirty_ |= layout;
+        layoutDirty_ |= recalculateLayout;
+        // Explicit layout changes also invalidate width corrections made earlier in this update.
+        if (recalculateLayout)
+            ++layoutGeneration_;
         ScheduleUpdate();
     }
     void UIHost::ScheduleUpdate()
@@ -173,6 +174,14 @@ namespace LWSUI
             ReportError("Cannot schedule UI update");
         }
     }
+    std::optional<LWS::ContentScale> UIHost::DrawingScale() const
+    {
+#ifdef LWS_HAS_WIN32_BACKEND
+        if (const auto dpi = LWS::Win32::GetDpi(window_); dpi)
+            return LWS::ContentScale{double(*dpi) / 96.0, double(*dpi) / 96.0};
+#endif
+        return window_.GetClientAreaMetrics().Scale();
+    }
     Size UIHost::MeasureText(std::string_view text, float width, bool wrap, const FontSpec& font)
     {
         return {wrap ? width : canvas_.Measure(text, font), canvas_.TextHeight(text, width, font, wrap)};
@@ -185,90 +194,60 @@ namespace LWSUI
     {
         return canvas_.Caret(text, byteOffset, font);
     }
+    std::vector<TextLine> UIHost::MeasureTextLines(std::string_view text, float width, const FontSpec& font)
+    {
+        return canvas_.TextLines(text, width, font);
+    }
+    TextPosition UIHost::HitTestText(std::string_view text, float x, float y, float width, const FontSpec& font)
+    {
+        return canvas_.HitTestText(text, x, y, width, font);
+    }
+    TextCaret UIHost::MeasureTextCaret(std::string_view text, TextPosition position, float width, const FontSpec& font)
+    {
+        return canvas_.CaretBounds(text, position, width, font);
+    }
     void UIHost::Update()
+    {
+        UpdateCore(true);
+    }
+    void UIHost::UpdateCore(bool processDeferred)
     {
         if (updating_ || !window_.IsCreated() || !window_.IsVisible())
             return;
         updating_ = true;
+        // Corrections survive reconciliation passes, but expire on explicit layout changes
+        // and between updates so new content and layout policies are measured afresh.
+        ++layoutGeneration_;
         try
         {
-            retired_.clear();
-            auto work = std::move(deferred_);
-            deferred_.clear();
-            for (auto& [owner, callback] : work)
-                if (auto* control = owner.Get())
-                    callback(*control);
-            if (contextMenu_ && !ContextMenuOwnerValid())
-                CloseContextMenu();
-            if (popup_ && !popupOwner_)
-                ClosePopup(EditPhase::Cancel);
-            const auto metrics = window_.GetClientAreaMetrics();
-            const auto scale = metrics.Scale();
-            if (!scale || !metrics.pixels || metrics.pixels->x <= 0 || metrics.pixels->y <= 0)
+            if (processDeferred)
             {
-                updating_ = false;
-                return;
+                retired_.clear();
+                auto work = std::move(deferred_);
+                deferred_.clear();
+                for (auto& [owner, callback] : work)
+                    if (auto* control = owner.Get())
+                        callback(*control);
+                if (contextMenu_ && !ContextMenuOwnerValid())
+                    CloseContextMenu();
+                if (popup_ && !popupOwner_)
+                    ClosePopup(EditPhase::Cancel);
             }
-            const auto size = metrics.logical;
-            const bool drawFrame = paintDirty_ || layoutDirty_;
-            if (drawFrame)
-                canvas_.Begin(metrics.pixels->x, metrics.pixels->y, *scale);
-            // Full-tree layout keeps parent/child dependencies explicit. Finer measure/
-            // arrange invalidation needs cache propagation rules; defer until profiling
-            // shows layout cost matters for real profiles.
-            if (layoutDirty_)
+            // A layout callback can resize again. Finish with current dimensions without recursion;
+            // bound pathological resize-on-every-layout callbacks and leave remaining work queued.
+            for (unsigned pass = 0; pass < 4; ++pass)
             {
-                layoutDirty_ = false;
-                LayoutMainMenu(float(size.x), float(size.y));
-                if (root_)
+                resizePending_ = false;
+                if (!RenderFrame())
                 {
-                    root_->Measure({rootBounds_.width, rootBounds_.height});
-                    root_->Arrange(rootBounds_);
-                }
-                if (popup_)
-                {
-                    popup_->Measure({popupBounds_.width, popupBounds_.height});
-                    popup_->Arrange(popupBounds_);
-                }
-                if (contextMenu_)
-                {
-                    contextMenu_->Measure({contextMenuBounds_.width, contextMenuBounds_.height});
-                    contextMenu_->Arrange(contextMenuBounds_);
-                }
-            }
-            if (drawFrame)
-            {
-                paintDirty_ = false;
-
-                canvas_.Fill(0, 0, float(size.x), float(size.y), theme_.background);
-                if (root_)
-                    root_->Render(canvas_);
-                if (menuBar_)
-                    menuBar_->Render(canvas_);
-                if (popup_)
-                {
-                    if (popupModal_)
-                        canvas_.Fill(0, 0, float(size.x), float(size.y), popup_->Style().modalOverlay);
-                    canvas_.Fill(popupBounds_.x, popupBounds_.y, popupBounds_.width, popupBounds_.height,
-                                 popup_->Style().background);
-                    popup_->Render(canvas_);
-                }
-                if (contextMenu_)
-                    contextMenu_->Render(canvas_);
-                RenderTooltip(canvas_);
-                const auto result = window_.PresentBitmap(canvas_.End());
-                // Readiness is published through native paint/metrics events. Posting
-                // retries here would keep an unconfigured surface's event loop busy.
-                if (result == LWS::Result::InvalidState)
-                {
-                    paintDirty_ = true;
                     updating_ = false;
                     return;
                 }
-                else if (result != LWS::Result::Success)
-                    ReportError("Cannot present UI bitmap");
+                // Settle measure/arrange corrections before presenting, in either redraw mode.
+                if (!resizePending_)
+                    break;
             }
-            if (menuSession_)
+            if (processDeferred && menuSession_)
                 menuSession_->Update();
         }
         catch (const std::exception& e)
@@ -280,6 +259,82 @@ namespace LWSUI
         updating_ = false;
         if (paintDirty_ || layoutDirty_ || !deferred_.empty())
             ScheduleUpdate();
+    }
+    bool UIHost::RenderFrame()
+    {
+        if (!window_.IsCreated() || !window_.IsVisible())
+            return false;
+        const auto metrics = window_.GetClientAreaMetrics();
+        const auto scale = DrawingScale();
+        if (!scale || !metrics.pixels || metrics.pixels->x <= 0 || metrics.pixels->y <= 0)
+            return false;
+        // Keep the DPI transform fixed during resizing. Fractional layout extents account for
+        // leftover framebuffer pixels instead of stretching every control and glyph run.
+        const Size size{float(metrics.pixels->x / scale->x), float(metrics.pixels->y / scale->y)};
+        if (!paintDirty_ && !layoutDirty_)
+            return true;
+        if (layoutDirty_)
+        {
+            layoutDirty_ = false;
+            LayoutMainMenu(float(size.width), float(size.height));
+            if (root_)
+            {
+                root_->Measure({rootBounds_.width, rootBounds_.height});
+                root_->Arrange(rootBounds_);
+            }
+            if (popup_)
+            {
+                popup_->Measure({popupBounds_.width, popupBounds_.height});
+                popup_->Arrange(popupBounds_);
+            }
+            if (contextMenu_)
+            {
+                contextMenu_->Measure({contextMenuBounds_.width, contextMenuBounds_.height});
+                contextMenu_->Arrange(contextMenuBounds_);
+            }
+        }
+        const auto current = [&]
+        {
+            if (!window_.IsCreated() || !window_.IsVisible())
+                return false;
+            if (window_.GetClientAreaMetrics() == metrics && DrawingScale() == scale && !layoutDirty_)
+                return true;
+            layoutDirty_ = paintDirty_ = resizePending_ = true;
+            return false;
+        };
+        if (!current())
+            return resizePending_;
+        paintDirty_ = false;
+        canvas_.Begin(metrics.pixels->x, metrics.pixels->y, *scale);
+        canvas_.Fill(0, 0, float(size.width), float(size.height), theme_.background);
+        if (root_)
+            root_->Render(canvas_);
+        if (menuBar_)
+            menuBar_->Render(canvas_);
+        if (popup_)
+        {
+            if (popupModal_)
+                canvas_.Fill(0, 0, float(size.width), float(size.height), popup_->Style().modalOverlay);
+            canvas_.Fill(popupBounds_.x, popupBounds_.y, popupBounds_.width, popupBounds_.height,
+                         popup_->Style().background);
+            popup_->Render(canvas_);
+        }
+        if (contextMenu_)
+            contextMenu_->Render(canvas_);
+        RenderTooltip(canvas_);
+        const auto bitmap = canvas_.End();
+        if (!current())
+            return resizePending_;
+        const auto result = window_.PresentBitmap(bitmap);
+        if (result == LWS::Result::InvalidState)
+        {
+            // Native readiness/paint events retry unconfigured surfaces; never spin in a resize loop.
+            paintDirty_ = true;
+            return false;
+        }
+        if (result != LWS::Result::Success)
+            ReportError("Cannot present UI bitmap");
+        return true;
     }
     void UIHost::LayoutMainMenu(float width, float height)
     {
@@ -319,31 +374,19 @@ namespace LWSUI
     }
     bool UIHost::HasFocusWithin(const Control& control) const
     {
-        for (auto* current = focus_.Get(); current; current = current->Parent())
-            if (current == &control)
-                return true;
-        return false;
+        return internal::IsWithin(focus_.Get(), &control);
     }
     bool UIHost::HasPopupWithin(const Control& control) const
     {
-        for (auto* current = popupOwner_.Get(); current; current = current->Parent())
-            if (current == &control)
-                return true;
-        return false;
+        return internal::IsWithin(popupOwner_.Get(), &control);
     }
     bool UIHost::HasHoverWithin(const Control& control) const
     {
-        for (auto* current = pointerHover_.Get(); current; current = current->Parent())
-            if (current == &control)
-                return true;
-        return false;
+        return internal::IsWithin(pointerHover_.Get(), &control);
     }
     bool UIHost::InPopup(Control* c) const
     {
-        for (; c; c = c->Parent())
-            if (c == popup_.get())
-                return true;
-        return false;
+        return internal::IsWithin(c, popup_.get());
     }
     bool UIHost::Focus(Control* c)
     {
@@ -512,6 +555,43 @@ namespace LWSUI
         for (auto it = ancestors.rbegin(); it != ancestors.rend(); ++it)
             (*it)->OnHover.Raise();
     }
+    void UIHost::UpdateCursor()
+    {
+        auto* target = capture_ ? capture_.Get() : pointerHover_.Get();
+        while (target && !target->cursor)
+            target = target->Parent();
+        if (!target && !cursorApplied_)
+            return;
+        const auto shape = target ? *target->cursor : LWS::CursorShape::Arrow;
+        if (!cursorApplied_ || shape != cursorShape_)
+            if (window_.IsCreated())
+                std::ignore = window_.SetMouseCursor(LWS::Cursor::FromShape(shape));
+        cursorShape_ = shape;
+        cursorApplied_ = target != nullptr;
+    }
+    void UIHost::RenderTooltip(Canvas& canvas)
+    {
+        if (popup_ || contextMenu_ || HasOpenMenu() || capture_)
+            return;
+        auto* owner = pointerHover_.Get();
+        while (owner && owner->Tooltip().empty())
+            owner = owner->Parent();
+        if (!Available(owner))
+            return;
+        const auto size = window_.GetClientAreaMetrics().logical;
+        const auto b = owner->Bounds();
+        const auto& style = PopupStyle();
+        const float p = style.padding;
+        const float width = std::min(float(size.x), canvas.Measure(owner->Tooltip(), style.smallFont) + 2 * p);
+        const float height = canvas.TextHeight(owner->Tooltip(), std::max(1.f, width - 2 * p), style.smallFont,
+                                                false) +
+                             2 * p;
+        const float x = std::clamp(b.x, 0.f, std::max(0.f, float(size.x) - width));
+        const float y = b.y + b.height + height <= size.y ? b.y + b.height : std::max(0.f, b.y - height);
+        canvas.Fill(x, y, width, height, style.background);
+        canvas.CenteredText(owner->Tooltip(), x + p, y, std::max(0.f, width - 2 * p), height, style.foreground,
+                             style.smallFont);
+    }
     bool UIHost::ContextMenuOwnerValid() const
     {
         auto* owner = contextMenuOwner_.Get();
@@ -663,7 +743,8 @@ namespace LWSUI
         }
         if (input.kind == InputKind::Down)
             suppressPointerRelease_ = false;
-        // The menu session sees input first: it owns the bar, the dropdown chain and Escape/Alt chains.
+        // A captured gesture and an active overlay own input until completed. The menu's own
+        // caption-button capture still belongs to its session; all other capture uses normal routing.
         if (!popup_ && !contextMenu_ && (!capture_ || capture_.Get() == menuBar_.get()) &&
             menuSession_ && menuSession_->OnInput(input))
             return true;
@@ -790,6 +871,11 @@ namespace LWSUI
             CloseMainMenu();
             ClosePopup(EditPhase::Cancel);
             Invalidate(true);
+            if (redrawOnResize_)
+            {
+                resizePending_ = true;
+                UpdateCore(false);
+            }
             return false;
         }
         // Dropdowns are anchored to the owner's client geometry but never follow it, so a move would
@@ -848,62 +934,5 @@ namespace LWSUI
             return false;
         }
         return false;
-    }
-    std::optional<LWS::ContentScale> UIHost::DrawingScale() const
-    {
-#ifdef LWS_HAS_WIN32_BACKEND
-        if (const auto dpi = LWS::Win32::GetDpi(window_); dpi)
-            return LWS::ContentScale{double(*dpi) / 96.0, double(*dpi) / 96.0};
-#endif
-        return window_.GetClientAreaMetrics().Scale();
-    }
-    std::vector<TextLine> UIHost::MeasureTextLines(std::string_view text, float width, const FontSpec& font)
-    {
-        return canvas_.TextLines(text, width, font);
-    }
-    TextPosition UIHost::HitTestText(std::string_view text, float x, float y, float width, const FontSpec& font)
-    {
-        return canvas_.HitTestText(text, x, y, width, font);
-    }
-    TextCaret UIHost::MeasureTextCaret(std::string_view text, TextPosition position, float width, const FontSpec& font)
-    {
-        return canvas_.CaretBounds(text, position, width, font);
-    }
-    void UIHost::UpdateCursor()
-    {
-        auto* target = capture_ ? capture_.Get() : pointerHover_.Get();
-        while (target && !target->cursor)
-            target = target->Parent();
-        if (!target && !cursorApplied_)
-            return;
-        const auto shape = target ? *target->cursor : LWS::CursorShape::Arrow;
-        if (!cursorApplied_ || shape != cursorShape_)
-            if (window_.IsCreated())
-                std::ignore = window_.SetMouseCursor(LWS::Cursor::FromShape(shape));
-        cursorShape_ = shape;
-        cursorApplied_ = target != nullptr;
-    }
-    void UIHost::RenderTooltip(Canvas& canvas)
-    {
-        if (popup_ || contextMenu_ || HasOpenMenu() || capture_)
-            return;
-        auto* owner = pointerHover_.Get();
-        while (owner && owner->Tooltip().empty())
-            owner = owner->Parent();
-        if (!Available(owner))
-            return;
-        const auto size = window_.GetClientAreaMetrics().logical;
-        const auto b = owner->Bounds();
-        const auto& style = PopupStyle();
-        const float p = style.padding;
-        const float width = std::min(float(size.x), canvas.Measure(owner->Tooltip(), style.smallFont) + 2 * p);
-        const float height = canvas.TextHeight(owner->Tooltip(), std::max(1.f, width - 2 * p), style.smallFont,
-                                                false) +
-                             2 * p;
-        const float x = std::clamp(b.x, 0.f, std::max(0.f, float(size.x) - width));
-        const float y = b.y + b.height + height <= size.y ? b.y + b.height : std::max(0.f, b.y - height);
-        canvas.Fill(x, y, width, height, style.background);
-        canvas.CenteredText(owner->Tooltip(), x + p, y, std::max(0.f, width - 2 * p), height, style.foreground,
-                             style.smallFont);
     }
 }  // namespace LWSUI

@@ -1,5 +1,5 @@
-#include <LWSUI/Containers.hpp>
 #include <LWSUI/internal/TextPresentation.hpp>
+#include <LWSUI/Containers.hpp>
 #include <LWSUI/UIHost.hpp>
 #include <algorithm>
 #include <stdexcept>
@@ -11,12 +11,14 @@ namespace LWSUI
         const size_t count = std::count_if(Children().begin(), Children().end(),
                                            [](const auto& child) { return child->Visible(); });
         auto childSpace = available;
-        if (orientation == Orientation::Horizontal && count)
+        if (orientation == Orientation::Horizontal && sizeToContent)
+            childSpace.width = fallbackItemWidth;
+        else if (orientation == Orientation::Horizontal && count)
             childSpace.width = std::max(0.f, (available.width - spacing * float(count - 1)) / float(count));
         for (auto& child : Children())
             if (child->Visible())
             {
-                auto size = child->Measure(childSpace);
+                auto size = sizeToContent ? child->MeasureContent(childSpace) : child->Measure(childSpace);
                 if (orientation == Orientation::Vertical)
                 {
                     result.height += size.height;
@@ -57,6 +59,18 @@ namespace LWSUI
                 {
                     float width = std::max(0.f, (b.width - spacing * float(visible ? visible - 1 : 0)) /
                                                     std::max(size_t{1}, visible));
+                    if (sizeToContent)
+                    {
+                        const float gaps = spacing * float(visible ? visible - 1 : 0);
+                        const float scale = clipPartialChildren
+                                                ? 1.f
+                                                : std::clamp((b.width - gaps) /
+                                                                 std::max(1.f, DesiredSize().width - gaps),
+                                                             0.f, 1.f);
+                        width = size.width * scale;
+                    }
+                    if (clipPartialChildren && position + width > b.x + b.width)
+                        width = 0;
                     child->Arrange({position, b.y, width, b.height});
                     position += width + spacing;
                 }
@@ -118,82 +132,18 @@ namespace LWSUI
             x += widths[column] + spacing;
         }
     }
-    ScrollView::ScrollView()
-    {
-        bar_ = &Emplace<ScrollBar>();
-        connection_ = bar_->OnEdit.Connect([this](double fraction, EditPhase)
-                                           { SetOffset(float(fraction) * std::max(0.f, extent_ - Bounds().height)); });
-    }
-    void ScrollView::SetContent(std::unique_ptr<Control> content)
-    {
-        if (content_)
-            Remove(*content_);
-        content_ = content.get();
-        Add(std::move(content));
-        offset_ = 0;
-    }
-    Size ScrollView::OnMeasure(Size available)
-    {
-        if (content_)
-            extent_ = content_
-                          ->Measure({std::max(0.f, available.width - (overlayScrollBar ? 0
-                                                                                       : Style().scrollbarWidth +
-                                                                                             Style().scrollbarMargin)),
-                                     available.height})
-                          .height;
-        bar_->Measure({7, available.height});
-        return {available.width, std::min(extent_, available.height)};
-    }
-    void ScrollView::OnArrange()
-    {
-        auto b = Bounds();
-        viewport_ = {b.x, b.y, std::max(0.f, b.width - (overlayScrollBar ? 0 : Style().scrollbarWidth + Style().scrollbarMargin)), b.height};
-        offset_ = std::clamp(offset_, 0.f, std::max(0.f, extent_ - b.height));
-        if (content_)
-            content_->Arrange(
-                {b.x, b.y - offset_,
-                 std::max(0.f, b.width - (overlayScrollBar ? 0 : Style().scrollbarWidth + Style().scrollbarMargin)),
-                 extent_});
-        bar_->SetVisible(extent_ > b.height);
-        bar_->SetPage(b.height / std::max(1.f, extent_));
-        bar_->SetValue(offset_ / std::max(1.f, extent_ - b.height));
-        bar_->Arrange(
-            {b.x + b.width - Style().scrollbarWidth - Style().scrollbarMargin, b.y, Style().scrollbarWidth, b.height});
-    }
-    Control* ScrollView::HitTest(float x, float y)
-    {
-        if (!Control::HitTest(x, y))
-            return nullptr;
-        if (auto* hit = bar_->HitTest(x, y))
-            return hit;
-        return Container::HitTest(x, y);
-    }
-    void ScrollView::OnRender(Canvas& canvas)
-    {
-        // Control::Render skips subtrees outside the active clip. Keep the complete
-        // control tree and layout so scrolling preserves drafts, focus and hit testing.
-        if (content_)
-            content_->Render(canvas);
-        bar_->Render(canvas);
-    }
-    void ScrollView::SetOffset(float offset)
-    {
-        const float next = std::clamp(offset, 0.f, std::max(0.f, extent_ - Bounds().height));
-        if (next == offset_)
-            return;
-        offset_ = next;
-        OnArrange();
-        Invalidate();
-    }
-    bool ScrollView::OnInput(const Input& e)
-    {
-        if (e.kind == InputKind::Wheel)
-        {
-            SetOffset(offset_ - e.wheel * Style().scrollStep);
-            return true;
-        }
-        return false;
-    }
+
+
+
+
+
+
+
+
+
+
+
+
 
     namespace
     {
@@ -447,5 +397,81 @@ namespace LWSUI
                 }
         }
         return true;
+    }
+    ScrollView::ScrollView()
+    {
+        bar_ = &Emplace<ScrollBar>();
+        connection_ = bar_->OnEdit.Connect([this](double fraction, EditPhase)
+                                           { SetOffset(float(fraction) * std::max(0.f, extent_ - Bounds().height)); });
+    }
+    void ScrollView::SetContent(std::unique_ptr<Control> content)
+    {
+        if (content_)
+            Remove(*content_);
+        content_ = content.get();
+        Add(std::move(content));
+        offset_ = 0;
+    }
+    Size ScrollView::OnMeasure(Size available)
+    {
+        if (content_)
+            extent_ = content_
+                          ->Measure({std::max(0.f, available.width - (overlayScrollBar ? 0
+                                                                                       : Style().scrollbarWidth +
+                                                                                             Style().scrollbarMargin)),
+                                     available.height})
+                          .height;
+        bar_->Measure({7, available.height});
+        return {available.width, std::min(extent_, available.height)};
+    }
+    void ScrollView::OnArrange()
+    {
+        auto b = Bounds();
+        viewport_ = {b.x, b.y, std::max(0.f, b.width - (overlayScrollBar ? 0 : Style().scrollbarWidth + Style().scrollbarMargin)), b.height};
+        offset_ = std::clamp(offset_, 0.f, std::max(0.f, extent_ - b.height));
+        if (content_)
+            content_->Arrange(
+                {b.x, b.y - offset_,
+                 std::max(0.f, b.width - (overlayScrollBar ? 0 : Style().scrollbarWidth + Style().scrollbarMargin)),
+                 extent_});
+        bar_->SetVisible(extent_ > b.height);
+        bar_->SetPage(b.height / std::max(1.f, extent_));
+        bar_->SetValue(offset_ / std::max(1.f, extent_ - b.height));
+        bar_->Arrange(
+            {b.x + b.width - Style().scrollbarWidth - Style().scrollbarMargin, b.y, Style().scrollbarWidth, b.height});
+    }
+    Control* ScrollView::HitTest(float x, float y)
+    {
+        if (!Control::HitTest(x, y))
+            return nullptr;
+        if (auto* hit = bar_->HitTest(x, y))
+            return hit;
+        return Container::HitTest(x, y);
+    }
+    void ScrollView::OnRender(Canvas& canvas)
+    {
+        // Control::Render skips subtrees outside the active clip. Keep the complete
+        // control tree and layout so scrolling preserves drafts, focus and hit testing.
+        if (content_)
+            content_->Render(canvas);
+        bar_->Render(canvas);
+    }
+    void ScrollView::SetOffset(float offset)
+    {
+        const float next = std::clamp(offset, 0.f, std::max(0.f, extent_ - Bounds().height));
+        if (next == offset_)
+            return;
+        offset_ = next;
+        OnArrange();
+        Invalidate();
+    }
+    bool ScrollView::OnInput(const Input& e)
+    {
+        if (e.kind == InputKind::Wheel)
+        {
+            SetOffset(offset_ - e.wheel * Style().scrollStep);
+            return true;
+        }
+        return false;
     }
 }  // namespace LWSUI
