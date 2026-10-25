@@ -1,5 +1,8 @@
 #pragma once
 #include <LWSUI/Control.hpp>
+#include <LWSUI/TextInput.hpp>
+#include <LWSUI/internal/InputMask.hpp>
+#include <LWSUI/internal/DynamicMask.hpp>
 #include <cstdint>
 namespace LWS
 {
@@ -193,10 +196,12 @@ namespace LWSUI
         explicit TextBox(std::string value = {}, TextBoxMode mode = TextBoxMode::SingleLine);
         ~TextBox() override;
         TextBoxMode Mode() const { return mode_; }
+        // Multiline content can use an enclosing ScrollView instead of an internal scrollbar.
         bool sizeToContent = false;
         // Preferred multiline height; allocation remains the parent's responsibility.
         void SetVisibleLines(unsigned lines);
         void SetText(std::string value);
+        bool EditText(std::string value);
         // Read-only retains selection/copy; enabling it cancels the current draft.
         void SetReadOnly(bool value);
         void SetBorderless(bool value)
@@ -207,7 +212,17 @@ namespace LWSUI
                 Invalidate();
             }
         }
-        const std::string& Text() const { return text_; }
+        const std::string& Text() const { return mask_ ? value_ : text_; }
+        void SetInputFilter(InputFilter filter);
+        // Called during rendering with display text and UTF-8 byte offsets. Providers must not mutate controls.
+        std::expected<void, std::string> SetInputMask(std::string_view pattern);
+        std::expected<void, std::string> SetInputMask(const DynamicMaskDefinition& definition);
+        std::string UnmaskedText() const;
+        bool MaskComplete() const;
+        const std::string& InputError() const { return inputError_; }
+        std::string InputFeedback() const;
+        void ShowBlockedDepartureFeedback();
+        LWSUI::Event<void(const std::string&)> OnInputRejected;
         void SetPlaceholder(std::string text)
         {
             placeholder_ = std::move(text);
@@ -219,6 +234,13 @@ namespace LWSUI
             Invalidate();
         }
         const std::string& Validation() const { return validation_; }
+        std::string ValidationError() const
+        {
+            if (editing_ && !validation_.empty()) return validation_;
+            const bool requiresCompletion = dynamicMask_.has_value() || (mask_ && !Text().empty());
+            return !requiresCompletion || MaskComplete() ? std::string{} : "Complete all mask fields";
+        }
+        bool HasInvalidDraft() const { return editing_ && !ValidationError().empty(); }
         bool Focusable() const override { return true; }
         bool Finish(EditPhase phase) override;
         // Preview may reject a draft by setting validation. Silent SetText resets the edit.
@@ -251,7 +273,10 @@ namespace LWSUI
         void SetScrollOffset(float offset);
         void StopSelecting();
         void SelectPointer(float x, float y);
-        void Replace(std::string text);
+        bool Replace(std::string text, TextEditOrigin origin = TextEditOrigin::Typing, size_t first = std::string::npos,
+                     size_t last = std::string::npos, bool cut = false);
+        void RefreshValue();
+        bool Reject(std::string message);
         const TextBoxMode mode_;
         unsigned visibleLines_ = 4;
         ScrollBar* scrollbar_ = nullptr;
@@ -264,7 +289,12 @@ namespace LWSUI
         std::optional<float> preferredX_;
         float scrollY_ = 0, contentHeight_ = 0, geometryGutter_ = 0, pointerX_ = 0, pointerY_ = 0;
         bool caretUpstream_ = false;
-        std::string text_, committed_, validation_, placeholder_;
+        std::string text_, committed_, validation_, placeholder_, value_, inputError_;
+        InputFilter filter_;
+        bool blockedDepartureFeedback_ = false;
+        bool dynamicExplicit_ = false, committedDynamicExplicit_ = false;
+        std::optional<internal::InputMask> mask_;
+        std::optional<internal::DynamicMask> dynamicMask_;
         size_t caret_ = 0, anchor_ = 0;
         uint64_t pasteGeneration_ = 0;
         float scroll_ = 0;
