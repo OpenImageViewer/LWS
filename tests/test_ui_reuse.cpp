@@ -1,4 +1,6 @@
 #ifdef LWS_TEST_UI
+#include <catch2/catch_approx.hpp>
+#include <LWSUI/internal/TextPresentation.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <LWSUI/internal/ScopedFlag.hpp>
 #include <stdexcept>
@@ -81,5 +83,66 @@ TEST_CASE("Connection collections retain heterogeneous subscriptions and disconn
     moved.Connect(first, [&](int) { ++total; });
     first.Raise(1);
     REQUIRE(total == 8);
+}
+
+
+TEST_CASE("Shared text presentation keeps native alignment and UTF-8 trimming at fractional scales",
+          "[ui][reuse][text]")
+{
+    for (const double scale : {1., 1.25, 1.5})
+    {
+        CAPTURE(scale);
+        Canvas canvas;
+        canvas.Begin(1000, 300, {scale, scale});
+        const FontSpec font{16};
+        const Rect area{10, 20, 200, 60};
+        const auto centered = internal::AlignedTextBounds(canvas, "Native text", area, font,
+                                                          Alignment::Center, Alignment::Center);
+        REQUIRE(centered.x > area.x);
+        REQUIRE(centered.y > area.y);
+        REQUIRE(centered.height == Catch::Approx(canvas.TextHeight("Native text", area.width, font, false)));
+        REQUIRE(centered.y + centered.height / 2 == Catch::Approx(area.y + area.height / 2));
+        const auto right = internal::AlignedTextBounds(canvas, "Native text", area, font,
+                                                       Alignment::End, Alignment::End);
+        REQUIRE(right.x + right.width == Catch::Approx(area.x + area.width));
+        REQUIRE(right.width == Catch::Approx(canvas.Measure("Native text", font)));
+        REQUIRE(right.y + right.height == Catch::Approx(area.y + area.height));
+        const auto wrapped = internal::AlignedTextBounds(canvas, "Several words must wrap into more than one line",
+                                                         {0, 0, 70, 200}, font, Alignment::Start,
+                                                         Alignment::Start, true);
+        REQUIRE(wrapped.height > centered.height);
+        REQUIRE(wrapped.width == 70);
+        const auto narrow = internal::AlignedTextBounds(canvas, "Long text", {3, 4, 0, 10}, font,
+                                                        Alignment::Center, Alignment::Center);
+        REQUIRE(narrow.width == 0);
+        REQUIRE(narrow.height == 0);
+        REQUIRE(internal::EllipsizeText(canvas, "Short", 200, font) == "Short");
+        REQUIRE(internal::EllipsizeText(canvas, "Long text", 0, font).empty());
+        const std::string text = "\xc3\xa9\xf0\x9f\x99\x82 repeated Unicode text";
+        const std::string dots = "\xe2\x80\xa6";
+        const float limit = canvas.Measure(text.substr(0, 6) + dots, font);
+        const auto trimmed = internal::EllipsizeText(canvas, text, limit, font);
+        REQUIRE(trimmed.ends_with(dots));
+        const auto prefix = trimmed.substr(0, trimmed.size() - dots.size());
+        REQUIRE(text.starts_with(prefix));
+        REQUIRE((static_cast<unsigned char>(text[prefix.size()]) & 0xc0) != 0x80);
+        REQUIRE(canvas.Measure(trimmed, font) <= limit + .001f);
+        REQUIRE(internal::EllipsizeText(canvas, text, canvas.Measure(dots, font) / 2, font).empty());
+        canvas.End();
+    }
+}
+
+TEST_CASE("Caption alignment preserves centered clipping for oversized fonts", "[ui][reuse][text]")
+{
+    Canvas canvas;
+    canvas.Begin(240, 160, {1.25, 1.25});
+    const FontSpec font{40};
+    const Rect area{5, 30, 160, 12};
+    const auto bounds = internal::AlignedTextBounds(canvas, "Caption", area, font, Alignment::Start,
+                                                   Alignment::Center, /*wrap=*/false, /*constrainHeight=*/false);
+    REQUIRE(bounds.height > area.height);
+    REQUIRE(bounds.y < area.y);
+    REQUIRE(bounds.y + bounds.height / 2 == Catch::Approx(area.y + area.height / 2));
+    canvas.End();
 }
 #endif

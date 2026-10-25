@@ -21,6 +21,13 @@ namespace LWS::Win32
         return reinterpret_cast<HWND>(backend->getHandle());
     }
 
+    std::expected<UINT, Result> GetDpi(const Window& window)
+    {
+        if (const auto handle = GetHwnd(window); !handle)
+            return std::unexpected(handle.error());
+        return static_cast<const WindowBackendWin32*>(internal::WindowBackendAccess::Get(window))->dpi();
+    }
+
     std::expected<EventConnection, Result> Listen(Window& window, PlatformCallback callback)
     {
         return internal::WindowBackendAccess::ListenPlatform(window, std::move(callback));

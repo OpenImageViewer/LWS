@@ -1,4 +1,5 @@
 #include <LWSUI/Containers.hpp>
+#include <LWSUI/internal/TextPresentation.hpp>
 #include <LWSUI/UIHost.hpp>
 #include <algorithm>
 #include <stdexcept>
@@ -227,7 +228,9 @@ namespace LWSUI
 
             Size OnMeasure(Size size) override
             {
-                return {size.width, std::max(Style().treeRowHeight, Font().size * 1.4f + 2 * Style().treeRowPadding)};
+                const float height = Host() ? Host()->MeasureText("Mg", size.width, false, Font()).height
+                                            : Font().size * 1.4f;
+                return {size.width, std::max(Style().treeRowHeight, height + 2 * Style().treeRowPadding)};
             }
             void OnRender(Canvas& canvas) override
             {
@@ -236,12 +239,15 @@ namespace LWSUI
                 const float editorLeft = std::max(Style().editorMinLeft, b.width * Style().editorFraction);
                 const float indent = std::min(std::max(0, TreeDepth(*this) - 1) * Style().treeIndent,
                                               std::max(0.f, editorLeft - Style().editorMinLeft));
-                const float y = b.y + (b.height - Font().size * 1.4f) / 2;
-                canvas.Text(text_.substr(0, 1), b.x + Style().treeLabelInset + indent, y, Style().checkboxSize,
-                            b.height, Style().accent, Font());
+                const auto glyph = internal::AlignedTextBounds(
+                    canvas, text_.substr(0, 1), {b.x + Style().treeLabelInset + indent, b.y, Style().checkboxSize, b.height},
+                    Font(), Alignment::Start, Alignment::Center);
+                canvas.Text(text_.substr(0, 1), glyph.x, glyph.y, glyph.width, glyph.height, Style().accent, Font());
                 const float left = Style().treeLabelInset + Style().checkboxSize + indent;
-                DrawText(canvas, text_.substr(3), b.x + left, y, b.width - left - Style().padding, b.height,
-                         Style().accent);
+                const auto label = internal::AlignedTextBounds(
+                    canvas, text_.substr(3), {b.x + left, b.y, b.width - left - Style().padding, b.height},
+                    Font(), Alignment::Start, Alignment::Center);
+                DrawText(canvas, text_.substr(3), label.x, label.y, label.width, label.height, Style().accent);
             }
         };
         Control* FirstFocusable(Control& control)

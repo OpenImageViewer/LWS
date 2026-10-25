@@ -1,4 +1,5 @@
 #include <LWSUI/Primitives.hpp>
+#include <LWSUI/internal/TextPresentation.hpp>
 #include <LWSUI/UIHost.hpp>
 #include <LWSUI/TextEditing.hpp>
 #include <LWS/TextClipboard.hpp>
@@ -10,7 +11,14 @@ namespace LWSUI
     {
         auto b = Bounds();
         const float p = Style().labelPadding;
-        DrawText(c, text_, b.x + p, b.y + p, b.width - 2 * p, b.height - 2 * p, Foreground(), wrap);
+        const float width = std::max(0.f, b.width - 2 * p);
+        const std::string text = trimming == TextTrimming::Ellipsis && !wrap
+                                     ? internal::EllipsizeText(c, text_, width, Font())
+                                     : text_;
+        const auto textBounds = internal::AlignedTextBounds(
+            c, text, {b.x + p, b.y + p, width, std::max(0.f, b.height - 2 * p)}, Font(),
+            Alignment::Start, verticalAlignment, wrap);
+        DrawText(c, text, textBounds.x, textBounds.y, textBounds.width, textBounds.height, Foreground(), wrap);
     }
     Size Label::OnMeasure(Size available)
     {
@@ -21,7 +29,7 @@ namespace LWSUI
         {
             const float contentWidth = std::max(1.f, available.width - 2 * p);
             const float keyWidth = wrap ? contentWidth : 0.f;
-            const auto scale = host->Window().GetClientAreaMetrics().Scale();
+            const auto scale = host->DrawingScale();
             if (!measurement_ || measurement_->font != font || measurement_->scale != scale ||
                 measurement_->wrap != wrap || measurement_->width != keyWidth)
             {
@@ -32,18 +40,17 @@ namespace LWSUI
             }
             height = measurement_->height;
         }
-        return {available.width, std::max(Style().rowHeight, height + 2 * p)};
+        const float width = sizeToContent && !wrap ? (Host() ? Host()->MeasureText(text_, 100000, false, font).width
+                                                             : text_.size() * font.size * .6f) +
+                                                         2 * p
+                                                   : available.width;
+        return {width, std::max(Style().rowHeight, height + 2 * p)};
     }
     void Button::OnRender(Canvas& c)
     {
-        auto b = Bounds();
+        RenderBackground(c);
+        const auto b = Bounds();
         const bool enabled = Enabled();
-        if (!flat || (enabled && (pressed_ || Hovered())))
-            c.Fill(b.x, b.y, b.width, b.height,
-                   !enabled    ? Style().surface
-                   : pressed_  ? Style().selectedRow
-                   : Hovered() ? Style().hoverSurface
-                               : Style().line);
         const float inset = flat ? 0.f : Style().padding;
         c.CenteredText(text_, b.x + inset, b.y, b.width - 2 * inset, b.height, enabled ? Foreground() : Style().muted,
                        Font(), enabled ? HighlightSpans(text_) : std::vector<TextSpan>{});
@@ -116,8 +123,10 @@ namespace LWSUI
         }
         const float inset = size + Style().choiceGap;
         const auto text = text_.empty() ? (Value() ? "Enabled" : "Disabled") : text_;
-        const float height = canvas.TextHeight(text, b.width - inset, Font(), false);
-        DrawText(canvas, text, b.x + inset, b.y + (b.height - height) / 2, b.width - inset, height, Foreground());
+        const auto textBounds = internal::AlignedTextBounds(
+            canvas, text, {b.x + inset, b.y, b.width - inset, b.height}, Font(),
+            Alignment::Start, Alignment::Center, /*wrap=*/false, /*constrainHeight=*/false);
+        DrawText(canvas, text, textBounds.x, textBounds.y, textBounds.width, textBounds.height, Foreground());
     }
     void RadioButton::OnRender(Canvas& canvas)
     {
@@ -131,8 +140,10 @@ namespace LWSUI
         if (Value())
             canvas.FillCircle(centerX, centerY, size / 4, color);
         const float inset = Style().checkboxSize + Style().choiceGap / 2;
-        const float height = canvas.TextHeight(text_, std::max(0.f, b.width - inset), Font(), false);
-        DrawText(canvas, text_, b.x + inset, b.y + (b.height - height) / 2, b.width - inset, height,
+        const auto textBounds = internal::AlignedTextBounds(
+            canvas, text_, {b.x + inset, b.y, b.width - inset, b.height}, Font(),
+            Alignment::Start, Alignment::Center, /*wrap=*/false, /*constrainHeight=*/false);
+        DrawText(canvas, text_, textBounds.x, textBounds.y, textBounds.width, textBounds.height,
                  Enabled() ? Foreground() : Style().muted);
     }
     TextBox::TextBox(std::string value) : text_(value), committed_(std::move(value))
@@ -495,5 +506,76 @@ namespace LWSUI
                        dark ? Style().checkerDark : Style().checkerLight);
         }
         c.Fill(b.x, b.y, b.width, b.height, value_);
+    }
+    Size Label::OnMeasureContent(Size available)
+    {
+        auto size = OnMeasure(available);
+        const auto width = [&](std::string_view value)
+        { return Host() ? Host()->MeasureText(value, 100000, false, Font()).width : value.size() * Font().size * .6f; };
+        size.width = std::max(width(text_), width(minimumText)) + 2 * Style().labelPadding;
+        return size;
+    }
+    Size Button::OnMeasureContent(Size available)
+    {
+        auto size = Control::OnMeasure(available);
+        size.width = (Host() ? Host()->MeasureText(text_, 100000, false, Font()).width
+                             : text_.size() * Font().size * .6f) +
+                     2 * Style().padding;
+        return size;
+    }
+    Size Button::OnMeasure(Size available)
+    {
+        auto size = Control::OnMeasure(available);
+        if (sizeToContent)
+            size.width = (Host() ? Host()->MeasureText(text_, 100000, false, Font()).width
+                                 : text_.size() * Font().size * .6f) +
+                         2 * Style().padding;
+        return size;
+    }
+    void Button::RenderBackground(Canvas& c) const
+    {
+        auto b = Bounds();
+        const bool enabled = Enabled();
+        if (!flat || (enabled && (pressed_ || Hovered())))
+            c.Fill(b.x, b.y, b.width, b.height,
+                   !enabled    ? Style().surface
+                   : pressed_  ? Style().selectedRow
+                   : Hovered() ? Style().hoverSurface
+                               : Style().line);
+    }
+    Size GlyphButton::OnMeasure(Size available)
+    {
+        const auto height = Control::OnMeasure(available).height;
+        return {height, height};
+    }
+    void GlyphButton::OnRender(Canvas& canvas)
+    {
+        RenderBackground(canvas);
+        const auto b = Bounds();
+        const auto color = Enabled() ? Foreground() : Style().muted;
+        const float side = std::min(b.width, b.height) * .45f, left = b.x + (b.width - side) / 2;
+        const bool up = glyph_ == Glyph::ChevronUp || glyph_ == Glyph::DoubleChevronUp;
+        const bool twice = glyph_ == Glyph::DoubleChevronUp || glyph_ == Glyph::DoubleChevronDown;
+        for (int i = 0; i < (twice ? 2 : 1); ++i)
+        {
+            const float y = b.y + b.height / 2 + (twice ? (i ? .23f : -.23f) * side : 0);
+            const float direction = up ? -1.f : 1.f;
+            canvas.Line(left, y - direction * .18f * side, left + side / 2, y + direction * .18f * side,
+                        std::max(1.f, Style().borderWidth), color);
+            canvas.Line(left + side / 2, y + direction * .18f * side, left + side, y - direction * .18f * side,
+                        std::max(1.f, Style().borderWidth), color);
+        }
+    }
+    void Image::OnRender(Canvas& canvas)
+    {
+        if (!bitmap_)
+            return;
+        const auto b = Bounds();
+        const auto pixels = bitmap_->GetBuffer();
+        if (!pixels.width || !pixels.height)
+            return;
+        const float scale = std::min(b.width / pixels.width, b.height / pixels.height);
+        const float width = pixels.width * scale, height = pixels.height * scale;
+        canvas.Image(pixels, b.x + (b.width - width) / 2, b.y + (b.height - height) / 2, width, height);
     }
 }  // namespace LWSUI

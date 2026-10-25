@@ -194,4 +194,9 @@ namespace LWSUI
                 return false;
         return true;
     }
+    Size Control::MeasureContent(Size available)
+    {
+        desired_ = visible_ ? OnMeasureContent(available) : Size{};
+        return desired_;
+    }
 }  // namespace LWSUI

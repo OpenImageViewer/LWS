@@ -22,6 +22,7 @@ namespace LWSUI
         }
         void Invalidate(bool layout = false);
         void Update();
+        std::optional<LWS::ContentScale> DrawingScale() const;
         Size MeasureText(std::string_view text, float width, bool wrap, const FontSpec& font);
         size_t HitTestText(std::string_view text, float x, const FontSpec& font);
         float MeasureCaret(std::string_view text, size_t byteOffset, const FontSpec& font);

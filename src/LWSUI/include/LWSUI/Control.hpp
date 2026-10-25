@@ -103,6 +103,7 @@ namespace LWSUI
         Control(const Control&) = delete;
         Control& operator=(const Control&) = delete;
         Size Measure(Size available);
+        Size MeasureContent(Size available);
         void Arrange(Rect bounds);
         void Render(Canvas& canvas);
         bool Dispatch(const Input& input);
@@ -165,6 +166,7 @@ namespace LWSUI
       protected:
 
         virtual Size OnMeasure(Size available);
+        virtual Size OnMeasureContent(Size available) { return OnMeasure(available); }
         virtual void OnArrange() {}
         virtual void OnRender(Canvas&) {}
         virtual bool OnInput(const Input&) { return false; }

@@ -3,6 +3,18 @@
 #include <cstdint>
 namespace LWSUI
 {
+    enum class Alignment
+    {
+        Start,
+        Center,
+        End
+    };
+    enum class TextTrimming
+    {
+        None,
+        Ellipsis
+    };
+
     class Label : public Control
     {
       public:
@@ -17,12 +29,16 @@ namespace LWSUI
             Invalidate(true);
         }
         const std::string& Text() const { return text_; }
-        bool wrap = false;
+        bool wrap = false, sizeToContent = false;
+        std::string minimumText;
+        Alignment verticalAlignment = Alignment::Start;
+        TextTrimming trimming = TextTrimming::None;
 
       protected:
 
         void OnRender(Canvas&) override;
         Size OnMeasure(Size) override;
+        Size OnMeasureContent(Size) override;
         void OnDetach() override { measurement_.reset(); }
 
       private:
@@ -46,12 +62,14 @@ namespace LWSUI
         explicit Button(std::string text = {}) : text_(std::move(text)) {}
         void SetText(std::string text)
         {
+            if (text_ == text)
+                return;
             text_ = std::move(text);
-            Invalidate();
+            Invalidate(sizeToContent);
         }
         const std::string& Text() const { return text_; }
-        bool Focusable() const override { return true; }
-        bool flat = false;
+        bool Focusable() const override { return focusable; }
+        bool flat = false, sizeToContent = false, focusable = true;
         LWSUI::Event<void()> OnClick;
         LWSUI::Event<void(bool)> OnPress;
         LWSUI::Event<void(EditPhase)> OnRelease;
@@ -60,11 +78,57 @@ namespace LWSUI
 
       protected:
 
+        Size OnMeasure(Size available) override;
+        Size OnMeasureContent(Size) override;
+        void RenderBackground(Canvas&) const;
         void OnRender(Canvas&) override;
         bool OnInput(const Input&) override;
         virtual void Activate() { OnClick.Raise(); }
         std::string text_;
         bool pressed_ = false, pointerInside_ = true;
+    };
+    enum class Glyph
+    {
+        ChevronUp,
+        ChevronDown,
+        DoubleChevronUp,
+        DoubleChevronDown
+    };
+    class GlyphButton : public Button
+    {
+      public:
+
+        explicit GlyphButton(Glyph glyph) : glyph_(glyph) { flat = true; }
+
+      protected:
+
+        Size OnMeasure(Size available) override;
+        Size OnMeasureContent(Size available) override { return OnMeasure(available); }
+        void OnRender(Canvas&) override;
+
+      private:
+
+        Glyph glyph_;
+    };
+    class Image : public Control
+    {
+      public:
+
+        void SetBitmap(LWS::BitmapSharedPtr bitmap)
+        {
+            bitmap_ = std::move(bitmap);
+            Invalidate(true);
+        }
+        float size = 32;
+
+      protected:
+
+        Size OnMeasure(Size) override { return {bitmap_ ? size : 0, bitmap_ ? size : 0}; }
+        void OnRender(Canvas&) override;
+
+      private:
+
+        LWS::BitmapSharedPtr bitmap_;
     };
     class CheckBox : public Button
     {

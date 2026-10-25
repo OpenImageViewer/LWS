@@ -720,4 +720,12 @@ namespace LWSUI
         input.alt = window_.GetPlatformContext().IsKeyPressed(LWS::KeyCode::Alt).value_or(false);
         return Route(input);
     }
+    std::optional<LWS::ContentScale> UIHost::DrawingScale() const
+    {
+#ifdef LWS_HAS_WIN32_BACKEND
+        if (const auto dpi = LWS::Win32::GetDpi(window_); dpi)
+            return LWS::ContentScale{double(*dpi) / 96.0, double(*dpi) / 96.0};
+#endif
+        return window_.GetClientAreaMetrics().Scale();
+    }
 }  // namespace LWSUI
