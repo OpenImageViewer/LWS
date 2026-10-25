@@ -30,6 +30,8 @@ namespace LWSUI
         }
         void Invalidate(bool recalculateLayout = false);
         void Update();
+        void SetRedrawOnResize(bool enabled) { redrawOnResize_ = enabled; }
+        bool RedrawOnResize() const { return redrawOnResize_; }
         // Opt-in synchronous rendering on size notifications; never runs deferred application work.
         // Windows uses native window DPI, not a ratio distorted by rounded logical dimensions.
         // Arrangement and painting must use the same scale. Other backends retain paired metrics.
