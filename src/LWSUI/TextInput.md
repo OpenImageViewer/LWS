@@ -234,3 +234,13 @@ Popup fields inherit the departure policy from their owner unless overridden loc
 Applications add their own field names and submission or dismissal decisions.
 The same textbox validity query governs explicit commit and form preflight,
 including the existing optional-empty rule for static masks.
+
+If an invalid popup prevents displaying a message box, the popup remains intact
+and feedback is shown beside its blocking field instead.
+
+`UIHost::ShowMessageBox` and `UIHost::ShowDecisionBox` share one internal dialog
+implementation. Informational messages use OK, Enter, or Escape to dismiss and
+retain inline feedback when an invalid popup prevents opening. Decision dialogs
+suspend an existing popup, restore its draft and focus before delivering a choice,
+and always provide cancellation. Escape and X cancel without choosing an action.
+Applications supply captions and callbacks and own all form operation policies.

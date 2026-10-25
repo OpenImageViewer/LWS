@@ -1545,4 +1545,93 @@ TEST_CASE("Dynamic mask completion resolves decimal zero before an unfinished he
 }
 
 
+
+
+TEST_CASE("Informational dialogs preserve invalid edits and deliver dismissal immediately", "[ui][text][dialog]")
+{
+    TextEnvironment env("start", {260, 40}, TextBoxMode::SingleLine);
+    env.host->SetInvalidEditPolicy(InvalidEditPolicy::BlockOnLeave);
+    REQUIRE(env.text->EditText("invalid")); env.text->SetValidation("Rejected");
+    for (const auto key : {K::Enter, K::Escape})
+    {
+        unsigned dismissed = 0;
+        env.host->ShowMessageBox(*env.host->Root(), "Information", "Correct the draft", [&]
+        {
+            ++dismissed;
+            REQUIRE(env.text->Text() == "invalid");
+            REQUIRE(env.host->Focus(env.next));
+        });
+        REQUIRE(env.host->HasPopup());
+        REQUIRE(env.text->Text() == "invalid");
+        REQUIRE(env.Key(key));
+        REQUIRE_FALSE(env.host->HasPopup()); REQUIRE(dismissed == 1);
+        REQUIRE(env.host->IsFocused(*env.next));
+        REQUIRE(env.text->Text() == "invalid");
+    }
+}
+
+TEST_CASE("Decision dialogs restore a popup before delivering a choice", "[ui][text][dialog][popup]")
+{
+    TextEnvironment env("start", {260, 40}, TextBoxMode::SingleLine);
+    REQUIRE(env.window->SetVisible(true) == LWS::Result::Success);
+    for (unsigned i = 0; i < 500 && !env.window->IsConfigured(); ++i) env.Pump(2);
+    REQUIRE(env.window->IsConfigured());
+    env.Pump(20);
+    auto popup = std::make_unique<StackPanel>();
+    auto& field = popup->Emplace<TextBox>("valid");
+    REQUIRE(env.host->OpenPopup(*env.text, std::move(popup), {20, 100, 240, 80}, {}, true));
+    REQUIRE(env.host->Focus(&field));
+    REQUIRE(field.EditText("invalid")); field.SetValidation("Rejected");
+    unsigned selected = 0, cancelled = 0;
+    const auto open = [&]
+    {
+        REQUIRE(env.host->ShowDecisionBox(*env.host->Root(), "Decision", "Choose an action",
+            {{"Continue", [&]
+                {
+                    ++selected;
+                    REQUIRE(env.host->HasPopupWithin(*env.text));
+                    REQUIRE(env.host->IsFocused(field));
+                    REQUIRE(field.Text() == "invalid");
+                }}}, "Keep editing", [&] { ++cancelled; }));
+    };
+    open();
+    REQUIRE(env.Key(K::Escape)); env.host->Update();
+    REQUIRE(cancelled == 1); REQUIRE(selected == 0);
+    REQUIRE(env.host->HasPopupWithin(*env.text)); REQUIRE(env.host->IsFocused(field));
+    REQUIRE(field.Text() == "invalid");
+    env.host->ShowMessageBox(*env.host->Root(), "Information", "Cannot replace invalid popup");
+    REQUIRE(env.host->IsFocused(field)); REQUIRE(field.Text() == "invalid");
+    REQUIRE_FALSE(field.InputFeedback().empty());
+    open();
+    REQUIRE(env.Key(K::Tab, false, true));
+    REQUIRE(env.Key(K::Enter));
+    REQUIRE(selected == 0);
+    env.host->Update();
+    REQUIRE(selected == 1); REQUIRE(cancelled == 1);
+    REQUIRE(field.Text() == "invalid");
+}
+
+TEST_CASE("Draft-preserving actions obey mouse buttons capture and disabled ancestry", "[ui][text][input][regression]")
+{
+    TextEnvironment env("start", {260, 40}, TextBoxMode::SingleLine);
+    env.next->preserveEditOnFocus = env.next->allowDuringPopup = true;
+    unsigned clicks = 0;
+    auto clicked = env.next->OnClick.Connect([&] { ++clicks; });
+    const auto b = env.next->Bounds();
+    Input input{.kind = InputKind::Down, .x = b.x + 5, .y = b.y + 5, .button = LWS::MouseButton::Right};
+    env.host->Route(input); input.kind = InputKind::Up; env.host->Route(input);
+    REQUIRE(clicks == 0); env.host->CloseContextMenu();
+    const auto text = env.text->Bounds();
+    REQUIRE(env.host->Route({.kind = InputKind::Down, .x = text.x + 5, .y = text.y + 5}));
+    env.host->Route({.kind = InputKind::Up, .x = b.x + 5, .y = b.y + 5});
+    REQUIRE(clicks == 0);
+    env.host->Root()->SetEnabled(false);
+    env.host->Route({.kind = InputKind::Down, .x = b.x + 5, .y = b.y + 5});
+    env.host->Route({.kind = InputKind::Up, .x = b.x + 5, .y = b.y + 5});
+    REQUIRE(clicks == 0);
+    env.host->Root()->SetEnabled(true);
+    REQUIRE(env.host->Route({.kind = InputKind::Down, .x = b.x + 5, .y = b.y + 5}));
+    REQUIRE(env.host->Route({.kind = InputKind::Up, .x = b.x + 5, .y = b.y + 5}));
+    REQUIRE(clicks == 1);
+}
 #endif

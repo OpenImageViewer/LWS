@@ -65,6 +65,17 @@ namespace LWSUI
         InvalidEditPolicy DeparturePolicy(const Control& control) const;
         // Includes the subtree and its logically owned popup. Also supports detached controls.
         static std::vector<ValidationIssue> CollectValidationIssues(const Control& root);
+        void ShowMessageBox(Control& owner, std::string title, std::string message,
+                            std::function<void()> dismissed = {});
+        struct DecisionAction
+        {
+            std::string caption;
+            std::function<void()> selected;
+        };
+        // Suspends any popup and its draft until a decision is made.
+        bool ShowDecisionBox(Control& owner, std::string title, std::string message,
+                             std::vector<DecisionAction> actions, std::string cancelCaption,
+                             std::function<void()> cancelled = {});
         // Main menu. Docked bars sit in the window and shrink the root rect; a floating bar
         // is code-positioned and overlays the root. Dropdowns are popup windows owned by the
         // session. Every entry point closes any open menu first.
@@ -105,6 +116,9 @@ namespace LWSUI
         Control* HitInput(float x, float y) const;
         bool FinishDeparture(Control& control, EditPhase phase);
         void ShowBlockedDepartureFeedback(Control& control);
+        enum class DialogKind { Information, Decision };
+        bool ShowDialog(Control& owner, std::string title, std::string message, std::vector<DecisionAction> actions,
+                        std::string cancelCaption, std::function<void()> cancelled, DialogKind kind);
         bool PrepareDeparture(Control* next, EditPhase phase);
         bool RequestContextMenu(Input input, bool keyboard);
         bool RouteContextMenu(const Input&);
@@ -130,6 +144,7 @@ namespace LWSUI
         InvalidEditPolicy invalidEditPolicy_ = InvalidEditPolicy::KeepInvalid;
         bool suppressPointerRelease_ = false;
         bool popupModal_ = false, cursorApplied_ = false;
+        std::optional<DialogKind> dialogKind_;
         LWS::CursorShape cursorShape_ = LWS::CursorShape::Arrow;
         std::vector<std::pair<ControlHandle, std::function<void(Control&)>>> deferred_;
         std::unique_ptr<internal::MenuSession> menuSession_;

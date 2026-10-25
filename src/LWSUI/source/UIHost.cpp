@@ -53,6 +53,7 @@ namespace LWSUI
         CloseMainMenu();
         menuSession_.reset();
         CloseContextMenu();
+        if (dialogKind_ == DialogKind::Decision) ClosePopup(EditPhase::Cancel);
         popupClosed_ = {};
         popupOwner_ = {};
         if (popup_)
@@ -65,7 +66,9 @@ namespace LWSUI
     void UIHost::SetRoot(std::unique_ptr<Control> root)
     {
         CloseMainMenu();
+        const bool decision = dialogKind_ == DialogKind::Decision;
         ClosePopup(EditPhase::Cancel);
+        if (decision) ClosePopup(EditPhase::Cancel);
         if (root_)
         {
             root_->Finish(EditPhase::Cancel);
@@ -580,9 +583,154 @@ namespace LWSUI
         Invalidate(true);
         return true;
     }
-
-
-
+    void UIHost::ShowMessageBox(Control& owner, std::string title, std::string message,
+                                std::function<void()> dismissed)
+    {
+        // Informational messages leave invalid popup edits in place with inline feedback.
+        if (popup_ && !CollectValidationIssues(*popup_).empty())
+        {
+            ShowBlockedDepartureFeedback(*popup_);
+            if (blockedDepartureField_) Focus(blockedDepartureField_.Get());
+            return;
+        }
+        ShowDialog(owner, std::move(title), std::move(message), {}, "OK", std::move(dismissed), DialogKind::Information);
+    }
+    bool UIHost::ShowDecisionBox(Control& owner, std::string title, std::string message,
+                                 std::vector<DecisionAction> actions, std::string cancelCaption,
+                                 std::function<void()> cancelled)
+    {
+        return ShowDialog(owner, std::move(title), std::move(message), std::move(actions),
+                          std::move(cancelCaption), std::move(cancelled), DialogKind::Decision);
+    }
+    bool UIHost::ShowDialog(Control& owner, std::string title, std::string message,
+                            std::vector<DecisionAction> actions, std::string cancelCaption,
+                            std::function<void()> cancelled, DialogKind kind)
+    {
+        if (owner.Host() != this || dialogKind_) return false;
+        if (kind == DialogKind::Information)
+        {
+            ClosePopup();
+            if (popup_) return false;
+        }
+        struct Suspended
+        {
+            std::unique_ptr<Control> popup;
+            ControlHandle owner, focus;
+            Rect bounds;
+            std::function<void(EditPhase)> closed;
+            bool modal = false;
+            std::function<void()> selected;
+        };
+        auto state = std::make_shared<Suspended>();
+        class MessageDialog final : public Panel
+        {
+          public:
+            Button* cancel = nullptr;
+            std::vector<LWSUI::Event<void()>::Connection> clicks;
+            MessageDialog(std::string title, std::string message, std::vector<DecisionAction> actions,
+                           std::string cancelCaption, std::shared_ptr<Suspended> state, DialogKind kind)
+                : kind_(kind)
+            {
+                padding = {16, 16, 16, 16};
+                border = {1, 1, 1, 1};
+                auto layout = std::make_unique<DockPanel>();
+                layout->gap = 12;
+                auto heading = std::make_unique<Label>(std::move(title));
+                heading->fontRole = FontRole::Heading;
+                if (kind == DialogKind::Decision)
+                {
+                    auto titleRow = std::make_unique<DockPanel>();
+                    auto close = std::make_unique<Button>("X");
+                    close->sizeToContent = true;
+                    clicks.push_back(close->OnClick.Connect([this] { Host()->ClosePopup(EditPhase::Cancel); }));
+                    titleRow->AddDocked(std::move(close), Dock::Right);
+                    titleRow->AddDocked(std::move(heading), Dock::Fill);
+                    layout->AddDocked(std::move(titleRow), Dock::Top);
+                }
+                else layout->AddDocked(std::move(heading), Dock::Top);
+                auto buttons = std::make_unique<StackPanel>();
+                for (auto& action : actions)
+                {
+                    auto& button = buttons->Emplace<Button>(std::move(action.caption));
+                    clicks.push_back(button.OnClick.Connect([this, state, selected = std::move(action.selected)]
+                    {
+                        state->selected = selected;
+                        Host()->ClosePopup(EditPhase::Cancel);
+                    }));
+                }
+                cancel = &buttons->Emplace<Button>(std::move(cancelCaption));
+                clicks.push_back(cancel->OnClick.Connect([this] { Host()->ClosePopup(EditPhase::Cancel); }));
+                layout->AddDocked(std::move(buttons), Dock::Bottom);
+                auto scroll = std::make_unique<ScrollView>();
+                auto body = std::make_unique<Label>(std::move(message));
+                body->wrap = true;
+                scroll->SetContent(std::move(body));
+                layout->AddDocked(std::move(scroll), Dock::Fill);
+                SetContent(std::move(layout));
+            }
+          protected:
+            bool OnPreviewInput(const Input& input) override
+            {
+                if (kind_ == DialogKind::Information && input.kind == InputKind::KeyDown &&
+                    input.key == LWS::KeyCode::Enter)
+                {
+                    Host()->ClosePopup(EditPhase::Cancel);
+                    return true;
+                }
+                return Panel::OnPreviewInput(input);
+            }
+          private:
+            DialogKind kind_;
+        };
+        auto dialog = std::make_unique<MessageDialog>(std::move(title), std::move(message),
+                                                      std::move(actions), std::move(cancelCaption), state, kind);
+        auto* cancel = dialog->cancel;
+        state->popup = std::move(popup_);
+        state->owner = popupOwner_;
+        state->focus = focus_;
+        if (kind == DialogKind::Information && focus_) focus_.Get()->Dispatch({InputKind::Blur});
+        state->bounds = popupBounds_;
+        state->closed = std::move(popupClosed_);
+        state->modal = popupModal_;
+        popupOwner_ = {};
+        focus_ = {};
+        const auto restore = [this, state, kind]
+        {
+            dialogKind_.reset();
+            popup_ = std::move(state->popup);
+            popupOwner_ = state->owner;
+            popupBounds_ = state->bounds;
+            popupClosed_ = std::move(state->closed);
+            popupModal_ = state->modal;
+            focus_ = kind == DialogKind::Information ? ControlHandle{} : state->focus;
+            if (auto* control = focus_.Get()) control->Dispatch({InputKind::Focus});
+            Invalidate(true);
+        };
+        const auto size = window_.GetClientAreaMetrics().logical;
+        const float width = std::min(kind == DialogKind::Decision ? 560.f : 520.f, float(size.x));
+        const float height = std::min(kind == DialogKind::Decision ? 420.f : 320.f, float(size.y));
+        const auto handle = owner.Handle();
+        if (!OpenPopup(owner, std::move(dialog), {(size.x - width) / 2, (size.y - height) / 2, width, height},
+                       [this, state, restore, handle, kind, cancelled = std::move(cancelled)](EditPhase)
+                       {
+                           restore();
+                           auto callback = state->selected ? std::move(state->selected) : cancelled;
+                           if (kind == DialogKind::Information)
+                           {
+                               focus_ = {};
+                               if (callback) callback();
+                               if (!focus_ && state->focus) Focus(state->focus.Get());
+                           }
+                           else if (callback) Post(handle, [callback = std::move(callback)](Control&) { callback(); });
+                       }, true))
+        {
+            restore();
+            return false;
+        }
+        dialogKind_ = kind;
+        Focus(cancel);
+        return true;
+    }
     void UIHost::ClosePopup(EditPhase phase)
     {
         CloseContextMenu();
