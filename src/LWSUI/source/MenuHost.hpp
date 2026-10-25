@@ -114,6 +114,8 @@ namespace LWSUI::internal
         std::optional<Size> InstallPanel(Level& level, const std::vector<MenuItem>& items, bool first);
         bool KeyDown(const Input& input);
         bool PointerInput(const Input& input);
+        bool WindowInput(const Input& input);
+        void ActivateWindowAction(MenuWindowAction action, bool captionDoubleClick = false);
         bool Mnemonic(char key);
         void Activate();
         void MoveHot(int step);
@@ -151,5 +153,12 @@ namespace LWSUI::internal
     struct MenuSessionAccess
     {
         static MenuSession& Get(UIHost& host);
+        static Rect WindowButtonBounds(MenuBar& bar, MenuWindowAction action) { return bar.WindowButtonRect(action); }
+        static Rect DragBounds(MenuBar& bar) { return bar.WindowDragArea(); }
+        static bool HitDrag(MenuBar& bar, float x, float y) { return bar.HitWindowDrag(x, y); }
+        static bool WindowButtonEnabled(MenuBar& bar, MenuWindowAction action)
+        {
+            return bar.WindowButtonEnabled(action);
+        }
     };
 }  // namespace LWSUI::internal

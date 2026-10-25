@@ -65,18 +65,6 @@ namespace LWSUI
         item.separator = true;
         return item;
     }
-
-
-
-
-
-
-
-
-
-
-
-
     void MenuBar::SetItems(std::vector<MenuBarItem> items)
     {
         if (auto* host = Host())
@@ -104,10 +92,7 @@ namespace LWSUI
     }
     float MenuBar::NaturalSpan() const
     {
-        float span = 0;
-        for (size_t index = 0; index < items_.size(); ++index)
-            span += ItemExtent(index);
-        return span;
+        return ItemsSpan() + WindowControlsSpan();
     }
     float MenuBar::Thickness() const
     {
@@ -132,32 +117,66 @@ namespace LWSUI
         span = std::clamp(span, 0.f, limit);
         return horizontal ? Size{span, Thickness()} : Size{Thickness(), span};
     }
-    std::vector<Rect> MenuBar::ItemRects() const
+    MenuBar::Layout MenuBar::CalculateLayout() const
     {
+        Layout layout;
+        const auto b = Bounds();
         const bool horizontal = orientation == Orientation::Horizontal;
-        const auto bounds = Bounds();
-        std::vector<Rect> rects;
-        rects.reserve(items_.size());
-        float position = horizontal ? bounds.x : bounds.y;
-        for (size_t index = 0; index < items_.size(); ++index)
+        const float icon = 0;
+        layout.icon = horizontal ? Rect{b.x, b.y, std::min(b.width, icon), b.height}
+                                 : Rect{b.x, b.y, b.width, std::min(b.height, icon)};
+        float right = b.x + b.width;
+        const float naturalButton = std::max(Style().menuBarHeight, Font().size * 2);
+        size_t count = 0;
+        for (size_t i = 0; i < layout.buttons.size(); ++i)
+            count += HasWindowButton(WindowAction(i));
+        const float buttonWidth = count ? std::min(naturalButton, b.width / float(count)) : 0;
+        for (size_t i = layout.buttons.size(); i-- > 0;)
+            if (HasWindowButton(WindowAction(i)))
+            {
+                right -= buttonWidth;
+                layout.buttons[i] = {right, b.y, buttonWidth, b.height};
+            }
+        // Combined-content bars keep their current minimum policy; a guaranteed drag strip is deferred.
+        layout.itemsArea = b;
+        if (horizontal)
         {
-            const float extent = ItemExtent(index);
-            rects.push_back(horizontal ? Rect{position, bounds.y, extent, bounds.height}
-                                       : Rect{bounds.x, position, bounds.width, extent});
+            layout.itemsArea.x += std::min(b.width, icon);
+            const float itemRight = right;
+            layout.itemsArea.width = std::max(0.f, itemRight - layout.itemsArea.x - std::min(DragSpan(), right - b.x));
+        }
+        else
+        {
+            layout.itemsArea.y += std::min(b.height, icon);
+            layout.itemsArea.height = std::max(0.f, b.height - icon);
+        }
+        float position = (horizontal ? b.x : b.y) + icon;
+        layout.items.reserve(items_.size());
+        const bool clipItems = horizontal && (WindowControlsSpan() > 0);
+        for (size_t i = 0; i < items_.size(); ++i)
+        {
+            const float extent = ItemExtent(i);
+            auto item = horizontal ? Rect{position, b.y, extent, b.height} : Rect{b.x, position, b.width, extent};
+            if (clipItems)
+                item.width = std::max(0.f, std::min(extent, layout.itemsArea.x + layout.itemsArea.width - position));
+            layout.items.push_back(item);
             position += extent;
         }
-        return rects;
+
+        const float end = std::min(position, layout.itemsArea.x + layout.itemsArea.width);
+        layout.drag = {end, b.y, std::max(0.f, right - end), b.height};
+        return layout;
     }
     Rect MenuBar::ItemRect(size_t index) const
     {
-        const auto rects = ItemRects();
+        const auto rects = CalculateLayout().items;
         return index < rects.size() ? rects[index] : Rect{};
     }
     size_t MenuBar::HitItem(float x, float y) const
     {
         if (!Bounds().Contains(x, y))
             return NoItem;
-        const auto rects = ItemRects();
+        const auto rects = CalculateLayout().items;
         for (size_t index = 0; index < rects.size(); ++index)
             if (rects[index].Contains(x, y))
                 return index;
@@ -167,6 +186,7 @@ namespace LWSUI
     {
         const auto bounds = Bounds();
         const auto& style = Style();
+        const auto layout = CalculateLayout();
         canvas.Fill(bounds.x, bounds.y, bounds.width, bounds.height, style.surface);
         if (floating)
         {
@@ -177,36 +197,53 @@ namespace LWSUI
             canvas.Line(bounds.x + bounds.width, bounds.y, bounds.x + bounds.width, bounds.y + bounds.height,
                         style.borderWidth, style.line);
         }
-        const auto rects = ItemRects();
-        for (size_t index = 0; index < items_.size() && index < rects.size(); ++index)
         {
-            const auto& item = items_[index];
-            const auto& rect = rects[index];
-            const bool highlighted = int(index) == hot;
-            if (highlighted)
-                canvas.Fill(rect.x, rect.y, rect.width, rect.height, style.selection);
-            const auto mnemonic = ParseMnemonic(item.label);
-            const auto color = !item.enabled  ? style.muted
-                               : highlighted ? style.selectionForeground
-                                             : style.foreground;
-            const float width = TextWidth(mnemonic.label);
-            const float height = TextHeight(mnemonic.label);
-            const float x = rect.x + (rect.width - width) / 2;
-            const float y = rect.y + (rect.height - height) / 2;
-            DrawText(canvas, mnemonic.label, x, y, std::max(1.f, width), height, color, false, false);
-            if (mnemonic.index != kNoIndex)
+            const auto area = layout.itemsArea;
+            Canvas::ClipScope clip(canvas, area.x, area.y, area.width, area.height);
+            const auto& rects = layout.items;
+            for (size_t index = 0; index < items_.size() && index < rects.size(); ++index)
             {
-                const float start = x + TextWidth(mnemonic.label.substr(0, mnemonic.index));
-                const float end = start + TextWidth(mnemonic.label.substr(mnemonic.index, 1));
-                canvas.Line(start, y + height - style.borderWidth, end, y + height - style.borderWidth,
-                            style.borderWidth, color);
+                const auto& item = items_[index];
+                const auto& rect = rects[index];
+                const bool highlighted = int(index) == hot;
+                if (highlighted)
+                    canvas.Fill(rect.x, rect.y, rect.width, rect.height, style.selection);
+                const auto mnemonic = ParseMnemonic(item.label);
+                const auto color = !item.enabled ? style.muted
+                                   : highlighted ? style.selectionForeground
+                                                 : style.foreground;
+                const float width = TextWidth(mnemonic.label);
+                const float height = TextHeight(mnemonic.label);
+                const float x = rect.x + (rect.width - width) / 2;
+                const float y = rect.y + (rect.height - height) / 2;
+                DrawText(canvas, mnemonic.label, x, y, std::max(1.f, width), height, color, false, false);
+                if (mnemonic.index != kNoIndex)
+                {
+                    const float start = x + TextWidth(mnemonic.label.substr(0, mnemonic.index));
+                    const float end = start + TextWidth(mnemonic.label.substr(mnemonic.index, 1));
+                    canvas.Line(start, y + height - style.borderWidth, end, y + height - style.borderWidth,
+                                style.borderWidth, color);
+                }
             }
         }
+        RenderWindowControls(canvas, layout);
     }
-    bool MenuBar::OnInput(const Input&)
+    bool MenuBar::OnInput(const Input& input)
     {
-        // Interaction is owned by the menu session; the bar only renders state set through `hot`.
+        if (input.kind == InputKind::Cancel || input.kind == InputKind::Blur)
+        {
+            ClearWindowPress();
+            return true;
+        }
+        // Ordinary interaction is owned by the menu session.
         return false;
+    }
+    float MenuBar::ItemsSpan() const
+    {
+        float span = 0;
+        for (size_t i = 0; i < items_.size(); ++i)
+            span += ItemExtent(i);
+        return span;
     }
     namespace internal
     {
@@ -510,7 +547,11 @@ namespace LWSUI
         {
             hot_ = index;
             auto* bar = host_.MainMenu();
-
+            if (bar && bar->windowFocus_)
+            {
+                bar->windowFocus_.reset();
+                bar->Invalidate();
+            }
             if (bar && bar->hot != index)
             {
                 bar->hot = index;
@@ -677,8 +718,8 @@ namespace LWSUI
             auto* bar = host_.MainMenu();
             if (!bar)
                 return;
-            const int menus = int(bar->Items().size()), count = menus;
-            int index = hot_;
+            const int menus = int(bar->Items().size()), count = menus + 3;
+            int index = bar->windowFocus_ ? menus + int(*bar->windowFocus_) : hot_;
             if (index < 0)
                 index = step > 0 ? count - 1 : 0;
             for (int n = 0; n < count; ++n)
@@ -692,7 +733,13 @@ namespace LWSUI
                         return;
                     }
                 }
-
+                else if (bar->WindowButtonEnabled(MenuWindowAction(index - menus)))
+                {
+                    SetHot(-1);
+                    bar->windowFocus_ = MenuWindowAction(index - menus);
+                    bar->Invalidate();
+                    return;
+                }
             }
         }
         void MenuSession::OpenSubmenu(size_t level, size_t row)
@@ -815,6 +862,8 @@ namespace LWSUI
         }
         void MenuSession::Close()
         {
+            if (auto* bar = host_.MainMenu())
+                bar->ClearWindowPress();
             CancelHover();
             active_ = false;
             menuUsed_ = false;
@@ -832,7 +881,7 @@ namespace LWSUI
             orientationAtOpen_ = bar->orientation;
             SetHot(-1);
             MoveHot(1);
-            if (hot_ < 0)
+            if (hot_ < 0 && !bar->windowFocus_)
                 active_ = false;
             host_.Invalidate();
         }
@@ -912,7 +961,11 @@ namespace LWSUI
                 }
                 else if (input.key == K::Enter || input.key == K::Space)
                 {
-
+                    if (bar && bar->windowFocus_)
+                    {
+                        ActivateWindowAction(*bar->windowFocus_);
+                        return true;
+                    }
                     if (hot_ >= 0)
                         OpenTopMenu(size_t(hot_), true);
                 }
@@ -1018,7 +1071,11 @@ namespace LWSUI
         }
         void MenuSession::LeaveBar()
         {
-
+            if (auto* bar = host_.MainMenu(); bar && bar->windowHover_)
+            {
+                bar->windowHover_.reset();
+                bar->Invalidate();
+            }
             if (!active_ && levels_.empty())
                 SetHot(-1);
         }
@@ -1036,7 +1093,11 @@ namespace LWSUI
                 Close();
             if (input.kind == InputKind::KeyDown)
             {
-
+                if (input.key == LWS::KeyCode::Escape && bar->windowPressed_)
+                {
+                    Close();
+                    return true;
+                }
                 return KeyDown(input);
             }
             if (input.kind == InputKind::KeyUp)
@@ -1059,7 +1120,7 @@ namespace LWSUI
                 return Mnemonic(*character);
             }
 
-            return PointerInput(input);
+            return WindowInput(input) || PointerInput(input);
         }
         void MenuSession::FocusLost()
         {

@@ -794,6 +794,12 @@ namespace LWSUI
             CloseMainMenu();
             return false;
         }
+        if (std::holds_alternative<LWS::EventShowStateChanged>(event))
+        {
+            CloseMainMenu();
+            Invalidate();
+            return false;
+        }
         if (std::holds_alternative<LWS::EventPaint>(event))
         {
             Invalidate();
@@ -831,6 +837,8 @@ namespace LWSUI
         }
         if (std::holds_alternative<LWS::EventMouseLeave>(event))
         {
+            if (menuSession_)
+                menuSession_->LeaveBar();
             Hover(nullptr);
             return false;
         }

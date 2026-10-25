@@ -1,11 +1,33 @@
 #pragma once
 #include <LWSUI/Control.hpp>
+#include <array>
 #include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 namespace LWSUI
 {
+    namespace internal
+    {
+        class MenuSession;
+        struct MenuSessionAccess;
+        enum class MenuWindowAction
+        {
+            Minimize,
+            Maximize,
+            Close
+        };
+    }  // namespace internal
+    /// Optional caption replacement for horizontal Top/Bottom bars on top-level windows.
+    /// Close is shown only when requestClose is supplied. Button actions run outside input dispatch;
+    /// the callback may quit, hide the window, or decline the request. Wayland minimize is disabled.
+    struct MenuBarWindowControls
+    {
+        bool minimize = false, maximize = false, draggable = false;
+        std::function<void()> requestClose;
+        // Explicit opt-in, independent of native caption styles, dragging, and visible buttons.
+        bool doubleClickMaximize = false;
+    };
     enum class MenuDock
     {
         Floating,
@@ -47,24 +69,30 @@ namespace LWSUI
         bool stretch = false;
         /// Draw a frame around the bar; set by the host for the floating dock.
         bool floating = false;
-        /// Explicit main-axis span; 0 keeps the natural span or the docked fill.
+        /// Explicit width when horizontal or height when vertical. 0 uses the natural span or docked fill.
+        /// Min/max bounds apply afterward, and available space takes precedence.
         void SetSpan(float span)
         {
             span_ = std::max(0.f, span);
             Invalidate(true);
         }
         float Span() const { return span_; }
+        /// Minimum span along the current orientation. 0 disables the bound. Available space takes precedence.
         void SetMinSpan(float span)
         {
             minSpan_ = std::max(0.f, span);
             Invalidate(true);
         }
+        /// Maximum span along the current orientation. 0 disables the bound. Available space takes precedence.
         void SetMaxSpan(float span)
         {
             maxSpan_ = std::max(0.f, span);
             Invalidate(true);
         }
+        // Content is active in horizontal Top/Bottom bars. Structural replacements must be deferred from callbacks.
         void SetItems(std::vector<MenuBarItem> items);
+        void SetWindowControls(MenuBarWindowControls controls);
+        const MenuBarWindowControls& WindowControls() const { return windowControls_; }
         const std::vector<MenuBarItem>& Items() const { return items_; }
         /// Cross-axis thickness for the current orientation.
         float Thickness() const;
@@ -81,10 +109,39 @@ namespace LWSUI
         Size OnMeasure(Size available) override;
         void OnRender(Canvas&) override;
         bool OnInput(const Input&) override;
+        void OnArrange() override;
 
       private:
 
-        std::vector<Rect> ItemRects() const;
+        struct Layout
+        {
+            Rect icon, itemsArea, content, drag;
+            std::array<Rect, 3> buttons{};
+            std::vector<Rect> items;
+        };
+        Layout CalculateLayout() const;
+        friend class UIHost;
+        float ItemsSpan() const;
+        friend class internal::MenuSession;
+        friend struct internal::MenuSessionAccess;
+        using WindowAction = internal::MenuWindowAction;
+        bool WindowControlsAvailable() const;
+        bool HasWindowButton(WindowAction action) const;
+        bool WindowButtonEnabled(WindowAction action) const;
+        Rect WindowButtonRect(WindowAction action) const;
+        std::optional<WindowAction> HitWindowButton(float x, float y) const;
+        Rect WindowDragArea() const;
+        bool HitWindowDrag(float x, float y) const;
+        bool HitCaption(float x, float y) const;
+        bool DoubleClickMaximizeAvailable() const;
+        float WindowButtonsSpan() const;
+        float DragSpan() const;
+        float WindowControlsSpan() const;
+        void RenderWindowControls(Canvas& canvas, const Layout& layout);
+        void ClearWindowPress();
+        MenuBarWindowControls windowControls_;
+        std::optional<WindowAction> windowHover_, windowPressed_, windowFocus_;
+        Rect windowPressBounds_{};
         float ItemExtent(size_t index) const;
         float TextWidth(std::string_view text) const;
         float TextHeight(std::string_view text) const;
