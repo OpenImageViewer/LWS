@@ -1,4 +1,5 @@
 #ifdef LWS_TEST_UI
+#include "source/MenuRows.hpp"
 #include <LWSUI/internal/NumericMath.hpp>
 #include <LWSUI/Composites.hpp>
 #include <catch2/catch_approx.hpp>
@@ -233,5 +234,39 @@ TEST_CASE("Shared numeric stepping saturates without losing integer or decimal p
     const NumericSpec<double> tiny{0., 1., 1e-6};
     REQUIRE(internal::StepNumericValue(0., tiny, 1, 100) == .0001);
     REQUIRE(std::isfinite(internal::RoundNumericValue(1e300, 1e300, 324)));
+}
+
+
+namespace
+{
+    class MenuTestRow final : public Control
+    {
+      protected:
+
+        Size OnMeasure(Size available) override { return {available.width, 30}; }
+    };
+}
+TEST_CASE("Menu reveal uses measured rows and preserves spacing before relayout", "[ui][reuse][menu]")
+{
+    ScrollView scroll;
+    auto content = std::make_unique<StackPanel>();
+    auto* rows = content.get();
+    rows->spacing = 7;
+    for (int i = 0; i < 3; ++i)
+        rows->Emplace<MenuTestRow>();
+    scroll.SetContent(std::move(content));
+    scroll.Measure({100, 50});
+    scroll.Arrange({0, 0, 100, 50});
+    internal::RevealMenuRow(scroll, rows->Children(), 1, rows->spacing);
+    REQUIRE(scroll.Offset() == 17);
+    internal::RevealMenuRow(scroll, rows->Children(), 2, rows->spacing);
+    REQUIRE(scroll.Offset() == 54);
+    internal::RevealMenuRow(scroll, rows->Children(), 0, rows->spacing);
+    REQUIRE(scroll.Offset() == 0);
+    REQUIRE(internal::NextMenuRow(3, 0, 1, [](size_t i) { return i != 1; }) == 2);
+    REQUIRE(internal::NextMenuRow(3, 0, -1, [](size_t) { return true; }) == 2);
+    REQUIRE(internal::NextMenuRow(3, 2, 1, [](size_t) { return true; }) == 0);
+    REQUIRE_FALSE(internal::NextMenuRow(3, 0, 1, [](size_t) { return false; }));
+    REQUIRE_FALSE(internal::NextMenuRow(0, 0, 1, [](size_t) { return true; }));
 }
 #endif

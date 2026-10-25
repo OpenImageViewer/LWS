@@ -1,5 +1,6 @@
 #pragma once
 #include <LWSUI/NumericSpec.hpp>
+#include <LWSUI/Choice.hpp>
 #include <LWSUI/internal/NumericMath.hpp>
 #include <LWSUI/Containers.hpp>
 #include <LWSUI/UIHost.hpp>
@@ -12,6 +13,60 @@
 #include <stdexcept>
 namespace LWSUI
 {
+    class RadioGroup : public StackPanel
+    {
+      public:
+
+        explicit RadioGroup(std::vector<Choice> choices);
+        void SetValue(std::string value);
+        const std::string& Value() const { return value_; }
+        LWSUI::Event<void(const std::string&)> OnChange;
+
+      protected:
+
+        Size OnMeasure(Size available) override
+        {
+            spacing = Style().spacing;
+            return StackPanel::OnMeasure(available);
+        }
+
+        bool OnInput(const Input&) override;
+
+      private:
+
+        // Child roles are owned by this composite.
+        using Container::Add;
+        using Container::Clear;
+        using Container::Emplace;
+        using Container::Remove;
+
+        std::vector<Choice> choices_;
+        std::string value_;
+        std::vector<RadioButton*> buttons_;
+        std::vector<LWSUI::Event<void(bool)>::Connection> connections_;
+    };
+    class ComboBox : public Button
+    {
+      public:
+
+        explicit ComboBox(std::vector<Choice> choices);
+        void SetValue(std::string value);
+        const std::string& Value() const { return value_; }
+        LWSUI::Event<void(const std::string&)> OnChange;
+
+      protected:
+
+        void Activate() override;
+        void OnRender(Canvas&) override;
+        bool OnInput(const Input&) override;
+
+      private:
+
+        std::vector<Choice> choices_;
+        std::string value_;
+        std::vector<LWSUI::Event<void()>::Connection> choicesConnections_;
+    };
+
     template <class T>
     class NumericEdit : public Container
     {

@@ -1,6 +1,7 @@
 #pragma once
 #include <LWSUI/Containers.hpp>
 #include <LWSUI/UIHost.hpp>
+#include "MenuRows.hpp"
 namespace LWSUI::internal
 {
     // One flat command overlay. Submenus and a global command registry are deliberately deferred.
@@ -30,7 +31,7 @@ namespace LWSUI::internal
                 const float p = s.menuPadding;
                 if (item_.separator)
                 {
-                    canvas.Fill(b.x + p, b.y + b.height / 2, std::max(0.f, b.width - 2 * p), s.borderWidth, s.line);
+                    RenderMenuSeparator(*this, canvas);
                     return;
                 }
                 if (active)
@@ -38,11 +39,7 @@ namespace LWSUI::internal
                 const auto color = item_.enabled && item_.action ? s.foreground : s.muted;
                 const float mark = checks_ ? Font().size + p : 0;
                 if (item_.checked.value_or(false))
-                {
-                    const float x = b.x + p, y = b.y + b.height / 2, unit = Font().size;
-                    canvas.Line(x, y, x + unit * .3f, y + unit * .25f, s.borderWidth, color);
-                    canvas.Line(x + unit * .3f, y + unit * .25f, x + unit * .75f, y - unit * .3f, s.borderWidth, color);
-                }
+                    RenderMenuCheck(*this, canvas, color);
                 const float labelWidth = LabelWidth(b.width);
                 canvas.Text(item_.label, b.x + p + mark, b.y + p, labelWidth, b.height - 2 * p, color, Font(), true);
                 const float hint = HintWidth(b.width);
@@ -53,13 +50,7 @@ namespace LWSUI::internal
 
           private:
 
-            float HintWidth(float width) const
-            {
-                return item_.shortcut.empty()
-                           ? 0
-                           : std::min(std::max(0.f, width * .4f),
-                                      Host()->MeasureText(item_.shortcut, 10000, false, Font()).width);
-            }
+            float HintWidth(float width) const { return MenuHintWidth(*this, item_.shortcut, width); }
             float LabelWidth(float width) const
             {
                 const float p = Style().menuPadding, hint = HintWidth(width);
@@ -167,33 +158,13 @@ namespace LWSUI::internal
         std::optional<size_t> First() const { return Next(items_.size() - 1, 1); }
         std::optional<size_t> Next(size_t index, int step) const
         {
-            for (size_t n = 0; n < items_.size(); ++n)
-            {
-                index = (index + items_.size() + step) % items_.size();
-                if (Selectable(index))
-                    return index;
-            }
-            return {};
+            return NextMenuRow(items_.size(), index, step, [this](size_t row) { return Selectable(row); });
         }
         void Select(std::optional<size_t> index, bool reveal = true)
         {
-            if (active_ != index)
-            {
-                if (active_)
-                    rows_[*active_]->active = false;
-                active_ = index;
-                if (active_)
-                    rows_[*active_]->active = true;
-                Invalidate();
-            }
-            if (reveal && active_ && Bounds().height > 0)
-            {
-                const auto b = rows_[*active_]->Bounds();
-                if (b.y < Bounds().y)
-                    SetOffset(Offset() + b.y - Bounds().y);
-                else if (b.y + b.height > Bounds().y + Bounds().height)
-                    SetOffset(Offset() + b.y + b.height - Bounds().y - Bounds().height);
-            }
+            SelectMenuRow(*this, rows_, active_, index);
+            if (reveal)
+                RevealMenuRow(*this, rows_, active_);
         }
         std::vector<ContextMenuItem> items_;
         std::vector<Row*> rows_;
