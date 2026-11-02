@@ -102,6 +102,7 @@ namespace LWSUI
             OnEdit.Raise(value_, phase);
         }
         bool Finish(EditPhase phase) override { return number_->Finish(phase); }
+        bool HasActiveEdit() const override { return number_->HasActiveEdit(); }
         void Step(int direction, int count) override
         {
             if (!number_->Finish(EditPhase::Commit))

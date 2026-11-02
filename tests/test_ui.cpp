@@ -1741,4 +1741,51 @@ TEST_CASE("Content-sized multiline text uses its enclosing viewport", "[ui][text
     host.Update();
     REQUIRE(text.Text() == content);
 }
+TEST_CASE("Unhandled keys follow controls and overlays", "[ui][keyboard]")
+{
+    using namespace LWSUI;
+    MenuEnvironment env;
+    auto root = std::make_unique<StackPanel>();
+    auto& text = root->Emplace<TextBox>("start");
+    auto& slider = root->Emplace<Slider>();
+    auto& value = slider.ConfigureValue<int>({0, 100, 1}, 5);
+    auto& owner = root->Emplace<Button>("Popup");
+    env.host().SetRoot(std::move(root));
+    env.host().Update();
+    unsigned keys = 0;
+    auto event = env.host().OnUnhandledKeyDown.Connect([&](const Input& input, bool& handled)
+    {
+        REQUIRE(input.kind == InputKind::KeyDown);
+        REQUIRE(input.key == LWS::KeyCode::Escape);
+        ++keys;
+        handled = true;
+    });
+    const Input escape{.kind = InputKind::KeyDown, .key = LWS::KeyCode::Escape};
+    REQUIRE(env.host().Focus(&text));
+    REQUIRE(env.host().Route(escape));
+    REQUIRE(keys == 1);
+    REQUIRE(text.EditText("changed"));
+    REQUIRE(env.host().Route(escape));
+    REQUIRE(text.Text() == "start");
+    REQUIRE(keys == 1);
+    REQUIRE(env.host().Focus(&slider));
+    REQUIRE(env.host().Route(escape));
+    REQUIRE(keys == 2);
+    auto* number = dynamic_cast<NumericEdit<int>*>(slider.ValueField());
+    REQUIRE(number);
+    auto& field = static_cast<TextBox&>(number->FocusTarget());
+    REQUIRE(env.host().Focus(&field));
+    REQUIRE(field.EditText("12"));
+    REQUIRE(env.host().Route(escape));
+    REQUIRE(value.Value() == 5);
+    REQUIRE(keys == 2);
+    REQUIRE(env.host().OpenPopup(owner, std::make_unique<Button>("Content"), {0, 0, 200, 100}));
+    REQUIRE(env.host().Route(escape));
+    REQUIRE_FALSE(env.host().HasPopup());
+    REQUIRE(keys == 2);
+    event.Disconnect();
+    REQUIRE(env.host().Focus(&slider));
+    REQUIRE_FALSE(env.host().Route(escape));
+}
+
 #endif

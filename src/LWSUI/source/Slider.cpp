@@ -127,8 +127,13 @@ namespace LWSUI
         }
         if (e.kind == InputKind::Up)
             return Finish(EditPhase::Commit);
-        if (e.kind == InputKind::Cancel || (e.kind == InputKind::KeyDown && e.key == LWS::KeyCode::Escape))
+        if (e.kind == InputKind::Cancel)
             return Finish(EditPhase::Cancel);
+        if (e.kind == InputKind::KeyDown && e.key == LWS::KeyCode::Escape)
+        {
+            if (!dragging_ && (!valueBinding_ || !valueBinding_->HasActiveEdit())) return false;
+            return Finish(EditPhase::Cancel);
+        }
         if (e.kind == InputKind::KeyDown && (e.key == LWS::KeyCode::Left || e.key == LWS::KeyCode::Right))
         {
             const int direction = e.key == LWS::KeyCode::Left ? -1 : 1, count = e.shift ? 10 : 1;

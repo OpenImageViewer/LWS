@@ -388,6 +388,11 @@ space remaining after other controls have been allocated.
 
 ### Host lifetime and platform services
 
+`UIHost::OnUnhandledKeyDown` reports key presses after menus, popups and controls
+have had a chance to handle them. A listener may mark a key handled. Idle text
+fields and sliders now leave Escape unhandled so applications can assign it an action.
+Active edits and gestures still consume Escape to cancel their work.
+
 UIHost coalesces deferred work, layout and painting through PlatformContext::PostTask.
 Numeric holds arm their own timers; idle hosts have no periodic tick or tree traversal.
 Wayland timers use timerfd in the context wait loop, and clipboard transfers wait on

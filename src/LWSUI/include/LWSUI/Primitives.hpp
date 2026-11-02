@@ -262,6 +262,11 @@ namespace LWSUI
             return !requiresCompletion || MaskComplete() ? std::string{} : "Complete all mask fields";
         }
         bool HasInvalidDraft() const { return editing_ && !ValidationError().empty(); }
+        bool HasActiveEdit() const
+        {
+            return editing_ || selecting_ || !inputError_.empty() ||
+                   (pendingPasteGeneration_ != 0 && pendingPasteGeneration_ == pasteGeneration_);
+        }
         bool Focusable() const override { return true; }
         bool Finish(EditPhase phase) override;
         // Preview may reject a draft by setting validation. Silent SetText resets the edit.
@@ -324,7 +329,7 @@ namespace LWSUI
         std::optional<internal::InputMask> mask_;
         std::optional<internal::DynamicMask> dynamicMask_;
         size_t caret_ = 0, anchor_ = 0;
-        uint64_t pasteGeneration_ = 0;
+        uint64_t pasteGeneration_ = 0, pendingPasteGeneration_ = 0;
         float scroll_ = 0;
         bool editing_ = false, selecting_ = false, readOnly_ = false, borderless_ = false, focusOutline_ = false;
         // Host text metrics are refreshed on text/font changes, independently of paint.
@@ -353,6 +358,7 @@ namespace LWSUI
             virtual void Begin() = 0;
             virtual void Changed(double, EditPhase) = 0;
             virtual bool Finish(EditPhase) = 0;
+            virtual bool HasActiveEdit() const = 0;
             virtual void Step(int, int) = 0;
             virtual void Display(SliderValueMode) = 0;
             virtual Control* Field() const = 0;

@@ -82,10 +82,13 @@ namespace LWSUI
         if (readOnly_ || !Host())
             return;
         const auto generation = ++pasteGeneration_;
+        pendingPasteGeneration_ = generation;
         LWS::RequestClipboardText(Host()->Window(),
                                   [handle = Handle(), generation](auto result, std::string text)
                                   {
                                       auto* control = static_cast<TextBox*>(handle.Get());
+                                      if (control && control->pendingPasteGeneration_ == generation)
+                                          control->pendingPasteGeneration_ = 0;
                                       if (control && !control->readOnly_ && result == LWS::ClipboardResult::Success &&
                                           control->pasteGeneration_ == generation && control->Host() &&
                                           control->Host()->IsFocused(*control))
@@ -589,7 +592,10 @@ namespace LWSUI
             return Finish(EditPhase::Commit);
         }
         if (e.key == K::Escape)
+        {
+            if (!HasActiveEdit()) return false;
             return Finish(EditPhase::Cancel);
+        }
         if (e.control && e.key == K::A)
             SelectAll();
         else if ((e.control && (e.key == K::C || e.key == K::X)) || (e.control && !e.shift && !e.alt && e.key == K::Insert))

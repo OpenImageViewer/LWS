@@ -150,6 +150,7 @@ namespace LWSUI
         }
         void SetValidation(std::string message) { text_->SetValidation(std::move(message)); }
         Control& FocusTarget() const { return *text_; }
+        bool HasActiveEdit() const { return repeating_ || text_->HasActiveEdit(); }
         bool Finish(EditPhase phase) override
         {
             Stop(phase);
@@ -181,6 +182,11 @@ namespace LWSUI
         }
         bool OnInput(const Input& e) override
         {
+            if (e.kind == InputKind::KeyDown && e.key == LWS::KeyCode::Escape && repeating_)
+            {
+                Stop(EditPhase::Cancel);
+                return true;
+            }
             if (e.kind == InputKind::KeyDown && (e.key == LWS::KeyCode::Up || e.key == LWS::KeyCode::Down))
             {
                 if (!repeating_)

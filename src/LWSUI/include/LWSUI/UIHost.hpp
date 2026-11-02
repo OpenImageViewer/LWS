@@ -48,6 +48,9 @@ namespace LWSUI
         // Application-defined keyboard commands, including commands over owned popups.
         // Service dialogs, context menus and captured gestures retain exclusive input.
         LWSUI::Event<void(const Input&, bool&)> OnCommandInput;
+        // Key presses that menus, popups and controls did not consume.
+        // A handler can set handled and must not destroy the host during dispatch.
+        LWSUI::Event<void(const Input&, bool&)> OnUnhandledKeyDown;
         bool Focus(Control* control);
         void SetInvalidEditPolicy(InvalidEditPolicy policy) { invalidEditPolicy_ = policy; }
         InvalidEditPolicy GetInvalidEditPolicy() const { return invalidEditPolicy_; }

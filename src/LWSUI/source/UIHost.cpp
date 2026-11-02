@@ -1142,6 +1142,12 @@ namespace LWSUI
                 return true;
             c = parent.Get();
         }
+        if (input.kind == InputKind::KeyDown && !popup_ && !capture_)
+        {
+            bool handled = false;
+            OnUnhandledKeyDown.Raise(input, handled);
+            if (handled) return true;
+        }
         return popup_ != nullptr || (pointer && menuBar_ && menuBar_->ContentOccupied(input.x, input.y));
     }
     bool UIHost::Event(const LWS::AnyEvent& event)
