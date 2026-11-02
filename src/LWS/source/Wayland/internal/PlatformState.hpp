@@ -56,6 +56,7 @@ namespace LWS::internal
         [[nodiscard]] Point GetMousePosition() const override;
         [[nodiscard]] Result MoveMouse(Point delta) override;
         [[nodiscard]] Result RefreshMonitors() override;
+        [[nodiscard]] std::expected<std::vector<MonitorDesc>, Result> GetMonitors(bool allowRefresh) override;
         [[nodiscard]] MonitorDesc GetMonitorInfo(uintptr_t handle, bool allowRefresh) override;
         [[nodiscard]] MonitorDesc GetPrimaryMonitor(bool allowRefresh) override;
         [[nodiscard]] Rect GetBoundingMonitorArea() const override;

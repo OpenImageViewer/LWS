@@ -24,6 +24,7 @@ namespace LWS::internal
         MonitorInfo();
 
         void refresh();
+        std::vector<MonitorDesc> getMonitors(bool allowRefresh = false);
         const MonitorDesc& getMonitorInfo(HMONITOR hMonitor, bool allowRefresh = false);
         const MonitorDesc& getPrimaryMonitor(bool allowRefresh = false);
         RECT getBoundingMonitorArea();

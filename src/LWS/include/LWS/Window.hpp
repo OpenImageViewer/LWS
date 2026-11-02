@@ -50,6 +50,8 @@ namespace LWS
         [[nodiscard]] bool IsCreated() const;
         /// True when Create() was called with an engaged WindowConfig::popupPlacement.
         [[nodiscard]] bool IsPopup() const;
+        /// True for a created managed or externally hosted child window, excluding popups.
+        [[nodiscard]] bool IsChild() const;
 
         [[nodiscard]] PlatformContext& GetPlatformContext();
         [[nodiscard]] const PlatformContext& GetPlatformContext() const;
@@ -108,6 +110,11 @@ namespace LWS
         /// parent-relative popup origin after screen adjustment. Wayland top-level and popup
         /// position is unavailable. Position and size are not an atomic native observation.
         [[nodiscard]] WindowPlacement GetPlacement() const;
+        /// Current outer bounds in native Win32 screen coordinates under the thread DPI context.
+        /// Includes window decorations and matches the coordinate space of Win32 monitor rectangles.
+        /// Supports managed and externally hosted children. A minimized window may be off screen.
+        /// Wayland does not expose absolute screen bounds and returns NotSupported.
+        [[nodiscard]] std::expected<Rect, Result> GetScreenBounds() const;
         /// Sets application resize limits for a created window. Dimensions must be nonnegative;
         /// each nonzero maximum must be at least its minimum. Zero means no application limit on that axis.
         [[nodiscard]] Result SetClientSizeLimits(ClientSizeLimits limits);

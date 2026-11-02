@@ -155,6 +155,8 @@ TEST_CASE("Window popup placement resolves the gravity corner at the anchor", "[
         LWS::PopupPlacement placement = Placement(gravity);
         placement.offset = offset;
         REQUIRE(popup.Create({.parent = &parent, .popupPlacement = placement}) == LWS::Result::Success);
+        REQUIRE(popup.IsPopup());
+        REQUIRE_FALSE(popup.IsChild());
         REQUIRE(popup.GetClientAreaMetrics().logical == LWS::LogicalSize{200, 150});
         const LWS::WindowPlacement resolved = popup.GetPlacement();
         REQUIRE(resolved.position.has_value());

@@ -21,6 +21,7 @@ namespace LWS::internal
 
         void bindOutput(wl_registry* registry, uint32_t name, uint32_t version);
         void removeGlobal(uint32_t name);
+        [[nodiscard]] std::vector<MonitorDesc> monitors() const;
         [[nodiscard]] MonitorDesc monitorInfo(Handle handle) const;
         [[nodiscard]] MonitorDesc primaryMonitor() const;
         [[nodiscard]] Rect boundingMonitorArea() const;

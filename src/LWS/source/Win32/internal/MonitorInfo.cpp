@@ -60,6 +60,16 @@ namespace LWS::internal
         }
     }
 
+    std::vector<MonitorDesc> MonitorInfo::getMonitors(bool allowRefresh)
+    {
+        if (allowRefresh) refresh();
+        std::vector<MonitorDesc> result;
+        result.reserve(mHMonitorToDesc.size());
+        for (const auto& [handle, monitor] : mHMonitorToDesc)
+            result.push_back(monitor);
+        return result;
+    }
+
     const MonitorDesc& MonitorInfo::getMonitorInfo(HMONITOR hMonitor, bool allowRefresh)
     {
         if (allowRefresh)
@@ -119,41 +129,33 @@ namespace LWS::internal
             return TRUE;
         }
 
-        for (MonitorDesc& desc : self->mDisplayDevices)
+        auto device = std::ranges::find_if(self->mDisplayDevices, [&](const MonitorDesc& desc)
+        { return lstrcmpi(monitor_info.szDevice, desc.displayInfo.DeviceName) == 0; });
+        MonitorDesc fallback{};
+        MonitorDesc& desc = device == self->mDisplayDevices.end() ? fallback : *device;
+        if (device == self->mDisplayDevices.end())
+            lstrcpyn(desc.displayInfo.DeviceName, monitor_info.szDevice, _countof(desc.displayInfo.DeviceName));
+        desc.monitorInfo = monitor_info;
+        desc.handle = hMonitor;
+
+        UINT dpi_x = 96;
+        UINT dpi_y = 96;
+        if (FAILED(getDpiForMonitor(hMonitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y)))
         {
-            if (lstrcmpi(monitor_info.szDevice, desc.displayInfo.DeviceName) != 0)
+            HWND desktop_window = GetDesktopWindow();
+            HDC desktop_dc = GetDC(desktop_window);
+            if (desktop_dc != nullptr)
             {
-                continue;
+                dpi_x = static_cast<UINT>(GetDeviceCaps(desktop_dc, LOGPIXELSX));
+                dpi_y = static_cast<UINT>(GetDeviceCaps(desktop_dc, LOGPIXELSY));
+                ReleaseDC(desktop_window, desktop_dc);
             }
-
-            desc.monitorInfo = monitor_info;
-            desc.handle = hMonitor;
-
-            UINT dpi_x = 96;
-            UINT dpi_y = 96;
-            if (FAILED(getDpiForMonitor(hMonitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y)))
-            {
-                HWND desktop_window = GetDesktopWindow();
-                HDC desktop_dc = GetDC(desktop_window);
-                if (desktop_dc != nullptr)
-                {
-                    dpi_x = static_cast<UINT>(GetDeviceCaps(desktop_dc, LOGPIXELSX));
-                    dpi_y = static_cast<UINT>(GetDeviceCaps(desktop_dc, LOGPIXELSY));
-                    ReleaseDC(desktop_window, desktop_dc);
-                }
-            }
-
-            desc.dpiX = static_cast<uint16_t>(dpi_x);
-            desc.dpiY = static_cast<uint16_t>(dpi_y);
-
-            auto [it, _] = self->mHMonitorToDesc.insert({hMonitor, desc});
-            if ((monitor_info.dwFlags & MONITORINFOF_PRIMARY) == MONITORINFOF_PRIMARY)
-            {
-                self->fPrimaryMonitorIt = it;
-            }
-
-            break;
         }
+        desc.dpiX = static_cast<uint16_t>(dpi_x);
+        desc.dpiY = static_cast<uint16_t>(dpi_y);
+        auto it = self->mHMonitorToDesc.insert_or_assign(hMonitor, desc).first;
+        if ((monitor_info.dwFlags & MONITORINFOF_PRIMARY) == MONITORINFOF_PRIMARY)
+            self->fPrimaryMonitorIt = it;
 
         return TRUE;
     }

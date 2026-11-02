@@ -836,6 +836,14 @@ namespace LWS
         return logicalFromPhysical(Point{position.x, position.y}, fDpi);
     }
 
+    std::expected<Rect, Result> WindowBackendWin32::getScreenBounds() const
+    {
+        RECT bounds{};
+        if (fHwnd == nullptr || !GetWindowRect(fHwnd, &bounds))
+            return std::unexpected(Result::Failure);
+        return Rect{{bounds.left, bounds.top}, {bounds.right, bounds.bottom}};
+    }
+
     void WindowBackendWin32::setSize(Size sz)
     {
         if (fPopupPlacement.has_value())

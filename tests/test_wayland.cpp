@@ -16,6 +16,7 @@
     #include <unistd.h>
     #include <cstring>
 
+    #include <algorithm>
     #include <array>
     #include <chrono>
     #include <cstdlib>
@@ -231,8 +232,12 @@ TEST_CASE("Wayland monitor queries are scoped to the context", "[platform][monit
 {
     LWS::PlatformContext context;
     Initialize(context);
-    const auto primary = context.GetPrimaryMonitor(true);
+    const auto monitors = context.GetMonitors(true);
+    REQUIRE(monitors);
+    const auto primary = context.GetPrimaryMonitor();
     REQUIRE(primary.has_value());
+    if (primary->handle != 0)
+        REQUIRE(std::ranges::find(*monitors, primary->handle, &LWS::MonitorDesc::handle) != monitors->end());
     if (primary->handle != 0)
         REQUIRE(context.GetMonitorInfo(primary->handle)->handle == primary->handle);
 }
@@ -281,6 +286,8 @@ TEST_CASE("Wayland top-level positions and multi-monitor fullscreen are unsuppor
     REQUIRE(window.Create() == LWS::Result::Success);
     REQUIRE(window.RequestPlacement({.position = LWS::Point{20, 30}}) == LWS::Result::NotSupported);
     REQUIRE_FALSE(window.GetPlacement().position.has_value());
+    REQUIRE(window.GetScreenBounds().error() == LWS::Result::NotSupported);
+    REQUIRE_FALSE(window.IsChild());
     REQUIRE(window.SetWindowMode(LWS::WindowMode::FullscreenAllMonitors) == LWS::Result::NotSupported);
     REQUIRE(window.SetAlwaysOnTop(true) == LWS::Result::NotSupported);
     // Moving is supported, but requires a configured surface and a live pointer press serial.

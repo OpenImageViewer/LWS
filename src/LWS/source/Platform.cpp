@@ -282,6 +282,15 @@ namespace LWS
         return IsUsable() ? impl_->backend->RefreshMonitors() : Result::InvalidState;
     }
 
+    std::expected<std::vector<MonitorDesc>, Result> PlatformContext::GetMonitors(bool allowRefresh)
+    {
+        AssertCurrentThread();
+        if (!IsUsable())
+            return std::unexpected(Result::InvalidState);
+        auto monitors = impl_->backend->GetMonitors(allowRefresh);
+        return IsUsable() ? std::move(monitors) : std::unexpected(Result::Failure);
+    }
+
     std::expected<MonitorDesc, Result> PlatformContext::GetMonitorInfo(uintptr_t handle, bool allowRefresh)
     {
         AssertCurrentThread();

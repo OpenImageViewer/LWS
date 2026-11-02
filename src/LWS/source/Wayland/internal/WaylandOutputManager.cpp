@@ -42,6 +42,14 @@ namespace LWS::internal
         wl_output_destroy(output);
     }
 
+    std::vector<MonitorDesc> WaylandOutputManager::monitors() const
+    {
+        std::vector<MonitorDesc> result;
+        result.reserve(fOutputs.size());
+        for (const auto& output : fOutputs) result.push_back(output.description);
+        return result;
+    }
+
     MonitorDesc WaylandOutputManager::monitorInfo(Handle handle) const
     {
         const auto it = std::ranges::find_if(fOutputs, [handle](const Output& output)

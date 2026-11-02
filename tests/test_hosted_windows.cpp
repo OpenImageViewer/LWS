@@ -20,7 +20,14 @@ TEST_CASE("Foreign parents own native containment but not the LWS context", "[wi
         LWS::Window container(platform);
         REQUIRE(LWS::Win32::CreateChild(container, host, {.position = LWS::Point{0, 0}}) == LWS::Result::Success);
         CHECK(container.GetParent() == nullptr);
+        CHECK(container.IsChild());
         const auto hwnd = *LWS::Win32::GetHwnd(container);
+        RECT nativeBounds{};
+        REQUIRE(GetWindowRect(hwnd, &nativeBounds));
+        const auto screenBounds = container.GetScreenBounds();
+        REQUIRE(screenBounds);
+        CHECK(screenBounds->GetCorner(LLUtils::TopLeft) == LWS::Point{nativeBounds.left, nativeBounds.top});
+        CHECK(screenBounds->GetCorner(LLUtils::BottomRight) == LWS::Point{nativeBounds.right, nativeBounds.bottom});
         REQUIRE(GetParent(hwnd) == host);
         REQUIRE((GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD) != 0);
         REQUIRE(container.RequestActivation() == LWS::Result::NotSupported);

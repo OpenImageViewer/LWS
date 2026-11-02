@@ -148,6 +148,16 @@ namespace LWS::internal
         return fContext.IsUsable() ? Result::Success : Result::Failure;
     }
 
+    std::expected<std::vector<MonitorDesc>, Result> WaylandPlatformState::GetMonitors(bool allowRefresh)
+    {
+        if (allowRefresh)
+        {
+            const auto result = RefreshMonitors();
+            if (result != Result::Success) return std::unexpected(result);
+        }
+        return fOutputManager.monitors();
+    }
+
     MonitorDesc WaylandPlatformState::GetMonitorInfo(uintptr_t handle, bool allowRefresh)
     {
         if (allowRefresh)

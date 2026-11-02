@@ -310,6 +310,13 @@ namespace LWS
         return platform_.IsUsable() && impl_->state == Impl::State::Created;
     }
 
+    bool Window::IsChild() const
+    {
+        platform_.AssertCurrentThread();
+        return IsCreated() && !impl_->config.popupPlacement.has_value() &&
+               (impl_->parent != nullptr || impl_->externalChild);
+    }
+
     bool Window::IsPopup() const
     {
         platform_.AssertCurrentThread();
@@ -421,6 +428,13 @@ namespace LWS
                 impl_->config.clientSize = *request.clientSize;
         }
         return Result::Success;
+    }
+
+    std::expected<Rect, Result> Window::GetScreenBounds() const
+    {
+        platform_.AssertCurrentThread();
+        if (!platform_.IsUsable() || !IsCreated()) return std::unexpected(Result::InvalidState);
+        return impl_->backend->getScreenBounds();
     }
 
     WindowPlacement Window::GetPlacement() const

@@ -19,6 +19,7 @@
     #include <Windows.h>
     #include <Ole2.h>
 
+    #include <algorithm>
     #include <array>
     #include <atomic>
     #include <chrono>
@@ -71,11 +72,13 @@ TEST_CASE("Platform context is one-shot", "[platform][win32]")
 {
     REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);
     LWS::PlatformContext context;
+    REQUIRE(context.GetMonitors().error() == LWS::Result::InvalidState);
     REQUIRE(context.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::Success);
     REQUIRE(context.IsUsable());
     REQUIRE(context.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::InvalidState);
     REQUIRE(context.Shutdown() == LWS::Result::Success);
     REQUIRE_FALSE(context.IsUsable());
+    REQUIRE(context.GetMonitors().error() == LWS::Result::InvalidState);
     REQUIRE(context.Shutdown() == LWS::Result::Success);
     REQUIRE(context.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::InvalidState);
 }
@@ -1542,6 +1545,61 @@ TEST_CASE("A context selects owned or host-driven task delivery without a differ
     }
     CHECK(delivered);
     REQUIRE(context.Shutdown() == LWS::Result::Success);
+}
+
+TEST_CASE("Monitor snapshots include native displays", "[platform][monitor][win32]")
+{
+    Context context;
+    std::vector<HMONITOR> native;
+    REQUIRE(EnumDisplayMonitors(nullptr, nullptr, CollectMonitors, reinterpret_cast<LPARAM>(&native)));
+    const auto monitors = context.value.GetMonitors(true);
+    REQUIRE(monitors);
+    REQUIRE(monitors->size() == native.size());
+    for (const auto handle : native)
+    {
+        const auto found = std::ranges::find(*monitors, reinterpret_cast<uintptr_t>(handle), &LWS::MonitorDesc::handle);
+        REQUIRE(found != monitors->end());
+        MONITORINFO expected{sizeof(MONITORINFO)};
+        REQUIRE(GetMonitorInfoW(handle, &expected));
+        CHECK(found->monitorRect.GetCorner(LLUtils::TopLeft) == LWS::Point{expected.rcMonitor.left, expected.rcMonitor.top});
+        CHECK(found->monitorRect.GetCorner(LLUtils::BottomRight) == LWS::Point{expected.rcMonitor.right, expected.rcMonitor.bottom});
+        CHECK(found->workRect.GetCorner(LLUtils::TopLeft) == LWS::Point{expected.rcWork.left, expected.rcWork.top});
+        CHECK(found->workRect.GetCorner(LLUtils::BottomRight) == LWS::Point{expected.rcWork.right, expected.rcWork.bottom});
+    }
+}
+
+TEST_CASE("Screen bounds report current native outer rectangles", "[window][geometry][win32]")
+{
+    Context context;
+    LWS::Window owner(context.value);
+    CHECK(owner.GetScreenBounds().error() == LWS::Result::InvalidState);
+    CHECK_FALSE(owner.IsChild());
+    REQUIRE(owner.Create({.clientSize = {400, 300}, .visible = true}) == LWS::Result::Success);
+    LWS::Window child(context.value);
+    REQUIRE(child.Create({.parent = &owner, .position = LWS::Point{20, 30}, .clientSize = {100, 80}, .visible = true}) ==
+            LWS::Result::Success);
+    CHECK_FALSE(owner.IsChild());
+    CHECK(child.IsChild());
+    const auto checkBounds = [](LWS::Window& window)
+    {
+        RECT native{};
+        REQUIRE(GetWindowRect(Hwnd(window), &native));
+        const auto actual = window.GetScreenBounds();
+        REQUIRE(actual);
+        CHECK(actual->GetCorner(LLUtils::TopLeft) == LWS::Point{native.left, native.top});
+        CHECK(actual->GetCorner(LLUtils::BottomRight) == LWS::Point{native.right, native.bottom});
+    };
+    checkBounds(owner);
+    checkBounds(child);
+    REQUIRE(owner.RequestShowState(LWS::WindowShowState::Maximized) == LWS::Result::Success);
+    checkBounds(owner);
+    checkBounds(child);
+    REQUIRE(owner.RequestShowState(LWS::WindowShowState::Minimized) == LWS::Result::Success);
+    checkBounds(owner);
+    REQUIRE(owner.RequestShowState(LWS::WindowShowState::Restored) == LWS::Result::Success);
+    REQUIRE(child.Destroy() == LWS::Result::Success);
+    CHECK(child.GetScreenBounds().error() == LWS::Result::InvalidState);
+    CHECK_FALSE(child.IsChild());
 }
 
 #endif

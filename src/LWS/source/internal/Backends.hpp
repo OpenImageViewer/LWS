@@ -8,6 +8,7 @@
 #include <LWS/Result.hpp>
 #include <LWS/WindowTypes.hpp>
 
+#include <expected>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -85,6 +86,8 @@ namespace LWS
             [[nodiscard]] virtual Result setWindowIcon(const BitmapBuffer* icon, bool reuseResource = false) = 0;
             virtual void setPosition(Point position) = 0;
             [[nodiscard]] virtual Point getPosition() const = 0;
+            [[nodiscard]] virtual std::expected<Rect, Result> getScreenBounds() const
+            { return std::unexpected(Result::NotSupported); }
             [[nodiscard]] virtual uintptr_t getCurrentMonitorHandle() const { return 0; }
             virtual void setSize(Size size) = 0;
             [[nodiscard]] virtual Size getClientSize() const = 0;

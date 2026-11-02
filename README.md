@@ -184,6 +184,13 @@ effect on separate parent/child commits. `GetPlacement()` returns optional posit
 not promise an atomic native observation. Win32 top-level position follows the restored placement in DPI-normalized
 screen coordinates, matching position requests, while child positions are relative to their parent's client area.
 
+`PlatformContext::GetMonitors()` returns a snapshot of monitor descriptions. Set `allowRefresh` to request a fresh
+snapshot. Win32 monitor, work area, and window bounds use native screen coordinates under the thread DPI context.
+Wayland reports output coordinates and uses the monitor rectangle as its work area. `Window::GetScreenBounds()`
+includes decorations and supports managed and externally hosted children. Minimized windows may be off screen. Wayland does not
+provide absolute window bounds and returns `NotSupported`. `Window::IsChild()` includes externally hosted children
+and excludes popups.
+
 `GetClientSizeLimits()` and `SetClientSizeLimits()` exchange a `ClientSizeLimits` with `minimum` and `maximum` logical
 dimensions. Zero means no application-specified limit on that axis. Values must be nonnegative, and a nonzero maximum
 must be at least its minimum. Native constraints may still apply. Creation uses the same type through

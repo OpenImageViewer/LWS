@@ -487,6 +487,16 @@ namespace LWS::internal
         return Result::Success;
     }
 
+    std::expected<std::vector<LWS::MonitorDesc>, Result> Win32PlatformBackendCommon::GetMonitors(bool allowRefresh)
+    {
+        const auto monitors = monitors_.getMonitors(allowRefresh);
+        std::vector<LWS::MonitorDesc> result;
+        result.reserve(monitors.size());
+        for (const auto& monitor : monitors)
+            result.push_back(monitorDescFromWin32(monitor));
+        return result;
+    }
+
     LWS::MonitorDesc Win32PlatformBackendCommon::GetMonitorInfo(uintptr_t monitorHandle, bool allowRefresh)
     {
         return monitorDescFromWin32(monitors_.getMonitorInfo(reinterpret_cast<HMONITOR>(monitorHandle), allowRefresh));

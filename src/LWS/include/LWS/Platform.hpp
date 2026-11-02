@@ -136,6 +136,11 @@ namespace LWS
         [[nodiscard]] std::expected<Point, Result> GetMousePosition() const;
         [[nodiscard]] Result MoveMouse(Point delta);
         [[nodiscard]] Result RefreshMonitors();
+        /// Returns a snapshot of known monitors. Win32 rectangles use native screen coordinates
+        /// under the calling thread DPI context. Wayland uses compositor output coordinates
+        /// and reports monitor rectangles as work areas.
+        /// allowRefresh requests a fresh backend snapshot before returning.
+        [[nodiscard]] std::expected<std::vector<MonitorDesc>, Result> GetMonitors(bool allowRefresh = false);
         [[nodiscard]] std::expected<MonitorDesc, Result> GetMonitorInfo(uintptr_t monitorHandle,
                                                                         bool allowRefresh = false);
         [[nodiscard]] std::expected<MonitorDesc, Result> GetPrimaryMonitor(bool allowRefresh = false);

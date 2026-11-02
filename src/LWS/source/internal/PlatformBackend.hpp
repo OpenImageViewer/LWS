@@ -32,6 +32,7 @@ namespace LWS::internal
         [[nodiscard]] virtual Point GetMousePosition() const = 0;
         [[nodiscard]] virtual Result MoveMouse(Point delta) = 0;
         [[nodiscard]] virtual Result RefreshMonitors() = 0;
+        [[nodiscard]] virtual std::expected<std::vector<MonitorDesc>, Result> GetMonitors(bool allowRefresh) = 0;
         [[nodiscard]] virtual MonitorDesc GetMonitorInfo(uintptr_t monitorHandle, bool allowRefresh) = 0;
         [[nodiscard]] virtual MonitorDesc GetPrimaryMonitor(bool allowRefresh) = 0;
         [[nodiscard]] virtual Rect GetBoundingMonitorArea() const = 0;

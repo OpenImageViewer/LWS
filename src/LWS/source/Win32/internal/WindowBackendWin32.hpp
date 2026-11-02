@@ -45,6 +45,7 @@ namespace LWS
         Result setWindowIcon(const BitmapBuffer* icon, bool reuseResource = false) override;
         void setPosition(Point pos) override;
         Point getPosition() const override;
+        std::expected<Rect, Result> getScreenBounds() const override;
         void setSize(Size sz) override;
         Size getClientSize() const override;
         Size getFramebufferSize() const override;
