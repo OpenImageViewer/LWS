@@ -204,7 +204,7 @@ namespace LWSUI
         }
     }
     static void AlignedText(Canvas& canvas, std::string_view text, Rect b, Alignment alignment, float padding,
-                            LLUtils::Color color, const FontSpec& font)
+                            LLUtils::Color color, const FontSpec& font, std::span<const TextSpan> spans = {})
     {
         b.x += padding;
         b.width = std::max(0.f, b.width - 2 * padding);
@@ -212,7 +212,7 @@ namespace LWSUI
             return;
         Canvas::ClipScope clip(canvas, b.x, b.y, b.width, b.height);
         const auto textBounds = internal::AlignedTextBounds(canvas, text, b, font, alignment, Alignment::Center);
-        canvas.Text(text, textBounds.x, textBounds.y, textBounds.width, textBounds.height, color, font);
+        canvas.Text(text, textBounds.x, textBounds.y, textBounds.width, textBounds.height, color, font, false, spans);
     }
     void GridView::OnRender(Canvas& canvas)
     {
@@ -302,7 +302,8 @@ namespace LWSUI
                 }
                 else
                     AlignedText(canvas, text, bounds, column.alignment, a.cellPadding,
-                                a.cellForeground.value_or(Foreground()), Font());
+                                a.cellForeground.value_or(Foreground()), Font(),
+                                column.textSpans ? column.textSpans(text) : HighlightSpans(text));
                 if (o.horizontalLines)
                     canvas.Line(bounds.x, bounds.y + bounds.height - 1, bounds.x + bounds.width,
                                 bounds.y + bounds.height - 1, a.borderWidth, line);

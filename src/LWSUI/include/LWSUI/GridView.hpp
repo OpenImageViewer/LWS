@@ -128,6 +128,8 @@ namespace LWSUI
         std::function<std::string(const GridValue&)> format;
         std::function<int(const GridValue&, const GridValue&)> compare;
         std::function<void(Canvas&, const GridCellPresentation&)> render;
+        // UTF-8 spans for visible text cells; custom renderers own their presentation.
+        std::function<std::vector<TextSpan>(std::string_view)> textSpans;
         // Single-click value action for an interactive renderer. Nullopt opens its editor.
         // Bounds describe the cell at pointer press, before focus can reveal another column.
         std::function<std::optional<GridValue>(const GridCellPresentation&, const Input&)> clickValue;
