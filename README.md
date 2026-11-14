@@ -96,6 +96,35 @@ int main()
 }
 ```
 
+## Owned and modal windows
+
+Set `WindowConfig::owner` to a created top-level window to create an independent owned dialog. This differs from
+`parent`, which creates a child window or anchors a popup. Owners must belong to the same context; child and popup
+windows cannot be owners. Destroying an owner also destroys its owned window family.
+
+```cpp
+LWS::Window dialog(platform);
+const auto created = dialog.Create({
+    .owner = &mainWindow,
+    .modal = true,
+    .clientSize = {760, 440},
+});
+if (created == LWS::Result::Success)
+    std::ignore = dialog.SetVisible(true);
+// Later, close the dialog without ending the application message loop:
+std::ignore = dialog.SetVisible(false);
+```
+
+An owned window stays above its owner without making it globally topmost. Win32 hides owned dialogs from the
+taskbar and disables a modal dialog's owner while the dialog is visible. Hiding or destroying the dialog restores
+the owner's prior enabled state; multiple visible modal dialogs keep it blocked until all are hidden or destroyed.
+`GetOwner()` returns this relationship; `GetParent()` and `IsChild()` retain their child-window meanings.
+
+Wayland uses an xdg-toplevel parent hint and blocks LWS-delivered owner input. The compositor controls taskbar
+presentation, stacking, and native decoration interaction; LWS does not claim compositor-wide native modality.
+Modality is asynchronous: keep using the application's existing message loop and handle close requests by hiding
+or destroying the dialog.
+
 ## Ownership and threading
 
 - One `PlatformContext` owns one backend, one UI thread, one task queue, and one message loop.
@@ -777,3 +806,51 @@ dbus-run-session --config-file=tests/portal-session.conf -- env LWS_TEST_PORTAL_
 The fake portal checks selection, multiple paths, filters, default extensions, cancellation, service failure
 and native owner destruction without displaying desktop dialogs. It does not replace production functions.
 Applications using the real file picker require `xdg-desktop-portal` and an appropriate desktop backend.
+
+### Control corner radii
+
+LWSUI themes default to `cornerRadius = 6` logical pixels. Buttons, combo boxes,
+text boxes and painted panels use this value; checkbox corners use a smaller
+radius capped at 15% of the indicator size. Radio indicators remain circular.
+Use `control.SetCornerRadius(9)` for an individual surface, `SetCornerRadius(0)`
+for square corners, or `SetCornerRadius(std::nullopt)` to restore the theme value.
+Overrides must be finite and nonnegative. Parent theme settings are inherited;
+a parent's individual radius override affects only that parent.
+
+Radii scale with DPI and clamp to half the surface size. Uniform panel borders
+follow the corners; asymmetric edge borders remain straight for separators.
+Corners affect background and border painting, not child clipping or hit targets.
+Custom controls can use `Canvas::FillRoundedRect` and `StrokeRoundedRect`; strokes
+are inset within the supplied rectangle.
+
+### Spring-centered thumbwheel
+
+`LWSUI::Thumbwheel` is a horizontal rate control with a 20-logical-pixel height.
+Press anywhere to place the red stripe and grooves at that horizontal position,
+then drag from there. A click outside the center dead zone immediately adjusts
+one unit in the selected direction; holding off center continues at the selected
+rate. A press inside the dead zone waits until dragging first leaves it. The
+immediate unit occurs only once per gesture, even across reversals, and is not
+scaled by Shift. Drag sensitivity affects subsequent movement, not the initial
+click position. The stripe stays inside the visible edges. Release
+commits and recenters; cancellation restores the starting value and recenters.
+
+`OnEdit(double displacement, EditPhase)` reports cumulative adjustment units.
+Consumers retain a starting value and apply their own unit conversion and snapping.
+`SetSpeedRange(minimum, maximum)` accepts finite positive rates in units/second,
+with minimum <= maximum. Defaults are 2 and 8000. A 5% center dead zone stops
+motion; outside it, speed follows `minimum + (maximum - minimum) * t^3`, reaching
+maximum at either edge. `SetAcceleration(factor)` accepts values from 0.1 to 2
+and changes the exponent to `3 / factor`: lower factors give gentler acceleration,
+while 1 preserves the standard curve. Endpoint rates remain unchanged.
+`SetDeadZone(fraction)` accepts 0 through .25 (default .05), normalizing the speed
+curve across the remaining travel. `SetDragSensitivity(multiplier)` accepts .1
+through 4 (default 1): 2 halves the pointer travel needed to reach an edge.
+`SetFineModeMultiplier(multiplier)` accepts .01 through 1 (default .1), scaling
+the held rate while Shift is pressed. Live changes retain accumulated adjustment;
+changing drag sensitivity affects subsequent movement without moving the stripe. Arrow keys and wheel
+notches each commit one unit, including with Shift.
+
+Active holds use a window-targeted 16 ms timer and elapsed monotonic time, with
+each interval capped at 50 ms to avoid catch-up jumps after UI stalls. Idle,
+disabled, hidden and detached controls stop their timers.

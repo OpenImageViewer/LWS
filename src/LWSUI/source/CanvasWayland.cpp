@@ -13,6 +13,25 @@
 
 namespace LWSUI
 {
+    namespace
+    {
+        void RoundedRectPath(cairo_t* context, float x, float y, float width, float height, float radius)
+        {
+            cairo_new_path(context);
+            if (radius == 0)
+                cairo_rectangle(context, x, y, width, height);
+            else
+            {
+                constexpr double pi = std::numbers::pi;
+                cairo_arc(context, x + width - radius, y + radius, radius, -pi / 2, 0);
+                cairo_arc(context, x + width - radius, y + height - radius, radius, 0, pi / 2);
+                cairo_arc(context, x + radius, y + height - radius, radius, pi / 2, pi);
+                cairo_arc(context, x + radius, y + radius, radius, pi, 3 * pi / 2);
+                cairo_close_path(context);
+            }
+        }
+    }  // namespace
+
     struct Canvas::Impl
     {
         int width = 0, height = 0;
@@ -98,6 +117,43 @@ namespace LWSUI
         cairo_set_source_rgba(c, color.R() / 255., color.G() / 255., color.B() / 255., color.A() / 255.);
         cairo_rectangle(c, x, y, width, height);
         cairo_fill(c);
+    }
+    void Canvas::FillRoundedRect(float x, float y, float width, float height, float radius, LLUtils::Color color)
+    {
+        if (width <= 0 || height <= 0)
+            return;
+        radius = std::clamp(radius, 0.f, std::min(width, height) / 2);
+        if (radius == 0)
+        {
+            Fill(x, y, width, height, color);
+            return;
+        }
+        auto* c = impl_->context;
+        cairo_save(c);
+        cairo_set_source_rgba(c, color.R() / 255., color.G() / 255., color.B() / 255., color.A() / 255.);
+        RoundedRectPath(c, x, y, width, height, radius);
+        cairo_fill(c);
+        cairo_restore(c);
+    }
+    void Canvas::StrokeRoundedRect(float x, float y, float width, float height, float radius, float thickness,
+                                   LLUtils::Color color)
+    {
+        if (width <= 0 || height <= 0 || thickness <= 0)
+            return;
+        radius = std::clamp(radius, 0.f, std::min(width, height) / 2);
+        thickness = std::min(thickness, std::min(width, height));
+        x += thickness / 2;
+        y += thickness / 2;
+        width -= thickness;
+        height -= thickness;
+        radius = std::max(0.f, radius - thickness / 2);
+        auto* c = impl_->context;
+        cairo_save(c);
+        cairo_set_source_rgba(c, color.R() / 255., color.G() / 255., color.B() / 255., color.A() / 255.);
+        RoundedRectPath(c, x, y, width, height, radius);
+        cairo_set_line_width(c, thickness);
+        cairo_stroke(c);
+        cairo_restore(c);
     }
     void Canvas::Text(std::string_view text, float x, float y, float width, float height, LLUtils::Color color,
                       const FontSpec& font, bool wrap, std::span<const TextSpan> spans)
@@ -279,7 +335,8 @@ namespace LWSUI
             pango_layout_iter_next_line(iterator);
         PangoRectangle bounds{};
         pango_layout_iter_get_line_extents(iterator, nullptr, &bounds);
-        TextCaret caret{float(bounds.x + x) / PANGO_SCALE, float(bounds.y) / PANGO_SCALE, float(bounds.height) / PANGO_SCALE};
+        TextCaret caret{float(bounds.x + x) / PANGO_SCALE, float(bounds.y) / PANGO_SCALE,
+                        float(bounds.height) / PANGO_SCALE};
         pango_layout_iter_free(iterator);
         g_object_unref(layout);
         return caret;

@@ -45,11 +45,18 @@ namespace LWSUI
     {
         const auto b = Bounds();
         if (paintBackground)
-            canvas.Fill(b.x, b.y, b.width, b.height, Style().background);
-        canvas.Fill(b.x, b.y, b.width, border.top, Style().line);
-        canvas.Fill(b.x, b.y + b.height - border.bottom, b.width, border.bottom, Style().line);
-        canvas.Fill(b.x, b.y, border.left, b.height, Style().line);
-        canvas.Fill(b.x + b.width - border.right, b.y, border.right, b.height, Style().line);
+            canvas.FillRoundedRect(b.x, b.y, b.width, b.height, CornerRadius(), Style().background);
+        // Uniform borders follow the corners; independent edge rules remain straight
+        // so separators and docked edges keep their existing geometry.
+        if (border.top == border.bottom && border.top == border.left && border.top == border.right)
+            canvas.StrokeRoundedRect(b.x, b.y, b.width, b.height, CornerRadius(), border.top, Style().line);
+        else
+        {
+            canvas.Fill(b.x, b.y, b.width, border.top, Style().line);
+            canvas.Fill(b.x, b.y + b.height - border.bottom, b.width, border.bottom, Style().line);
+            canvas.Fill(b.x, b.y, border.left, b.height, Style().line);
+            canvas.Fill(b.x + b.width - border.right, b.y, border.right, b.height, Style().line);
+        }
         Container::OnRender(canvas);
     }
     Control& DockPanel::AddDocked(std::unique_ptr<Control> child, Dock dock, float extent, float maximumFraction)
@@ -70,37 +77,37 @@ namespace LWSUI
         Size used{}, consumed{}, remaining = available;
         // Dock edges first without changing ownership/keyboard traversal order.
         for (bool fill : {false, true})
-        for (auto& item : items_)
-        {
-            if ((item.dock == Dock::Fill) != fill || !item.control->Visible())
-                continue;
-            const auto desired = item.dock == Dock::Left || item.dock == Dock::Right
-                                     ? item.control->MeasureContent(remaining)
-                                     : item.control->Measure(remaining);
-            if (item.dock == Dock::Top || item.dock == Dock::Bottom)
+            for (auto& item : items_)
             {
-                const float height = std::min(std::max(0.f, remaining.height - gap) * item.maximumFraction,
-                                              item.extent > 0 ? item.extent : desired.height);
-                used.width = std::max(used.width, consumed.width + desired.width);
-                consumed.height += height + gap;
-                used.height = std::max(used.height, consumed.height);
-                remaining.height = std::max(0.f, remaining.height - height - gap);
+                if ((item.dock == Dock::Fill) != fill || !item.control->Visible())
+                    continue;
+                const auto desired = item.dock == Dock::Left || item.dock == Dock::Right
+                                         ? item.control->MeasureContent(remaining)
+                                         : item.control->Measure(remaining);
+                if (item.dock == Dock::Top || item.dock == Dock::Bottom)
+                {
+                    const float height = std::min(std::max(0.f, remaining.height - gap) * item.maximumFraction,
+                                                  item.extent > 0 ? item.extent : desired.height);
+                    used.width = std::max(used.width, consumed.width + desired.width);
+                    consumed.height += height + gap;
+                    used.height = std::max(used.height, consumed.height);
+                    remaining.height = std::max(0.f, remaining.height - height - gap);
+                }
+                else if (item.dock == Dock::Left || item.dock == Dock::Right)
+                {
+                    const float width = std::min(std::max(0.f, remaining.width - gap) * item.maximumFraction,
+                                                 item.extent > 0 ? item.extent : desired.width);
+                    used.height = std::max(used.height, consumed.height + desired.height);
+                    consumed.width += width + gap;
+                    used.width = std::max(used.width, consumed.width);
+                    remaining.width = std::max(0.f, remaining.width - width - gap);
+                }
+                else
+                {
+                    used.width = std::max(used.width, consumed.width + desired.width);
+                    used.height = std::max(used.height, consumed.height + desired.height);
+                }
             }
-            else if (item.dock == Dock::Left || item.dock == Dock::Right)
-            {
-                const float width = std::min(std::max(0.f, remaining.width - gap) * item.maximumFraction,
-                                             item.extent > 0 ? item.extent : desired.width);
-                used.height = std::max(used.height, consumed.height + desired.height);
-                consumed.width += width + gap;
-                used.width = std::max(used.width, consumed.width);
-                remaining.width = std::max(0.f, remaining.width - width - gap);
-            }
-            else
-            {
-                used.width = std::max(used.width, consumed.width + desired.width);
-                used.height = std::max(used.height, consumed.height + desired.height);
-            }
-        }
         return {std::min(available.width, used.width), std::min(available.height, used.height)};
     }
     void DockPanel::OnArrange()
@@ -108,34 +115,34 @@ namespace LWSUI
         auto b = Bounds();
         // Dock edges first without changing ownership/keyboard traversal order.
         for (bool fill : {false, true})
-        for (auto& item : items_)
-        {
-            if ((item.dock == Dock::Fill) != fill || !item.control->Visible())
-                continue;
-            const auto desired = item.control->DesiredSize();
-            auto r = b;
-            if (item.dock == Dock::Top || item.dock == Dock::Bottom)
+            for (auto& item : items_)
             {
-                r.height = std::min(std::max(0.f, b.height - gap) * item.maximumFraction,
-                                    item.extent > 0 ? item.extent : desired.height);
-                if (item.dock == Dock::Bottom)
-                    r.y += b.height - r.height;
-                else
-                    b.y += r.height + gap;
-                b.height = std::max(0.f, b.height - r.height - gap);
+                if ((item.dock == Dock::Fill) != fill || !item.control->Visible())
+                    continue;
+                const auto desired = item.control->DesiredSize();
+                auto r = b;
+                if (item.dock == Dock::Top || item.dock == Dock::Bottom)
+                {
+                    r.height = std::min(std::max(0.f, b.height - gap) * item.maximumFraction,
+                                        item.extent > 0 ? item.extent : desired.height);
+                    if (item.dock == Dock::Bottom)
+                        r.y += b.height - r.height;
+                    else
+                        b.y += r.height + gap;
+                    b.height = std::max(0.f, b.height - r.height - gap);
+                }
+                else if (item.dock == Dock::Left || item.dock == Dock::Right)
+                {
+                    r.width = std::min(std::max(0.f, b.width - gap) * item.maximumFraction,
+                                       item.extent > 0 ? item.extent : desired.width);
+                    if (item.dock == Dock::Right)
+                        r.x += b.width - r.width;
+                    else
+                        b.x += r.width + gap;
+                    b.width = std::max(0.f, b.width - r.width - gap);
+                }
+                item.control->Arrange(r);
             }
-            else if (item.dock == Dock::Left || item.dock == Dock::Right)
-            {
-                r.width = std::min(std::max(0.f, b.width - gap) * item.maximumFraction,
-                                   item.extent > 0 ? item.extent : desired.width);
-                if (item.dock == Dock::Right)
-                    r.x += b.width - r.width;
-                else
-                    b.x += r.width + gap;
-                b.width = std::max(0.f, b.width - r.width - gap);
-            }
-            item.control->Arrange(r);
-        }
     }
     Control& FlowPanel::AddItem(std::unique_ptr<Control> child, bool grow, float minimumWidth)
     {

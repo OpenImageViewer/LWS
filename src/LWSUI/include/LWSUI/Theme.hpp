@@ -27,14 +27,19 @@ namespace LWSUI
     {
         switch (preset)
         {
-            case ThemePreset::Light: return "Light";
-            case ThemePreset::Warm: return "Warm";
-            default: return "Dark";
+            case ThemePreset::Light:
+                return "Light";
+            case ThemePreset::Warm:
+                return "Warm";
+            default:
+                return "Dark";
         }
     }
     inline std::optional<ThemePreset> ParseThemePreset(std::string_view name)
     {
-        for (auto preset : ThemePresets) if (name == ThemePresetName(preset)) return preset;
+        for (auto preset : ThemePresets)
+            if (name == ThemePresetName(preset))
+                return preset;
         return std::nullopt;
     }
     struct Theme
@@ -56,6 +61,7 @@ namespace LWSUI
         LLUtils::Color selectionForeground{uint32_t{0x20252bff}};
         // All geometry is in logical pixels, independent of typography.
         float spacing = 0, rowHeight = 240.f / 7, padding = 8;
+        float cornerRadius = 6;
         float labelPadding = 4, textPadding = 6, borderWidth = 1, focusWidth = 2;
         float checkboxSize = 160.f / 7, choiceGap = 80.f / 7, radioHeight = 216.f / 7;
         float rockerWidth = 200.f / 7, browseWidth = 40, swatchWidth = 34, swatchGap = 4, checkerSize = 8;

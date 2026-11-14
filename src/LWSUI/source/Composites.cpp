@@ -174,7 +174,7 @@ namespace LWSUI
     {
         auto b = Bounds();
         const float p = Style().textPadding;
-        canvas.Fill(b.x, b.y, b.width, b.height, Style().surface);
+        canvas.FillRoundedRect(b.x, b.y, b.width, b.height, CornerRadius(), Style().surface);
         DrawText(canvas, text_, b.x + p, b.y + p, b.width - Style().checkboxSize - 2 * p, b.height - 2 * p,
                  Foreground());
         canvas.Text("v", b.x + b.width - Style().checkboxSize, b.y + p, Style().checkboxSize, b.height - 2 * p,
@@ -208,7 +208,7 @@ namespace LWSUI
         text_ = &Emplace<TextBox>();
         (void) text_->SetInputMask(internal::ColorInputMask());
         internal::ConfigureColorTextBox(*text_, std::nullopt,
-            [this] { return internal::ToggleColorTextBox(*text_, preferredHexFormat_); });
+                                        [this] { return internal::ToggleColorTextBox(*text_, preferredHexFormat_); });
         text_->SetPlaceholder("#RR-GG-BB-AA or R,G,B,A");
         swatch_ = &Emplace<ColorSwatch>();
         open_ = swatch_->OnClick.Connect([this] { Open(); });
@@ -218,15 +218,18 @@ namespace LWSUI
                 const auto draft = internal::ReadColorDraft(text);
                 if (!draft || !draft->complete)
                 {
-                    if (draft) swatch_->SetValue(draft->value);
+                    if (draft)
+                        swatch_->SetValue(draft->value);
                     text_->SetValidation(internal::ColorInputMessage);
                     return;
                 }
                 format_ = internal::DetectColorFormat(text);
-                if (format_ != internal::ColorTextFormat::DecimalRgba) preferredHexFormat_ = format_;
+                if (format_ != internal::ColorTextFormat::DecimalRgba)
+                    preferredHexFormat_ = format_;
                 value_ = draft->value;
                 swatch_->SetValue(value_);
-                if (phase != EditPhase::Preview) Refresh();
+                if (phase != EditPhase::Preview)
+                    Refresh();
                 OnEdit.Raise(value_, phase);
             });
         Refresh();
@@ -255,7 +258,11 @@ namespace LWSUI
                 if (auto* control = handle.Get())
                 {
                     auto& picker = static_cast<ColorPicker&>(*control);
-                    if (!complete) { picker.swatch_->SetValue(color); return; }
+                    if (!complete)
+                    {
+                        picker.swatch_->SetValue(color);
+                        return;
+                    }
                     picker.SetValue(color);
                     picker.OnEdit.Raise(color, EditPhase::Preview);
                 }

@@ -1085,7 +1085,8 @@ TEST_CASE("Color fields preserve charcoal fill and show focus below validation a
                         std::to_integer<unsigned>(pixels.pixels[at + 3])};
                 };
                 REQUIRE(pixel(bounds.x + bounds.width - 5, bounds.y + 4) == LLUtils::Color{uint32_t{0x161616ff}});
-                REQUIRE(pixel(bounds.x + 1, bounds.y + 1) ==
+                // Sample the straight top edge; the corner now intentionally remains unpainted.
+                REQUIRE(pixel(bounds.x + 20, bounds.y + 1) ==
                     (focused ? theme.accent : LLUtils::Color{uint32_t{0x161616ff}}));
                 REQUIRE(env.text->Bounds().width == bounds.width);
                 REQUIRE(env.text->Bounds().height == bounds.height);

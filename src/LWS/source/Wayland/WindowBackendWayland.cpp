@@ -201,6 +201,8 @@ namespace LWS
             };
             xdg_surface_add_listener(shellSurface, &surfaceListener, this);
             xdg_toplevel_add_listener(toplevel, &toplevelListener, this);
+            if (owner.fOwnerBackend != nullptr && owner.fOwnerBackend->fNativeState != nullptr)
+                xdg_toplevel_set_parent(toplevel, owner.fOwnerBackend->fNativeState->toplevel);
             if (platform.decorationManager())
             {
                 decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(platform.decorationManager(), toplevel);
@@ -494,6 +496,7 @@ namespace LWS
             return Result::PlatformNotInitialized;
         }
 
+        fOwnerBackend = dynamic_cast<WindowBackendWayland*>(config.owner);
         fTitle = config.title;
         fWindowStyles = config.styles;
         fPosition = config.position;

@@ -9,6 +9,7 @@
         #include <commctrl.h>
     #endif
     #include "source/MenuHost.hpp"
+    #include <LWS/Timer.hpp>
     #include <memory>
     #include <limits>
     #include <stdexcept>
@@ -184,16 +185,16 @@ namespace
     {
         MenuEnvironment()
         {
-            #ifdef LWS_HAS_WIN32_BACKEND
+    #ifdef LWS_HAS_WIN32_BACKEND
             REQUIRE(LWS::Win32::BootstrapProcess() == LWS::Result::Success);
             REQUIRE(context.Init({.backend = LWS::BackendId::Win32}) == LWS::Result::Success);
-            #else
+    #else
             REQUIRE(context.Init({.backend = LWS::BackendId::Wayland}) == LWS::Result::Success);
-            #endif
+    #endif
             window_ = std::make_unique<LWS::Window>(context);
             REQUIRE(window_->Create({.clientSize = {640, 480}, .visible = true}) == LWS::Result::Success);
             host_ = std::make_unique<LWSUI::UIHost>(*window_);
-#ifndef LWS_HAS_WIN32_BACKEND
+    #ifndef LWS_HAS_WIN32_BACKEND
             // Wayland publishes the drawable viewport asynchronously after the configure handshake.
             for (int attempt = 0; attempt < 500 && !window_->IsConfigured(); ++attempt)
             {
@@ -201,7 +202,7 @@ namespace
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
             REQUIRE(window_->IsConfigured());
-#endif
+    #endif
         }
         LWS::Window& window() { return *window_; }
         LWSUI::UIHost& host() { return *host_; }
@@ -267,38 +268,57 @@ TEST_CASE("Menu window buttons reserve space and defer cancellable close actions
     auto b = press();
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Move, .x = 300, .y = 300}));
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = 300, .y = 300}));
-    pump(); REQUIRE(closed == 0); REQUIRE(underlying == 0);
+    pump();
+    REQUIRE(closed == 0);
+    REQUIRE(underlying == 0);
     b = press();
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Escape}));
-    release(b); pump(); REQUIRE(closed == 0);
+    release(b);
+    pump();
+    REQUIRE(closed == 0);
     b = press();
     bar->SetItems(BuildTestMenu(counts));
-    release(b); pump(); REQUIRE(closed == 0);
+    release(b);
+    pump();
+    REQUIRE(closed == 0);
     b = press();
     env.host().SetMainMenuDock(LWSUI::MenuDock::Floating);
-    release(b); pump(); REQUIRE(closed == 0);
+    release(b);
+    pump();
+    REQUIRE(closed == 0);
     REQUIRE(Access::WindowButtonBounds(*bar, Action::Close).width == 0);
     REQUIRE(Access::DragBounds(*bar).width == 0);
-    env.host().SetMainMenuDock(LWSUI::MenuDock::Bottom); env.host().Update();
+    env.host().SetMainMenuDock(LWSUI::MenuDock::Bottom);
+    env.host().Update();
     REQUIRE(Access::WindowButtonBounds(*bar, Action::Close).width > 0);
     bar->orientation = LWSUI::Orientation::Vertical;
-    env.host().Invalidate(true); env.host().Update();
+    env.host().Invalidate(true);
+    env.host().Update();
     REQUIRE(Access::WindowButtonBounds(*bar, Action::Close).width == 0);
     bar->orientation = LWSUI::Orientation::Horizontal;
-    env.host().SetMainMenuDock(LWSUI::MenuDock::Top); env.host().Update();
-    b = press(); release(b); REQUIRE(closed == 0); pump(); REQUIRE(closed == 1);
+    env.host().SetMainMenuDock(LWSUI::MenuDock::Top);
+    env.host().Update();
+    b = press();
+    release(b);
+    REQUIRE(closed == 0);
+    pump();
+    REQUIRE(closed == 1);
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::F10}));
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Left}));
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Enter}));
-    REQUIRE(closed == 1); pump(); REQUIRE(closed == 2);
-#ifndef LWS_HAS_WIN32_BACKEND
+    REQUIRE(closed == 1);
+    pump();
+    REQUIRE(closed == 2);
+    #ifndef LWS_HAS_WIN32_BACKEND
     REQUIRE_FALSE(Access::WindowButtonEnabled(*bar, Action::Minimize));
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = minimize.x + 2, .y = minimize.y + 2}));
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = minimize.x + 2, .y = minimize.y + 2}));
-    pump(); REQUIRE(env.window().IsCreated());
-#endif
+    pump();
+    REQUIRE(env.window().IsCreated());
+    #endif
     // Caption buttons retain their own hit regions even when labels and the drag region do not fit.
-    bar->Measure({90, 40}); bar->Arrange({0, 0, 90, 40});
+    bar->Measure({90, 40});
+    bar->Arrange({0, 0, 90, 40});
     for (auto action : {Action::Minimize, Action::Maximize, Action::Close})
     {
         const auto r = Access::WindowButtonBounds(*bar, action);
@@ -307,13 +327,17 @@ TEST_CASE("Menu window buttons reserve space and defer cancellable close actions
         REQUIRE(r.x + r.width <= 90.01f);
         REQUIRE(bar->HitItem(r.x + r.width / 2, r.y + 2) == LWSUI::MenuBar::NoItem);
     }
-    env.host().Invalidate(true); env.host().Update();
-    b = press(); release(b);
-    env.host().ClearMainMenu(); pump(); REQUIRE(closed == 2);
+    env.host().Invalidate(true);
+    env.host().Update();
+    b = press();
+    release(b);
+    env.host().ClearMainMenu();
+    pump();
+    REQUIRE(closed == 2);
     REQUIRE(errors == 0);
     REQUIRE(underlying == 0);
 }
-#ifdef LWS_HAS_WIN32_BACKEND
+    #ifdef LWS_HAS_WIN32_BACKEND
 TEST_CASE("Captionless menu bars use native Windows state and move APIs", "[ui][menu][window-controls]")
 {
     using Access = LWSUI::internal::MenuSessionAccess;
@@ -348,7 +372,11 @@ TEST_CASE("Captionless menu bars use native Windows state and move APIs", "[ui][
     unsigned moves = 0;
     const SUBCLASSPROC observe = [](HWND h, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) -> LRESULT
     {
-        if (message == WM_NCLBUTTONDOWN && w == HTCAPTION) { ++*reinterpret_cast<unsigned*>(data); return 0; }
+        if (message == WM_NCLBUTTONDOWN && w == HTCAPTION)
+        {
+            ++*reinterpret_cast<unsigned*>(data);
+            return 0;
+        }
         return DefSubclassProc(h, message, w, l);
     };
     REQUIRE(SetWindowSubclass(hwnd, observe, 1, reinterpret_cast<DWORD_PTR>(&moves)));
@@ -357,11 +385,12 @@ TEST_CASE("Captionless menu bars use native Windows state and move APIs", "[ui][
     const auto drag = Access::DragBounds(*bar);
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = drag.x + 4, .y = drag.y + 4}));
     // LWS cannot issue the native move message on a desktop without pointer access.
-    if (pointerAvailable) REQUIRE(moves == 1);
+    if (pointerAvailable)
+        REQUIRE(moves == 1);
     REQUIRE(RemoveWindowSubclass(hwnd, observe, 1));
     REQUIRE((GetWindowLongW(hwnd, GWL_STYLE) & WS_CAPTION) == 0);
 }
-#endif
+    #endif
     #ifdef LWS_HAS_WIN32_BACKEND
 TEST_CASE("Menu caption double-click is an explicit independent maximize toggle", "[ui][menu][double-click]")
 {
@@ -661,13 +690,17 @@ TEST_CASE("Menu icon items and owned content share layout and input safely", "[u
         LWSUI::Button* action = &Emplace<LWSUI::Button>("Action");
         LWSUI::Control* HitTest(float x, float y) override
         {
-            if (!Bounds().Contains(x, y)) return nullptr;
-            for (auto& child : Children()) if (auto* hit = child->HitTest(x, y)) return hit;
+            if (!Bounds().Contains(x, y))
+                return nullptr;
+            for (auto& child : Children())
+                if (auto* hit = child->HitTest(x, y))
+                    return hit;
             return nullptr;
         }
         LWSUI::Size OnMeasure(LWSUI::Size available) override
         {
-            for (auto& child : Children()) child->Measure({80, available.height});
+            for (auto& child : Children())
+                child->Measure({80, available.height});
             return {280, available.height};
         }
         void OnArrange() override
@@ -688,7 +721,8 @@ TEST_CASE("Menu icon items and owned content share layout and input safely", "[u
     unsigned closed = 0, clicked = 0;
     bar->SetWindowControls({.draggable = true, .requestClose = [&] { ++closed; }});
     std::array<std::byte, 8 * 4 * 4> pixels{};
-    const auto icon = std::make_shared<LWS::Bitmap>(LWS::BitmapBuffer{.pixels = pixels, .width = 8, .height = 4, .rowPitch = 32});
+    const auto icon = std::make_shared<LWS::Bitmap>(
+        LWS::BitmapBuffer{.pixels = pixels, .width = 8, .height = 4, .rowPitch = 32});
     bar->SetIcon(icon);
     auto contents = std::make_unique<Content>();
     auto* controls = contents.get();
@@ -705,8 +739,7 @@ TEST_CASE("Menu icon items and owned content share layout and input safely", "[u
     REQUIRE(Access::HitDrag(*bar, 4, 4));
     REQUIRE_FALSE(Access::HitDrag(*bar, bar->ItemRect(0).x + 3, bar->ItemRect(0).y + 3));
     REQUIRE_FALSE(Access::HitDrag(*bar, close.x + 3, close.y + 3));
-    for (auto* control : {static_cast<LWSUI::Control*>(controls->title),
-                          static_cast<LWSUI::Control*>(controls->editor),
+    for (auto* control : {static_cast<LWSUI::Control*>(controls->title), static_cast<LWSUI::Control*>(controls->editor),
                           static_cast<LWSUI::Control*>(controls->action)})
     {
         const auto bounds = control->Bounds();
@@ -716,63 +749,88 @@ TEST_CASE("Menu icon items and owned content share layout and input safely", "[u
     REQUIRE_FALSE(Access::HitDrag(*bar, controls->action->Bounds().x + 3, controls->action->Bounds().y + 3));
     controls->action->SetEnabled(true);
     const auto captionControls = bar->WindowControls();
-    auto noDrag = captionControls; noDrag.draggable = false;
+    auto noDrag = captionControls;
+    noDrag.draggable = false;
     bar->SetWindowControls(noDrag);
     REQUIRE_FALSE(Access::HitDrag(*bar, 4, 4));
     bar->SetWindowControls(captionControls);
-    bar->SetEnabled(false); REQUIRE_FALSE(Access::HitDrag(*bar, 4, 4)); bar->SetEnabled(true);
+    bar->SetEnabled(false);
+    REQUIRE_FALSE(Access::HitDrag(*bar, 4, 4));
+    bar->SetEnabled(true);
     const auto press = [&](LWSUI::Rect b)
     { return env.host().Route({.kind = LWSUI::InputKind::Down, .x = b.x + 3, .y = b.y + 3}); };
     const auto release = [&](LWSUI::Rect b)
     { return env.host().Route({.kind = LWSUI::InputKind::Up, .x = b.x + 3, .y = b.y + 3}); };
-    REQUIRE(press(controls->action->Bounds())); REQUIRE(release(controls->action->Bounds()));
-    REQUIRE(clicked == 1); REQUIRE_FALSE(env.host().HasOpenMenu());
+    REQUIRE(press(controls->action->Bounds()));
+    REQUIRE(release(controls->action->Bounds()));
+    REQUIRE(clicked == 1);
+    REQUIRE_FALSE(env.host().HasOpenMenu());
     REQUIRE(env.host().Focus(controls->editor));
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Text, .text = "draft"}));
     const auto draft = controls->editor->Text();
     REQUIRE(press(close));
-    REQUIRE(release(controls->action->Bounds())); // Release over content cancels the caption button.
+    REQUIRE(release(controls->action->Bounds()));  // Release over content cancels the caption button.
     REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
-    REQUIRE(closed == 0); REQUIRE(clicked == 1);
-#ifdef LWS_HAS_WIN32_BACKEND
+    REQUIRE(closed == 0);
+    REQUIRE(clicked == 1);
+    #ifdef LWS_HAS_WIN32_BACKEND
     REQUIRE(GetCapture() == nullptr);
     unsigned moves = 0;
     const SUBCLASSPROC observer = [](HWND h, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) -> LRESULT
-    { if (message == WM_NCLBUTTONDOWN && w == HTCAPTION) { ++*reinterpret_cast<unsigned*>(data); return 0; }
-      return DefSubclassProc(h, message, w, l); };
+    {
+        if (message == WM_NCLBUTTONDOWN && w == HTCAPTION)
+        {
+            ++*reinterpret_cast<unsigned*>(data);
+            return 0;
+        }
+        return DefSubclassProc(h, message, w, l);
+    };
     REQUIRE(SetWindowSubclass(Hwnd(env.window()), observer, 9, reinterpret_cast<DWORD_PTR>(&moves)));
-    POINT point{}; const bool pointer = GetCursorPos(&point) != FALSE;
-    REQUIRE(press({1, 1, 20, 20})); REQUIRE(release({1, 1, 20, 20}));
-    if (pointer) REQUIRE(moves == 1);
+    POINT point{};
+    const bool pointer = GetCursorPos(&point) != FALSE;
+    REQUIRE(press({1, 1, 20, 20}));
+    REQUIRE(release({1, 1, 20, 20}));
+    if (pointer)
+        REQUIRE(moves == 1);
     const auto iconMoves = moves;
-    REQUIRE(press(controls->title->Bounds())); REQUIRE(release(controls->title->Bounds()));
+    REQUIRE(press(controls->title->Bounds()));
+    REQUIRE(release(controls->title->Bounds()));
     controls->action->SetEnabled(false);
-    REQUIRE(press(controls->action->Bounds())); REQUIRE(release(controls->action->Bounds()));
+    REQUIRE(press(controls->action->Bounds()));
+    REQUIRE(release(controls->action->Bounds()));
     REQUIRE(moves == iconMoves);
     const auto b = controls->Bounds();
     REQUIRE(press({b.x + 170, b.y, 10, b.height}));
-    if (pointer) REQUIRE(moves == iconMoves + 1);
+    if (pointer)
+        REQUIRE(moves == iconMoves + 1);
     REQUIRE(release({b.x + 170, b.y, 10, b.height}));
     REQUIRE(RemoveWindowSubclass(Hwnd(env.window()), observer, 9));
     controls->action->SetEnabled(true);
-#endif
+    #endif
     REQUIRE(controls->editor->Text() == draft);
     REQUIRE(env.host().Focus(controls->editor));
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Tab}));
     REQUIRE(env.host().IsFocused(*controls->action));
-    controls->action->SetContextMenuProvider([](auto&, const auto&)
-        { return std::vector<LWSUI::ContextMenuItem>{{"Choose", "", [](auto&) {}}}; });
+    controls->action->SetContextMenuProvider(
+        [](auto&, const auto&) { return std::vector<LWSUI::ContextMenuItem>{{"Choose", "", [](auto&) {}}}; });
     const auto actionBounds = controls->action->Bounds();
-    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = actionBounds.x + 2, .y = actionBounds.y + 2, .button = LWS::MouseButton::Right}));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up,
+                              .x = actionBounds.x + 2,
+                              .y = actionBounds.y + 2,
+                              .button = LWS::MouseButton::Right}));
     REQUIRE(env.host().HasContextMenu());
     const auto old = controls->action->Handle();
     bar->SetContent(std::make_unique<LWSUI::Label>("Replacement"), 80);
     REQUIRE_FALSE(old);
-    env.host().Update(); REQUIRE_FALSE(env.host().HasContextMenu());
-    bar->SetIcon(nullptr); env.host().Update();
+    env.host().Update();
+    REQUIRE_FALSE(env.host().HasContextMenu());
+    bar->SetIcon(nullptr);
+    env.host().Update();
     REQUIRE(bar->ItemRect(0).x == bar->Bounds().x);
-    bar->SetIcon(icon); bar->orientation = LWSUI::Orientation::Vertical;
-    env.host().SetMainMenuDock(LWSUI::MenuDock::Left); env.host().Update();
+    bar->SetIcon(icon);
+    bar->orientation = LWSUI::Orientation::Vertical;
+    env.host().SetMainMenuDock(LWSUI::MenuDock::Left);
+    env.host().Update();
     REQUIRE(bar->ItemRect(0).y > bar->Bounds().y);
     REQUIRE_FALSE(Access::HitDrag(*bar, 4, 4));
     REQUIRE(bar->Content()->Bounds().width == 0);
@@ -890,9 +948,9 @@ TEST_CASE("Menu pointer input opens, swallows releases, and closes on outside cl
     env.host().Update();
     const auto grip = bar->ItemRect(0);
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = grip.x + 4, .y = grip.y + 4}));
-#ifdef LWS_HAS_WIN32_BACKEND
+    #ifdef LWS_HAS_WIN32_BACKEND
     REQUIRE(GetCapture() == nullptr);
-#endif
+    #endif
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = grip.x + 4, .y = grip.y + 4}));
     REQUIRE(clicks == 1);
 }
@@ -982,10 +1040,10 @@ TEST_CASE("Menu dropdown rows activate, cascade, and reuse windows", "[ui][menu]
     const auto pressRow = [&](size_t level, size_t row)
     {
         const auto rect = session.Panel(level)->RowRect(row);
-        return session.PanelInput(level, {.kind = LWSUI::InputKind::Down, .x = rect.x + 4,
-                                          .y = rect.y + rect.height / 2}) &&
-               session.PanelInput(level, {.kind = LWSUI::InputKind::Up, .x = rect.x + 4,
-                                          .y = rect.y + rect.height / 2});
+        return session.PanelInput(level,
+                                  {.kind = LWSUI::InputKind::Down, .x = rect.x + 4, .y = rect.y + rect.height / 2}) &&
+               session.PanelInput(level,
+                                  {.kind = LWSUI::InputKind::Up, .x = rect.x + 4, .y = rect.y + rect.height / 2});
     };
     clickBar();
     REQUIRE(session.Panel(0)->Count() == 5);
@@ -1038,8 +1096,7 @@ TEST_CASE("Menu hover opens cascades on a delay", "[ui][menu]")
     const auto hoverRow = [&](size_t row)
     {
         const auto rect = session.Panel(0)->RowRect(row);
-        return session.PanelInput(0, {.kind = LWSUI::InputKind::Move, .x = rect.x + 4,
-                                      .y = rect.y + rect.height / 2});
+        return session.PanelInput(0, {.kind = LWSUI::InputKind::Move, .x = rect.x + 4, .y = rect.y + rect.height / 2});
     };
     openFile();
     // The default delay arms a timer; the harness never runs the loop, so nothing opens.
@@ -1099,13 +1156,13 @@ TEST_CASE("Menu structural changes close the open menu and drop pending commands
     REQUIRE_FALSE(env.host().HasOpenMenu());
 }
 
-#ifdef LWS_HAS_WIN32_BACKEND
+    #ifdef LWS_HAS_WIN32_BACKEND
 TEST_CASE("Floating menu dropdowns track native mouse movement", "[ui][menu]")
 {
     MenuEnvironment env;
     MenuCounters counts;
     REQUIRE(env.window().SetWindowStyles(LWS::WindowStyle::Caption | LWS::WindowStyle::CloseButton |
-                                        LWS::WindowStyle::ResizableBorder) == LWS::Result::Success);
+                                         LWS::WindowStyle::ResizableBorder) == LWS::Result::Success);
     env.host().SetRoot(std::make_unique<LWSUI::Button>("content"));
     env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts)), LWSUI::MenuDock::Floating);
     env.host().SetMainMenuPosition(40, 30);
@@ -1142,7 +1199,8 @@ TEST_CASE("Floating menu dropdowns track native mouse movement", "[ui][menu]")
         canvas.Begin(int(panel->Bounds().width), int(panel->Bounds().height));
         panel->Render(canvas);
         const auto bitmap = canvas.End();
-        const auto* pixel = bitmap.pixels.data() + int(bounds.y + bounds.height / 2) * bitmap.rowPitch + int(bounds.x + 4) * 4;
+        const auto* pixel = bitmap.pixels.data() + int(bounds.y + bounds.height / 2) * bitmap.rowPitch +
+                            int(bounds.x + 4) * 4;
         const auto color = panel->Style().selection;
         CHECK(std::to_integer<uint8_t>(pixel[0]) == color.B());
         CHECK(std::to_integer<uint8_t>(pixel[1]) == color.G());
@@ -1164,7 +1222,11 @@ TEST_CASE("Detached menu dropdowns size independently of their owner", "[ui][men
     LWS::LogicalSize size{220, 36};
     bool vertical = false;
     SECTION("horizontal") {}
-    SECTION("vertical") { size = {60, 220}; vertical = true; }
+    SECTION("vertical")
+    {
+        size = {60, 220};
+        vertical = true;
+    }
     REQUIRE(env.window().RequestPlacement({.clientSize = size}) == LWS::Result::Success);
     env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts)), LWSUI::MenuDock::Floating);
     env.host().MainMenu()->orientation = vertical ? LWSUI::Orientation::Vertical : LWSUI::Orientation::Horizontal;
@@ -1230,7 +1292,7 @@ TEST_CASE("Menu popups unmap at once when the owner loses focus", "[ui][menu]")
     REQUIRE_FALSE(IsWindowVisible(dropdown));
     REQUIRE_FALSE(IsWindowVisible(submenu));
 }
-#endif
+    #endif
 
 TEST_CASE("Menus preserve captured root gestures and overlay priority", "[ui][menu][routing]")
 {
@@ -1241,8 +1303,12 @@ TEST_CASE("Menus preserve captured root gestures and overlay priority", "[ui][me
     {
         auto slider = std::make_unique<LWSUI::Slider>();
         unsigned commits = 0, previews = 0;
-        auto edit = slider->OnEdit.Connect([&](double, LWSUI::EditPhase phase)
-        { commits += phase == LWSUI::EditPhase::Commit; previews += phase == LWSUI::EditPhase::Preview; });
+        auto edit = slider->OnEdit.Connect(
+            [&](double, LWSUI::EditPhase phase)
+            {
+                commits += phase == LWSUI::EditPhase::Commit;
+                previews += phase == LWSUI::EditPhase::Preview;
+            });
         env.host().SetRoot(std::move(slider));
         env.host().Update();
         REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = 100, .y = 100}));
@@ -1252,9 +1318,9 @@ TEST_CASE("Menus preserve captured root gestures and overlay priority", "[ui][me
         const auto completed = previews;
         env.host().Route({.kind = LWSUI::InputKind::Move, .x = 400, .y = 100});
         REQUIRE(previews == completed);
-#ifdef LWS_HAS_WIN32_BACKEND
+    #ifdef LWS_HAS_WIN32_BACKEND
         REQUIRE(GetCapture() == nullptr);
-#endif
+    #endif
     }
     SECTION("modal popup blocks pointer and keyboard menu activation")
     {
@@ -1296,7 +1362,10 @@ TEST_CASE("Floating menu bounds preserve either orientation", "[ui][menu][layout
     MenuCounters counts;
     auto bar = std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts));
     SECTION("horizontal") {}
-    SECTION("vertical") { bar->orientation = LWSUI::Orientation::Vertical; }
+    SECTION("vertical")
+    {
+        bar->orientation = LWSUI::Orientation::Vertical;
+    }
     SECTION("vertical with icon")
     {
         bar->orientation = LWSUI::Orientation::Vertical;
@@ -1335,12 +1404,14 @@ TEST_CASE("Floating menu bounds preserve either orientation", "[ui][menu][layout
 TEST_CASE("Dropdown windows host scrolling and keyboard layout locally", "[ui][menu][scroll]")
 {
     MenuEnvironment env;
-    auto theme = env.host().Style(); theme.menuMaxRows = 4;
+    auto theme = env.host().Style();
+    theme.menuMaxRows = 4;
     env.host().SetTheme(theme);
     std::vector<LWSUI::MenuItem> items;
-    for (int i = 0; i < 24; ++i) items.push_back({"Item " + std::to_string(i), "", [] {}});
-    env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>(
-        std::vector<LWSUI::MenuBarItem>{{"File", std::move(items)}}));
+    for (int i = 0; i < 24; ++i)
+        items.push_back({"Item " + std::to_string(i), "", [] {}});
+    env.host().SetMainMenu(
+        std::make_unique<LWSUI::MenuBar>(std::vector<LWSUI::MenuBarItem>{{"File", std::move(items)}}));
     env.host().Update();
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::F10}));
     REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Down}));
@@ -1362,9 +1433,9 @@ TEST_CASE("Dropdown windows host scrolling and keyboard layout locally", "[ui][m
     const float x = bounds.width - panel->Style().scrollbarMargin - panel->Style().scrollbarWidth / 2;
     REQUIRE(dynamic_cast<LWSUI::ScrollBar*>(panel->HitTest(x, bounds.height / 2)));
     REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Down, .x = x, .y = bounds.height / 2}));
-#ifdef LWS_HAS_WIN32_BACKEND
+    #ifdef LWS_HAS_WIN32_BACKEND
     REQUIRE(GetCapture() == Hwnd(*session.LevelWindow(0)));
-#endif
+    #endif
     REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Move, .x = x, .y = bounds.height}));
     REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Up, .x = x, .y = bounds.height}));
     REQUIRE(panel->Offset() > 100);
@@ -1383,7 +1454,8 @@ TEST_CASE("Leaving a submenu row cancels delayed opening", "[ui][menu][hover]")
 {
     MenuEnvironment env;
     MenuCounters counts;
-    auto theme = env.host().Style(); theme.menuHoverDelayMs = 15;
+    auto theme = env.host().Style();
+    theme.menuHoverDelayMs = 15;
     env.host().SetTheme(theme);
     env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts)));
     env.host().Update();
@@ -1396,8 +1468,14 @@ TEST_CASE("Leaving a submenu row cancels delayed opening", "[ui][menu][hover]")
         REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Move, .x = b.x + 4, .y = b.y + b.height / 2}));
     };
     move(3);
-    SECTION("separator") { move(2); }
-    SECTION("disabled row") { move(1); }
+    SECTION("separator")
+    {
+        move(2);
+    }
+    SECTION("disabled row")
+    {
+        move(1);
+    }
     REQUIRE_FALSE(session.Panel(0)->Active());
     std::this_thread::sleep_for(std::chrono::milliseconds(40));
     REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
@@ -1689,7 +1767,8 @@ TEST_CASE("Content-sized multiline text uses its enclosing viewport", "[ui][text
     auto root = std::make_unique<ScrollView>();
     auto& scroll = *root;
     std::string content;
-    for (int i = 0; i < 100; ++i) content += "Wrapped selectable content. ";
+    for (int i = 0; i < 100; ++i)
+        content += "Wrapped selectable content. ";
     auto ownedText = std::make_unique<TextBox>(content, TextBoxMode::Multiline);
     auto& text = *ownedText;
     text.sizeToContent = true;
@@ -1727,7 +1806,8 @@ TEST_CASE("Content-sized multiline text uses its enclosing viewport", "[ui][text
     REQUIRE(leaves == 1);
     REQUIRE(platform.ProcessMessages() == LWS::LoopResult::Continue);
     REQUIRE(scroll.Offset() == beforeLeave);
-    for (auto& child : text.Children()) REQUIRE_FALSE(child->Visible());
+    for (auto& child : text.Children())
+        REQUIRE_FALSE(child->Visible());
     text.SetReadOnly(false);
     host.Route({.kind = InputKind::KeyDown, .key = LWS::KeyCode::A, .control = true});
     REQUIRE(host.Route({.kind = InputKind::Text, .text = content + content}));
@@ -1753,13 +1833,14 @@ TEST_CASE("Unhandled keys follow controls and overlays", "[ui][keyboard]")
     env.host().SetRoot(std::move(root));
     env.host().Update();
     unsigned keys = 0;
-    auto event = env.host().OnUnhandledKeyDown.Connect([&](const Input& input, bool& handled)
-    {
-        REQUIRE(input.kind == InputKind::KeyDown);
-        REQUIRE(input.key == LWS::KeyCode::Escape);
-        ++keys;
-        handled = true;
-    });
+    auto event = env.host().OnUnhandledKeyDown.Connect(
+        [&](const Input& input, bool& handled)
+        {
+            REQUIRE(input.kind == InputKind::KeyDown);
+            REQUIRE(input.key == LWS::KeyCode::Escape);
+            ++keys;
+            handled = true;
+        });
     const Input escape{.kind = InputKind::KeyDown, .key = LWS::KeyCode::Escape};
     REQUIRE(env.host().Focus(&text));
     REQUIRE(env.host().Route(escape));
@@ -1786,6 +1867,367 @@ TEST_CASE("Unhandled keys follow controls and overlays", "[ui][keyboard]")
     event.Disconnect();
     REQUIRE(env.host().Focus(&slider));
     REQUIRE_FALSE(env.host().Route(escape));
+}
+
+TEST_CASE("Control corner radii follow themes and allow square overrides", "[ui][corners]")
+{
+    LWSUI::Panel panel;
+    auto content = std::make_unique<LWSUI::Button>();
+    auto& button = *content;
+    panel.SetContent(std::move(content));
+    REQUIRE(button.CornerRadius() == 6);
+    auto theme = LWSUI::MakeTheme();
+    theme.cornerRadius = 10;
+    panel.SetStyle(theme);
+    REQUIRE(button.CornerRadius() == 10);
+    panel.SetCornerRadius(18);
+    REQUIRE(button.CornerRadius() == 10);
+    button.SetCornerRadius(0);
+    REQUIRE(button.CornerRadius() == 0);
+    button.SetCornerRadius(std::nullopt);
+    REQUIRE(button.CornerRadius() == 10);
+    for (float radius : {-1.f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()})
+        REQUIRE_THROWS_AS(button.SetCornerRadius(radius), std::invalid_argument);
+    REQUIRE(button.CornerRadius() == 10);
+}
+
+TEST_CASE("Rounded surfaces preserve corners, clamp radii and inset borders", "[ui][corners][raster]")
+{
+    LWSUI::Canvas canvas;
+    const auto white = LLUtils::Color(255, 255, 255);
+    const auto black = LLUtils::Color(0, 0, 0);
+    canvas.Begin(120, 40);
+    canvas.Fill(0, 0, 120, 40, white);
+    canvas.FillRoundedRect(0, 0, 40, 40, 12, black);
+    canvas.FillRoundedRect(40, 0, 40, 40, 0, black);
+    canvas.StrokeRoundedRect(80, 0, 40, 40, 100, 4, black);
+    const auto bitmap = canvas.End();
+    auto red = [&](int x, int y) { return std::to_integer<int>(bitmap.pixels[y * bitmap.rowPitch + x * 4 + 2]); };
+    REQUIRE(red(0, 0) == 255);
+    REQUIRE(red(20, 0) < 20);
+    REQUIRE(red(20, 20) == 0);
+    REQUIRE(red(40, 0) == 0);
+    REQUIRE(red(80, 0) == 255);
+    REQUIRE(red(100, 1) < 20);
+    REQUIRE(red(100, 20) == 255);
+}
+
+namespace LWSUI
+{
+    struct ThumbwheelTestAccess
+    {
+        static bool Input(Thumbwheel& wheel, const LWSUI::Input& input)
+        {
+            wheel.lastTick_ = std::chrono::steady_clock::now() + std::chrono::hours(1);
+            return wheel.Dispatch(input);
+        }
+        static void Advance(Thumbwheel& wheel, double seconds) { wheel.Advance(seconds); }
+        static double Position(const Thumbwheel& wheel) { return wheel.position_; }
+        static double Rate(const Thumbwheel& wheel) { return wheel.Rate(); }
+        static bool Running(const Thumbwheel& wheel) { return wheel.timer_ && wheel.timer_->GetInterval() != 0; }
+    };
+}  // namespace LWSUI
+
+TEST_CASE("Thumbwheel clicks select their position and immediately adjust once", "[ui][thumbwheel]")
+{
+    using namespace LWSUI;
+    using A = ThumbwheelTestAccess;
+    Thumbwheel wheel;
+    wheel.Arrange({30, 20, 200, 20});
+    wheel.SetSpeedRange(2, 100);
+    std::vector<std::pair<double, EditPhase>> edits;
+    auto edit = wheel.OnEdit.Connect([&](double value, EditPhase phase) { edits.emplace_back(value, phase); });
+    // Initial placement follows the pointer independently of drag sensitivity.
+    for (const double sensitivity : {.1, 1., 4.})
+        for (const int direction : {-1, 1})
+        {
+            wheel.SetDragSensitivity(sensitivity);
+            edits.clear();
+            const float x = 130 + direction * 48;
+            A::Input(wheel, {.kind = InputKind::Down, .x = x, .shift = true});
+            REQUIRE(A::Position(wheel) == direction * .5);
+            REQUIRE(edits.size() == 2);
+            REQUIRE(edits.front() == std::pair{0., EditPhase::Preview});
+            REQUIRE(edits.back() == std::pair{double(direction), EditPhase::Preview});
+            A::Input(wheel, {.kind = InputKind::Up, .x = x});
+            REQUIRE(edits.back() == std::pair{double(direction), EditPhase::Commit});
+            REQUIRE(A::Position(wheel) == 0);
+        }
+    wheel.SetDragSensitivity(1);
+    edits.clear();
+    A::Input(wheel, {.kind = InputKind::Down, .x = 178});
+    const auto rate = A::Rate(wheel);
+    // A repeated down must not reset the gesture or emit another activation step.
+    const auto editCount = edits.size();
+    A::Input(wheel, {.kind = InputKind::Down, .x = 82});
+    REQUIRE(A::Position(wheel) == .5);
+    REQUIRE(edits.size() == editCount);
+    A::Advance(wheel, .05);
+    REQUIRE(std::abs(edits.back().first - (1 + rate * .05)) < 1e-9);
+    const auto accumulated = edits.back().first;
+    // First drag movement continues from the clicked position, with no extra step.
+    A::Input(wheel, {.kind = InputKind::Move, .x = 202});
+    REQUIRE(A::Position(wheel) == .75);
+    REQUIRE(edits.back().first == accumulated);
+    A::Input(wheel, {.kind = InputKind::Move, .x = 130});
+    REQUIRE(A::Rate(wheel) == 0);
+    A::Input(wheel, {.kind = InputKind::Move, .x = 82});
+    REQUIRE(A::Position(wheel) == -.5);
+    REQUIRE(edits.back().first == accumulated);
+    A::Input(wheel, {.kind = InputKind::Cancel});
+    REQUIRE(edits.back() == std::pair{0., EditPhase::Cancel});
+    for (const float x : {130.f, 134.f})
+    {
+        edits.clear();
+        A::Input(wheel, {.kind = InputKind::Down, .x = x});
+        REQUIRE(A::Rate(wheel) == 0);
+        A::Input(wheel, {.kind = InputKind::Up, .x = x});
+        REQUIRE(edits.size() == 2);
+        REQUIRE(edits.back() == std::pair{0., EditPhase::Commit});
+    }
+    for (const auto [x, position] : {std::pair{30.f, -1.}, std::pair{230.f, 1.}})
+    {
+        A::Input(wheel, {.kind = InputKind::Down, .x = x});
+        REQUIRE(A::Position(wheel) == position);
+        REQUIRE(A::Rate(wheel) == position * 100);
+        A::Input(wheel, {.kind = InputKind::Cancel});
+    }
+    wheel.Arrange({30, 20, 4, 20});
+    A::Input(wheel, {.kind = InputKind::Down, .x = 34});
+    REQUIRE(A::Position(wheel) == 0);
+    A::Input(wheel, {.kind = InputKind::Cancel});
+}
+
+TEST_CASE("Thumbwheel activation respects cancellation from edit callbacks", "[ui][thumbwheel]")
+{
+    using namespace LWSUI;
+    using A = ThumbwheelTestAccess;
+    for (const double stopAt : {0., 1.})
+    {
+        Thumbwheel wheel;
+        wheel.Arrange({0, 0, 200, 20});
+        std::vector<std::pair<double, EditPhase>> edits;
+        auto edit = wheel.OnEdit.Connect(
+            [&](double value, EditPhase phase)
+            {
+                edits.emplace_back(value, phase);
+                if (phase == EditPhase::Preview && value == stopAt)
+                    wheel.SetEnabled(false);
+            });
+        A::Input(wheel, {.kind = InputKind::Down, .x = 148});
+        REQUIRE(edits.size() == (stopAt == 0 ? 2 : 3));
+        REQUIRE(edits.back() == std::pair{0., EditPhase::Cancel});
+        REQUIRE(A::Position(wheel) == 0);
+        REQUIRE_FALSE(A::Running(wheel));
+    }
+}
+
+TEST_CASE("Thumbwheel position bounds control timed rates and spring back on release", "[ui][thumbwheel]")
+{
+    using namespace LWSUI;
+    using A = ThumbwheelTestAccess;
+    Thumbwheel wheel;
+    wheel.Arrange({0, 0, 200, 20});
+    std::vector<std::pair<double, EditPhase>> edits;
+    auto connection = wheel.OnEdit.Connect([&](double value, EditPhase phase) { edits.emplace_back(value, phase); });
+    REQUIRE(A::Input(wheel, {.kind = InputKind::Down, .x = 100}));
+    REQUIRE(edits.back() == std::pair{0., EditPhase::Preview});
+    A::Input(wheel, {.kind = InputKind::Move, .x = 104});
+    REQUIRE(A::Rate(wheel) == 0);
+    A::Advance(wheel, .05);
+    REQUIRE(edits.size() == 1);
+    A::Input(wheel, {.kind = InputKind::Move, .x = 106});
+    REQUIRE(edits.back() == std::pair{1., EditPhase::Preview});
+    REQUIRE(A::Rate(wheel) > 2);
+    REQUIRE(A::Rate(wheel) < 3);
+    A::Input(wheel, {.kind = InputKind::Move, .x = 500});
+    REQUIRE(A::Position(wheel) == 1);
+    REQUIRE(A::Rate(wheel) == 8000);
+    A::Advance(wheel, .05);
+    REQUIRE(edits.back().first == 401);
+    A::Advance(wheel, .05);
+    REQUIRE(edits.back().first == 801);
+    A::Advance(wheel, 5);
+    REQUIRE(edits.back().first == 1201);
+    A::Input(wheel, {.kind = InputKind::Move, .x = 499});
+    REQUIRE(A::Position(wheel) < 1);
+    A::Input(wheel, {.kind = InputKind::Move, .x = 500, .shift = true});
+    REQUIRE(A::Rate(wheel) == 800);
+    A::Input(wheel, {.kind = InputKind::Up, .x = 500});
+    REQUIRE(edits.back().second == EditPhase::Commit);
+    REQUIRE(edits.back().first == 1201);
+    REQUIRE(A::Position(wheel) == 0);
+    A::Advance(wheel, .05);
+    REQUIRE(edits.back().first == 1201);
+    A::Input(wheel, {.kind = InputKind::Down, .x = 100});
+    A::Input(wheel, {.kind = InputKind::Move, .x = -100});
+    REQUIRE(A::Position(wheel) == -1);
+    REQUIRE(A::Rate(wheel) == -8000);
+    A::Advance(wheel, .05);
+    REQUIRE(edits.back().first == -401);
+    A::Input(wheel, {.kind = InputKind::Cancel});
+    REQUIRE(edits.back() == std::pair{0., EditPhase::Cancel});
+    REQUIRE(A::Position(wheel) == 0);
+    A::Input(wheel, {.kind = InputKind::KeyDown, .key = LWS::KeyCode::Right});
+    REQUIRE(edits.back() == std::pair{1., EditPhase::Commit});
+    A::Input(wheel, {.kind = InputKind::KeyDown, .key = LWS::KeyCode::Left, .shift = true});
+    REQUIRE(edits.back() == std::pair{-1., EditPhase::Commit});
+    A::Input(wheel, {.kind = InputKind::Wheel, .wheel = -1});
+    REQUIRE(edits.back() == std::pair{-1., EditPhase::Commit});
+    wheel.SetSpeedRange(1, 100);
+    A::Input(wheel, {.kind = InputKind::Down, .x = 100});
+    A::Input(wheel, {.kind = InputKind::Move, .x = 200});
+    REQUIRE(A::Rate(wheel) == 100);
+    wheel.SetEnabled(false);
+    REQUIRE(edits.back() == std::pair{0., EditPhase::Cancel});
+    REQUIRE_FALSE(A::Input(wheel, {.kind = InputKind::Down, .x = 100}));
+    REQUIRE_THROWS_AS(wheel.SetSpeedRange(0, 10), std::invalid_argument);
+    REQUIRE_THROWS_AS(wheel.SetSpeedRange(10, 1), std::invalid_argument);
+    REQUIRE_THROWS_AS(wheel.SetSpeedRange(1, std::numeric_limits<double>::infinity()), std::invalid_argument);
+}
+
+TEST_CASE("Thumbwheel acceleration changes the curve without changing endpoint speeds", "[ui][thumbwheel]")
+{
+    using namespace LWSUI;
+    using A = ThumbwheelTestAccess;
+    Thumbwheel wheel;
+    wheel.Arrange({0, 0, 200, 20});
+    A::Input(wheel, {.kind = InputKind::Down, .x = 100});
+    A::Input(wheel, {.kind = InputKind::Move, .x = 148});
+    const auto standard = A::Rate(wheel);
+    wheel.SetAcceleration(.5);
+    const auto gentle = A::Rate(wheel);
+    REQUIRE(gentle > 2);
+    REQUIRE(gentle < standard);
+    A::Input(wheel, {.kind = InputKind::Move, .x = 200});
+    REQUIRE(A::Rate(wheel) == 8000);
+    wheel.SetAcceleration(.1);
+    REQUIRE(A::Rate(wheel) == 8000);
+    REQUIRE_THROWS_AS(wheel.SetAcceleration(0), std::invalid_argument);
+    REQUIRE_THROWS_AS(wheel.SetAcceleration(2.1), std::invalid_argument);
+    REQUIRE_THROWS_AS(wheel.SetAcceleration(std::numeric_limits<double>::quiet_NaN()), std::invalid_argument);
+    REQUIRE_THROWS_AS(wheel.SetAcceleration(std::numeric_limits<double>::infinity()), std::invalid_argument);
+    A::Input(wheel, {.kind = InputKind::Cancel});
+}
+
+TEST_CASE("Thumbwheel tuning controls travel and held rates without changing discrete steps", "[ui][thumbwheel]")
+{
+    using namespace LWSUI;
+    using A = ThumbwheelTestAccess;
+    Thumbwheel wheel;
+    wheel.Arrange({0, 0, 200, 20});
+    wheel.SetSpeedRange(2, 4000);
+    wheel.SetDragSensitivity(2);
+    wheel.SetDeadZone(.25);
+    A::Input(wheel, {.kind = InputKind::Down, .x = 100});
+    A::Input(wheel, {.kind = InputKind::Move, .x = 112});
+    REQUIRE(A::Position(wheel) == .25);
+    REQUIRE(A::Rate(wheel) == 0);
+    wheel.SetDeadZone(0);
+    REQUIRE(A::Rate(wheel) > 2);
+    const auto position = A::Position(wheel);
+    wheel.SetDragSensitivity(.5);
+    REQUIRE(A::Position(wheel) == position);
+    A::Input(wheel, {.kind = InputKind::Move, .x = 160});
+    REQUIRE(A::Position(wheel) == .5);
+    A::Input(wheel, {.kind = InputKind::Move, .x = 500});
+    REQUIRE(A::Rate(wheel) == 4000);
+    wheel.SetFineModeMultiplier(.05);
+    A::Input(wheel, {.kind = InputKind::KeyDown, .shift = true});
+    REQUIRE(A::Rate(wheel) == 200);
+    A::Input(wheel, {.kind = InputKind::Cancel});
+    for (const double bad : {-1., std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+    {
+        REQUIRE_THROWS_AS(wheel.SetDeadZone(bad), std::invalid_argument);
+        REQUIRE_THROWS_AS(wheel.SetDragSensitivity(bad), std::invalid_argument);
+        REQUIRE_THROWS_AS(wheel.SetFineModeMultiplier(bad), std::invalid_argument);
+    }
+    REQUIRE_THROWS_AS(wheel.SetDeadZone(.251), std::invalid_argument);
+    REQUIRE_THROWS_AS(wheel.SetDragSensitivity(.09), std::invalid_argument);
+    REQUIRE_THROWS_AS(wheel.SetDragSensitivity(4.01), std::invalid_argument);
+    REQUIRE_THROWS_AS(wheel.SetFineModeMultiplier(.009), std::invalid_argument);
+    REQUIRE_THROWS_AS(wheel.SetFineModeMultiplier(1.01), std::invalid_argument);
+    wheel.SetDragSensitivity(.1);
+    wheel.SetDragSensitivity(4);
+    wheel.SetFineModeMultiplier(.01);
+    wheel.SetFineModeMultiplier(1);
+}
+
+TEST_CASE("Thumbwheel starts and stops its window timer with active holds", "[ui][thumbwheel]")
+{
+    using namespace LWSUI;
+    MenuEnvironment env;
+    auto control = std::make_unique<Thumbwheel>();
+    auto& wheel = *control;
+    env.host().SetRoot(std::move(control));
+    env.host().Update();
+    const float center = wheel.Bounds().x + wheel.Bounds().width / 2;
+    auto input = [&](Input e) { return ThumbwheelTestAccess::Input(wheel, e); };
+    input({.kind = InputKind::Down, .x = center});
+    REQUIRE_FALSE(ThumbwheelTestAccess::Running(wheel));
+    input({.kind = InputKind::Move, .x = center + (wheel.Bounds().width / 2 - 4) * .1f});
+    REQUIRE(ThumbwheelTestAccess::Running(wheel));
+    wheel.SetDeadZone(.25);
+    REQUIRE_FALSE(ThumbwheelTestAccess::Running(wheel));
+    wheel.SetDeadZone(0);
+    REQUIRE(ThumbwheelTestAccess::Running(wheel));
+    input({.kind = InputKind::Move, .x = 500});
+    REQUIRE(ThumbwheelTestAccess::Running(wheel));
+    double adjusted = 0;
+    auto edit = wheel.OnEdit.Connect([&](double value, EditPhase) { adjusted = value; });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (adjusted == 0 && std::chrono::steady_clock::now() < deadline)
+    {
+        REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    REQUIRE(adjusted > 0);
+    input({.kind = InputKind::Up});
+    REQUIRE_FALSE(ThumbwheelTestAccess::Running(wheel));
+    input({.kind = InputKind::Down, .x = center + 30});
+    REQUIRE(ThumbwheelTestAccess::Running(wheel));
+    input({.kind = InputKind::Cancel});
+    REQUIRE_FALSE(ThumbwheelTestAccess::Running(wheel));
+    input({.kind = InputKind::Down, .x = center});
+    input({.kind = InputKind::Move, .x = 500});
+    wheel.SetVisible(false);
+    REQUIRE_FALSE(ThumbwheelTestAccess::Running(wheel));
+    wheel.SetVisible(true);
+    input({.kind = InputKind::Down, .x = center});
+    input({.kind = InputKind::Move, .x = 500});
+    auto replacement = std::make_unique<Button>();
+    env.host().SetRoot(std::move(replacement));
+    REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+}
+
+TEST_CASE("Thumbwheel renders shaded ends and a red center marker", "[ui][thumbwheel][raster]")
+{
+    using namespace LWSUI;
+    Thumbwheel wheel;
+    wheel.SetStyle(MakeTheme(ThemePreset::Light));
+    wheel.Arrange({0, 0, 200, 20});
+    Canvas canvas;
+    canvas.Begin(200, 20);
+    wheel.Render(canvas);
+    const auto pixels = canvas.End();
+    auto channel = [&](int x, int c) { return std::to_integer<int>(pixels.pixels[10 * pixels.rowPitch + x * 4 + c]); };
+    REQUIRE(channel(7, 2) < channel(91, 2));
+    REQUIRE(channel(193, 2) < channel(107, 2));
+    REQUIRE(channel(100, 2) > 150);
+    REQUIRE(channel(100, 1) < 60);
+    REQUIRE(channel(100, 0) < 60);
+    for (const auto [direction, marker] : {std::pair{-1, 4}, std::pair{1, 196}})
+    {
+        ThumbwheelTestAccess::Input(wheel, {.kind = InputKind::Down, .x = 100});
+        ThumbwheelTestAccess::Input(wheel, {.kind = InputKind::Move, .x = float(direction * 500)});
+        canvas.Begin(200, 20);
+        wheel.Render(canvas);
+        const auto edge = canvas.End();
+        const auto at = 10 * edge.rowPitch + marker * 4;
+        REQUIRE(std::to_integer<int>(edge.pixels[at + 2]) > 150);
+        REQUIRE(std::to_integer<int>(edge.pixels[at + 1]) < 60);
+        ThumbwheelTestAccess::Input(wheel, {.kind = InputKind::Cancel});
+    }
 }
 
 #endif

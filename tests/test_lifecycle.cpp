@@ -58,6 +58,56 @@ namespace
     }
 }  // namespace
 
+TEST_CASE("Owned modal families gate input independently of native owner disabling", "[lifecycle][owned-modal]")
+{
+    LWS::PlatformContext context;
+    Start(context);
+    LWS::Window owner(context), child(context), first(context), second(context);
+    REQUIRE(owner.Create() == LWS::Result::Success);
+    REQUIRE(child.Create({.parent = &owner}) == LWS::Result::Success);
+    REQUIRE(first.Create({.owner = &owner, .modal = true}) == LWS::Result::Success);
+    REQUIRE(second.Create({.owner = &owner, .modal = true}) == LWS::Result::Success);
+    CHECK(first.GetOwner() == &owner);
+    CHECK(first.GetParent() == nullptr);
+    CHECK_FALSE(first.IsChild());
+    unsigned keys = 0, paints = 0;
+    const auto listen = [&](LWS::Window& window)
+    {
+        return window.Listen(
+            [&](const LWS::AnyEvent& event)
+            {
+                keys += std::holds_alternative<LWS::EventKeyDown>(event);
+                paints += std::holds_alternative<LWS::EventPaint>(event);
+                return LWS::EventResponse::Unhandled;
+            });
+    };
+    auto ownerListener = listen(owner), childListener = listen(child), dialogListener = listen(first);
+    REQUIRE(ownerListener);
+    REQUIRE(childListener);
+    REQUIRE(dialogListener);
+    const auto key = [](LWS::Window& window)
+    { return LWS::internal::WindowBackendAccess::Dispatch(window, LWS::EventKeyDown{}); };
+    CHECK(key(owner) == LWS::EventResponse::Unhandled);
+    REQUIRE(first.SetVisible(true) == LWS::Result::Success);
+    REQUIRE(second.SetVisible(true) == LWS::Result::Success);
+    CHECK(key(owner) == LWS::EventResponse::Handled);
+    CHECK(key(child) == LWS::EventResponse::Handled);
+    CHECK(key(first) == LWS::EventResponse::Unhandled);
+    CHECK(keys == 2);
+    std::ignore = LWS::internal::WindowBackendAccess::Dispatch(owner, LWS::EventPaint{});
+    CHECK(paints == 1);
+    REQUIRE(first.SetVisible(false) == LWS::Result::Success);
+    CHECK(key(owner) == LWS::EventResponse::Handled);
+    REQUIRE(second.Destroy() == LWS::Result::Success);
+    CHECK(key(owner) == LWS::EventResponse::Unhandled);
+    CHECK(key(child) == LWS::EventResponse::Unhandled);
+    CHECK(keys == 4);
+    REQUIRE(owner.Destroy() == LWS::Result::Success);
+    CHECK_FALSE(child.IsCreated());
+    CHECK_FALSE(first.IsCreated());
+    CHECK(first.GetOwner() == nullptr);
+}
+
 TEST_CASE("Cleanup precedes child teardown and cannot be consumed", "[lifecycle][window]")
 {
     LWS::PlatformContext context;

@@ -182,6 +182,8 @@ namespace LWS
         [[nodiscard]] Result Reparent(Window& parent);
         /// Returns only an LWS-managed parent. An external native parent has no Window wrapper and returns nullptr.
         [[nodiscard]] Window* GetParent() const;
+        /// Borrowed owner of an owned top-level, distinct from a child/popup parent.
+        [[nodiscard]] Window* GetOwner() const;
         /// Registrations made during a listener traversal become active when its outermost traversal completes.
         /// Publication precedes retired-capture destruction, which may itself reenter dispatch.
         /// Destruction notifications include pending registrations so newly attached resources can still clean up.
@@ -198,6 +200,7 @@ namespace LWS
         friend class internal::WindowBackendAccess;
 
         [[nodiscard]] EventResponse DispatchEvent(const AnyEvent& event);
+        void SetOwnerModalBlocked(bool blocked);
 
         [[nodiscard]] Result Create(const WindowConfig& config, Handle externalParent);
         [[nodiscard]] bool CanDestroy() const;

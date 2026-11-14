@@ -36,6 +36,7 @@ namespace LWS
         void destroy() override;
         void show() override;
         void hide() override;
+        void setModalBlocked(bool blocked) override;
         bool getVisible() const override;
         void setDisplayState(WindowShowState state) override;
         void maximize() override;
@@ -155,6 +156,7 @@ namespace LWS
         size_t fPresentedPixelSize = 0;
         uint32_t fPresentedWidth = 0, fPresentedHeight = 0;
         wchar_t fPendingHighSurrogate = 0;
+        bool fModalDisabled{};
         HWND fHwnd = nullptr;
         // Coordinate conversion runs for every input event, so refresh this cache only when the window DPI changes.
         UINT fDpi = 96;

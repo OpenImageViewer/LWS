@@ -494,6 +494,8 @@ namespace LWS
         {
             ex_style |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
         }
+        if (config.owner != nullptr)
+            ex_style |= WS_EX_TOOLWINDOW;
         if (fAlwaysOnTop)
         {
             ex_style |= WS_EX_TOPMOST;
@@ -523,7 +525,10 @@ namespace LWS
             outerSize = outerSizeForLogicalClient(config.size, style, ex_style, dpi);
         }
         HWND hwnd = CreateWindowEx(ex_style, g_windowClassName, config.title.c_str(), style, position.x, position.y,
-                                   outerSize.x, outerSize.y, fParentWindow, nullptr, instance, this);
+                                   outerSize.x, outerSize.y,
+                                   config.owner != nullptr ? reinterpret_cast<HWND>(config.owner->getHandle())
+                                                           : fParentWindow,
+                                   nullptr, instance, this);
 
         if (hwnd == nullptr || fHwnd == nullptr)
         {
@@ -597,6 +602,21 @@ namespace LWS
         if (fWindowIcon != nullptr)
             DestroyIcon(std::exchange(fWindowIcon, nullptr));
         fPopupPlacement.reset();
+    }
+
+    void WindowBackendWin32::setModalBlocked(bool blocked)
+    {
+        if (blocked)
+        {
+            fModalDisabled = IsWindowEnabled(fHwnd) != FALSE;
+            if (fModalDisabled)
+                EnableWindow(fHwnd, FALSE);
+        }
+        else if (fModalDisabled)
+        {
+            fModalDisabled = false;
+            EnableWindow(fHwnd, TRUE);
+        }
     }
 
     void WindowBackendWin32::show()

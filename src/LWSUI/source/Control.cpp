@@ -62,8 +62,14 @@ namespace LWSUI
     {
         return foreground_.value_or(style_ ? style_->foreground : parent_ ? parent_->Foreground() : Style().foreground);
     }
-    Size Control::Measure(Size available) { return MeasureCore(available, false); }
-    Size Control::MeasureContent(Size available) { return MeasureCore(available, true); }
+    Size Control::Measure(Size available)
+    {
+        return MeasureCore(available, false);
+    }
+    Size Control::MeasureContent(Size available)
+    {
+        return MeasureCore(available, true);
+    }
     Size Control::MeasureCore(Size available, bool content)
     {
         available = ConstrainSize(available);
@@ -73,11 +79,22 @@ namespace LWSUI
         measuredContent_ = content;
         // Intrinsic and allocated-width probes can alternate within one parent measure.
         // Only reuse the allocation correction for its matching request, keeping probes independent.
-        if (allocationHint_ && allocationHint_->requestedWidth == available.width && allocationHint_->content == content)
+        if (allocationHint_ && allocationHint_->requestedWidth == available.width &&
+            allocationHint_->content == content)
             available.width = allocationHint_->arrangedWidth;
         measuredWidth_ = available.width;
         desired_ = visible_ ? ConstrainSize(content ? OnMeasureContent(available) : OnMeasure(available)) : Size{};
         return desired_;
+    }
+    void Control::SetCornerRadius(std::optional<float> radius)
+    {
+        if (radius && (!std::isfinite(*radius) || *radius < 0))
+            throw std::invalid_argument("Invalid control corner radius");
+        if (cornerRadius_ != radius)
+        {
+            cornerRadius_ = radius;
+            Invalidate();
+        }
     }
     void Control::SetMaxWidth(std::optional<float> width)
     {
@@ -122,7 +139,8 @@ namespace LWSUI
             // Retain this width for the same measure request so later passes do not oscillate.
             const auto before = desired_;
             const auto requested = *measureRequest_;
-            allocationHint_ = AllocationHint{requested.width, bounds_.width, measuredContent_, host_ ? host_->layoutGeneration_ : 0};
+            allocationHint_ = AllocationHint{requested.width, bounds_.width, measuredContent_,
+                                             host_ ? host_->layoutGeneration_ : 0};
             MeasureCore(requested, measuredContent_);
             // Normal width is already allocated by the parent. Its pixel adjustment alone must
             // not restart layout on every intrinsic/allocated probe. Height and intrinsic demand do.
@@ -134,7 +152,8 @@ namespace LWSUI
             }
         }
         else if (allocationHint_ && measureRequest_ &&
-                 (allocationHint_->requestedWidth != measureRequest_->width || allocationHint_->content != measuredContent_))
+                 (allocationHint_->requestedWidth != measureRequest_->width ||
+                  allocationHint_->content != measuredContent_))
             allocationHint_.reset();
         OnArrange();
     }

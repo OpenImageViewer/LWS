@@ -206,6 +206,13 @@ namespace LWS
         /// Popup windows require a created parent; child windows use the parent's coordinate space for
         /// placement, anchoring, and native lifetime ordering.
         Window* parent = nullptr;
+        /// An owned top-level stays above this top-level owner without becoming globally topmost.
+        /// Mutually exclusive with parent/popups. Ownership participates in LWS family teardown.
+        /// Win32 owned windows have no separate taskbar button; other shells control task presentation.
+        Window* owner = nullptr;
+        /// While visible, block owner interaction. Hiding or destroying the dialog restores it.
+        /// Requires owner. Win32 also disables native owner interaction; Wayland filters LWS input.
+        bool modal = false;
         string_type title;
         std::optional<Point> position;
         /// Initial drawable client-area size in logical units, excluding native outer decorations.

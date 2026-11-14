@@ -4,11 +4,13 @@
 #include <LWSUI/internal/InputMask.hpp>
 #include <LWSUI/internal/DynamicMask.hpp>
 #include <cstdint>
+#include <chrono>
 #include <utility>
 namespace LWS
 {
     class HighPrecisionTimer;
-}
+    class Timer;
+}  // namespace LWS
 namespace LWSUI
 {
     enum class Alignment
@@ -218,13 +220,15 @@ namespace LWSUI
         }
         void SetFocusOutline(bool enabled)
         {
-            if (focusOutline_ == enabled) return;
+            if (focusOutline_ == enabled)
+                return;
             focusOutline_ = enabled;
             Invalidate();
         }
         void SetBackground(std::optional<LLUtils::Color> color)
         {
-            if (background_ == color) return;
+            if (background_ == color)
+                return;
             background_ = color;
             Invalidate();
         }
@@ -257,7 +261,8 @@ namespace LWSUI
         const std::string& Validation() const { return validation_; }
         std::string ValidationError() const override
         {
-            if (editing_ && !validation_.empty()) return validation_;
+            if (editing_ && !validation_.empty())
+                return validation_;
             const bool requiresCompletion = dynamicMask_.has_value() || (mask_ && !Text().empty());
             return !requiresCompletion || MaskComplete() ? std::string{} : "Complete all mask fields";
         }
@@ -275,7 +280,12 @@ namespace LWSUI
       protected:
 
         Size OnMeasure(Size available) override;
-        void OnArrange() override { UpdateGeometry(); if (std::exchange(caretScrollPending_, false)) ScrollCaretIntoView(); }
+        void OnArrange() override
+        {
+            UpdateGeometry();
+            if (std::exchange(caretScrollPending_, false))
+                ScrollCaretIntoView();
+        }
         void OnDetach() override;
         void OnRender(Canvas&) override;
         bool OnInput(const Input&) override;
@@ -339,6 +349,53 @@ namespace LWSUI
         float textWidth_ = 0, caretX_ = 0;
         size_t geometryCaret_ = std::string::npos;
     };
+    // Spring-centered rate control. OnEdit reports cumulative adjustment units
+    // during a hold, including one immediate unit on first activation. Consumers
+    // apply their own value mapping and snapping.
+    class Thumbwheel : public Control
+    {
+      public:
+
+        Thumbwheel();
+        ~Thumbwheel() override;
+        // Finite positive adjustment units/second, with minimum <= maximum.
+        void SetSpeedRange(double minimum, double maximum);
+        // Curve factor in [0.1, 2]: 1 is standard; lower values accelerate more gently.
+        void SetAcceleration(double factor);
+        // Fraction of center-to-edge travel in [0, .25] that produces no adjustment.
+        void SetDeadZone(double fraction);
+        // Pointer-to-wheel movement multiplier in [.1, 4].
+        void SetDragSensitivity(double multiplier);
+        // Held-Shift rate multiplier in [.01, 1]. Discrete keys/wheel remain one unit.
+        void SetFineModeMultiplier(double multiplier);
+        bool Focusable() const override { return true; }
+        bool Finish(EditPhase phase) override;
+        Event<void(double, EditPhase)> OnEdit;
+
+      protected:
+
+        Size OnMeasure(Size available) override;
+        void OnRender(Canvas&) override;
+        bool OnInput(const Input&) override;
+        void OnDetach() override;
+
+      private:
+
+        friend struct ThumbwheelTestAccess;
+        void Tick();
+        void Advance(double seconds);
+        void UpdateInteraction();
+        double Rate() const;
+        float Travel() const;
+        bool dragging_ = false, fine_ = false, activated_ = false;
+        float lastX_ = 0;
+        double displacement_ = 0, position_ = 0;
+        double minimumSpeed_ = 2, maximumSpeed_ = 8000, accelerationExponent_ = 3;
+        double deadZone_ = .05, dragSensitivity_ = 1, fineModeMultiplier_ = .1;
+        std::chrono::steady_clock::time_point lastTick_;
+        std::unique_ptr<LWS::Timer> timer_;
+    };
+
     enum class SliderValueMode
     {
         Hidden,

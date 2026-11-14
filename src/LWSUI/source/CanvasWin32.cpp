@@ -133,6 +133,40 @@ namespace LWSUI
             D2D1::ColorF(color.R() / 255.f, color.G() / 255.f, color.B() / 255.f, color.A() / 255.f), &brush));
         impl_->target->FillRectangle(D2D1::RectF(x, y, x + width, y + height), brush.Get());
     }
+    void Canvas::FillRoundedRect(float x, float y, float width, float height, float radius, LLUtils::Color color)
+    {
+        if (width <= 0 || height <= 0)
+            return;
+        radius = std::clamp(radius, 0.f, std::min(width, height) / 2);
+        if (radius == 0)
+        {
+            Fill(x, y, width, height, color);
+            return;
+        }
+        ComPtr<ID2D1SolidColorBrush> brush;
+        Check(impl_->target->CreateSolidColorBrush(
+            D2D1::ColorF(color.R() / 255.f, color.G() / 255.f, color.B() / 255.f, color.A() / 255.f), &brush));
+        impl_->target->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x, y, x + width, y + height), radius, radius),
+                                            brush.Get());
+    }
+    void Canvas::StrokeRoundedRect(float x, float y, float width, float height, float radius, float thickness,
+                                   LLUtils::Color color)
+    {
+        if (width <= 0 || height <= 0 || thickness <= 0)
+            return;
+        radius = std::clamp(radius, 0.f, std::min(width, height) / 2);
+        thickness = std::min(thickness, std::min(width, height));
+        x += thickness / 2;
+        y += thickness / 2;
+        width -= thickness;
+        height -= thickness;
+        radius = std::max(0.f, radius - thickness / 2);
+        ComPtr<ID2D1SolidColorBrush> brush;
+        Check(impl_->target->CreateSolidColorBrush(
+            D2D1::ColorF(color.R() / 255.f, color.G() / 255.f, color.B() / 255.f, color.A() / 255.f), &brush));
+        impl_->target->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x, y, x + width, y + height), radius, radius),
+                                            brush.Get(), thickness);
+    }
     void Canvas::Text(std::string_view text, float x, float y, float width, float height, LLUtils::Color color,
                       const FontSpec& font, bool wrap, std::span<const TextSpan> spans)
     {

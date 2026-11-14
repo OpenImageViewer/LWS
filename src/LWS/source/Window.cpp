@@ -55,6 +55,10 @@ namespace LWS
         std::optional<Cursor> cursor;
         std::optional<WindowIcon> icon;
         Window* parent{};
+        Window* owner{};
+        Window* Family() const { return parent ? parent : owner; }
+        bool ownerModalActive{};
+        size_t modalBlockers{};
         // External native parents are outside the managed family, but their owned children still obey
         // child-only operation restrictions. This records native parenting, not a second ownership mode.
         bool externalChild{};
@@ -74,6 +78,8 @@ namespace LWS
         {
             window.impl_->state = Window::Impl::State::Destroying;
             window.impl_->notifyingDestroy = true;
+            // Enabling the owner can synchronously dispatch native callbacks.
+            window.SetOwnerModalBlocked(false);
             std::ignore = window.DispatchEvent(EventWindowDestroying{window.platform_.IsUsable()});
             window.impl_->notifyingDestroy = false;
         }
@@ -176,7 +182,9 @@ namespace LWS
         platform_.AssertCurrentThread();
         if (!platform_.IsUsable() || impl_->state != Impl::State::PreCreate)
             return Result::InvalidState;
-        if (externalParent != 0 && config.parent != nullptr)
+        if ((externalParent != 0 && (config.parent != nullptr || config.owner != nullptr)) ||
+            (config.owner != nullptr && (config.parent != nullptr || config.popupPlacement.has_value())) ||
+            (config.modal && config.owner == nullptr))
             return Result::InvalidArgument;
         if (!ValidSnappingMode(config.snappingMode) || !ValidSnappingRole(config.snappingRole))
             return Result::InvalidArgument;
@@ -190,13 +198,15 @@ namespace LWS
         {
             return Result::InvalidArgument;
         }
-        if (config.parent != nullptr)
+        if (auto* family = config.parent ? config.parent : config.owner)
         {
-            if (config.parent == this || &config.parent->platform_ != &platform_)
+            if (family == this || &family->platform_ != &platform_)
                 return Result::InvalidArgument;
-            if (!config.parent->IsCreated())
+            if (!family->IsCreated())
                 return Result::InvalidState;
         }
+        if (config.owner && (config.owner->IsChild() || config.owner->IsPopup()))
+            return Result::InvalidArgument;
         if (config.popupPlacement.has_value())
         {
             const PopupPlacement& popup = *config.popupPlacement;
@@ -221,7 +231,7 @@ namespace LWS
             .title = config.title,
             .styles = config.styles.get(),
             .displayState = config.showState,
-            .visible = config.visible,
+            .visible = config.visible && !config.modal,
             .eraseBackground = config.eraseBackground,
             .alwaysOnTop = config.alwaysOnTop,
             .transparent = config.transparent,
@@ -231,6 +241,7 @@ namespace LWS
             .snappingMode = config.snappingMode,
             .snappingRole = config.snappingRole,
             .externalParent = externalParent,
+            .owner = config.owner != nullptr ? config.owner->impl_->backend.get() : nullptr,
         };
         impl_->externalChild = externalParent != 0;
         impl_->backend->setBackgroundColor(config.backgroundColor);
@@ -258,21 +269,22 @@ namespace LWS
 
         impl_->config = config;
         impl_->parent = config.parent;
-        if (impl_->parent != nullptr)
-            impl_->parent->impl_->children.push_back(this);
+        impl_->owner = config.owner;
+        if (auto* family = impl_->Family())
+            family->impl_->children.push_back(this);
         const Size clientSize = impl_->backend->getClientSize();
         const Size framebufferSize = impl_->backend->getFramebufferSize();
         impl_->clientArea = {{clientSize.x, clientSize.y}, PixelSize{framebufferSize.x, framebufferSize.y}};
         impl_->configured = impl_->backend->isConfigured();
         impl_->state = Impl::State::Created;
-        return Result::Success;
+        return config.visible && config.modal ? SetVisible(true) : Result::Success;
     }
 
     bool Window::CanDestroy() const
     {
         if (impl_->state == Impl::State::Creating || impl_->state == Impl::State::Destroying)
             return false;
-        for (const Window* parent = impl_->parent; parent != nullptr; parent = parent->impl_->parent)
+        for (const Window* parent = impl_->Family(); parent != nullptr; parent = parent->impl_->Family())
             if (parent->impl_->notifyingDestroy)
                 return false;
         return std::ranges::all_of(impl_->children, [](const Window* child) { return child->CanDestroy(); });
@@ -348,11 +360,35 @@ namespace LWS
         return IsCreated() ? impl_->backend->getTitle() : impl_->config.title;
     }
 
+    void Window::SetOwnerModalBlocked(bool blocked)
+    {
+        if (!impl_->config.modal || impl_->owner == nullptr || impl_->ownerModalActive == blocked)
+            return;
+        auto& owner = *impl_->owner;
+        impl_->ownerModalActive = blocked;
+        if (blocked)
+        {
+            if (owner.impl_->modalBlockers++ == 0)
+                owner.impl_->backend->setModalBlocked(true);
+        }
+        else
+        {
+            assert(owner.impl_->modalBlockers > 0);
+            if (--owner.impl_->modalBlockers == 0 && owner.IsCreated())
+                owner.impl_->backend->setModalBlocked(false);
+        }
+    }
+
     Result Window::SetVisible(bool visible)
     {
         if (!IsCreated())
             return Result::InvalidState;
-        if (visible == impl_->backend->getVisible())
+        const bool changed = visible != impl_->backend->getVisible();
+        // Native owner minimization may already hide the dialog; explicit hiding still releases modality.
+        SetOwnerModalBlocked(visible);
+        if (!IsCreated())
+            return Result::InvalidState;
+        if (!changed)
             return Result::Success;
         // Showing a surface that configured while hidden must preserve its published metrics.
         if (platform_.GetBackendId() == BackendId::Wayland && impl_->parent == nullptr &&
@@ -362,6 +398,8 @@ namespace LWS
         if (!IsCreated())
             return Result::InvalidState;
         impl_->config.visible = visible;
+        if (!visible && impl_->config.modal && impl_->owner != nullptr && impl_->owner->IsCreated())
+            std::ignore = impl_->owner->RequestActivation();
         return Result::Success;
     }
 
@@ -433,7 +471,8 @@ namespace LWS
     std::expected<Rect, Result> Window::GetScreenBounds() const
     {
         platform_.AssertCurrentThread();
-        if (!platform_.IsUsable() || !IsCreated()) return std::unexpected(Result::InvalidState);
+        if (!platform_.IsUsable() || !IsCreated())
+            return std::unexpected(Result::InvalidState);
         return impl_->backend->getScreenBounds();
     }
 
@@ -612,10 +651,15 @@ namespace LWS
             return Result::InvalidArgument;
         if (state == WindowShowState::Minimized && platform_.GetBackendId() == BackendId::Wayland)
             return Result::NotSupported;
+        if (state == WindowShowState::Maximized && (impl_->parent != nullptr || impl_->externalChild))
+            return Result::NotSupported;
+        // Win32 show-state requests also reveal a hidden window; establish modality before native activation.
+        if (platform_.GetBackendId() == BackendId::Win32 || IsVisible())
+            SetOwnerModalBlocked(true);
+        if (!IsCreated())
+            return Result::InvalidState;
         if (state == WindowShowState::Maximized)
         {
-            if (impl_->parent != nullptr || impl_->externalChild)
-                return Result::NotSupported;
             // Request the complete target even when an earlier Wayland configure is still in flight.
             impl_->backend->maximize();
         }
@@ -642,6 +686,10 @@ namespace LWS
     {
         if (!IsCreated())
             return Result::InvalidState;
+        if (impl_->modalBlockers != 0)
+            for (auto* child : impl_->children)
+                if (child->impl_->ownerModalActive)
+                    return child->RequestActivation();
         if (platform_.GetBackendId() != BackendId::Win32 || impl_->parent != nullptr || impl_->externalChild)
             return Result::NotSupported;
         impl_->backend->setForeground();
@@ -927,6 +975,12 @@ namespace LWS
         return impl_->backend->presentBitmap(bitmap);
     }
 
+    Window* Window::GetOwner() const
+    {
+        platform_.AssertCurrentThread();
+        return impl_->owner;
+    }
+
     EventResponse Window::DispatchEvent(const AnyEvent& event)
     {
         if (impl_->state == Impl::State::Creating || impl_->state == Impl::State::PreCreate ||
@@ -939,6 +993,17 @@ namespace LWS
                                std::holds_alternative<EventWindowDestroyed>(event);
         if (!lifecycle && !IsCreated())
             return EventResponse::Unhandled;
+
+        // Child controls share their top-level's modal input gate. Owned dialogs are separate top-levels.
+        if (std::holds_alternative<EventKeyDown>(event) || std::holds_alternative<EventKeyUp>(event) ||
+            std::holds_alternative<EventTextInput>(event) || std::holds_alternative<EventMouseButton>(event) ||
+            std::holds_alternative<EventMouseMove>(event) || std::holds_alternative<EventMouseWheel>(event) ||
+            std::holds_alternative<EventDragDropFile>(event) || std::holds_alternative<EventCloseRequested>(event))
+        {
+            for (const Window* window = this; window; window = window->impl_->parent)
+                if (window->impl_->modalBlockers != 0)
+                    return EventResponse::Handled;
+        }
 
         if (const auto* sizeEvent = std::get_if<EventClientAreaSizeChanged>(&event); sizeEvent != nullptr)
         {
@@ -964,13 +1029,17 @@ namespace LWS
             impl_->configured = false;
             impl_->state = Impl::State::Destroyed;
             impl_->listeners->Close();
-            if (impl_->parent != nullptr)
-            {
-                std::erase(impl_->parent->impl_->children, this);
-                impl_->parent = nullptr;
-            }
+            SetOwnerModalBlocked(false);
+            if (auto* family = impl_->Family())
+                std::erase(family->impl_->children, this);
+            impl_->parent = nullptr;
+            impl_->owner = nullptr;
             for (Window* child : impl_->children)
+            {
                 child->impl_->parent = nullptr;
+                child->impl_->owner = nullptr;
+                child->impl_->ownerModalActive = false;
+            }
             impl_->children.clear();
             impl_->backend->setCursor(nullptr);
             impl_->cursorBackend.reset();

@@ -137,7 +137,8 @@ namespace LWSUI
         if (dynamicMask_)
         {
             auto formatted = dynamicMask_->Format(value);
-            if (!formatted) return;
+            if (!formatted)
+                return;
             value = std::move(formatted->display);
             explicitProfile = formatted->explicitProfile;
         }
@@ -238,21 +239,25 @@ namespace LWSUI
     const FontSpec& TextBox::Font() const
     {
         const auto& inherited = Control::Font();
-        if (!fontWeight_ && minimumFontSize_ == 0) return inherited;
+        if (!fontWeight_ && minimumFontSize_ == 0)
+            return inherited;
         if (!fontResolved_ || inheritedFont_ != inherited)
         {
             inheritedFont_ = inherited;
             effectiveFont_ = inherited;
             effectiveFont_.size = std::max(inherited.size, minimumFontSize_);
-            if (fontWeight_) effectiveFont_.weight = *fontWeight_;
+            if (fontWeight_)
+                effectiveFont_.weight = *fontWeight_;
             fontResolved_ = true;
         }
         return effectiveFont_;
     }
     void TextBox::SetFontWeight(std::optional<int> weight)
     {
-        if (weight && (*weight < 1 || *weight > 999)) throw std::invalid_argument("Invalid text font weight");
-        if (fontWeight_ == weight) return;
+        if (weight && (*weight < 1 || *weight > 999))
+            throw std::invalid_argument("Invalid text font weight");
+        if (fontWeight_ == weight)
+            return;
         fontWeight_ = weight;
         fontResolved_ = false;
         geometryDirty_ = true;
@@ -261,8 +266,10 @@ namespace LWSUI
     }
     void TextBox::SetMinimumFontSize(float size)
     {
-        if (!std::isfinite(size) || size < 0) throw std::invalid_argument("Invalid minimum text font size");
-        if (minimumFontSize_ == size) return;
+        if (!std::isfinite(size) || size < 0)
+            throw std::invalid_argument("Invalid minimum text font size");
+        if (minimumFontSize_ == size)
+            return;
         minimumFontSize_ = size;
         fontResolved_ = false;
         geometryDirty_ = true;
@@ -306,11 +313,14 @@ namespace LWSUI
     }
     std::expected<void, std::string> TextBox::SetInputMask(const DynamicMaskDefinition& definition)
     {
-        if (mode_ != TextBoxMode::SingleLine) return std::unexpected("Masks require a single-line TextBox");
+        if (mode_ != TextBoxMode::SingleLine)
+            return std::unexpected("Masks require a single-line TextBox");
         auto parsed = internal::DynamicMask::Create(definition);
-        if (!parsed) return std::unexpected(parsed.error());
+        if (!parsed)
+            return std::unexpected(parsed.error());
         auto formatted = parsed->Format(Text());
-        if (!formatted) return std::unexpected(formatted.error());
+        if (!formatted)
+            return std::unexpected(formatted.error());
         mask_.reset();
         dynamicMask_ = std::move(*parsed);
         SetText(std::move(formatted->display));
@@ -325,7 +335,8 @@ namespace LWSUI
         if (dynamicMask_)
         {
             const auto* profile = dynamicMask_->Profile(text_);
-            if (!profile) return {};
+            if (!profile)
+                return {};
             auto result = text_.substr(profile->prefix.size());
             std::erase(result, profile->separator);
             return result;
@@ -334,7 +345,8 @@ namespace LWSUI
     }
     bool TextBox::MaskComplete() const
     {
-        if (dynamicMask_) return dynamicMask_->Complete(text_);
+        if (dynamicMask_)
+            return dynamicMask_->Complete(text_);
         return !mask_ || text_.find('_') == text_.npos;
     }
     std::string TextBox::InputFeedback() const
@@ -374,7 +386,8 @@ namespace LWSUI
         if (dynamicMask_)
         {
             auto changed = dynamicMask_->Replace(text_, first, last, text, origin, dynamicExplicit_);
-            if (!changed) return Reject(changed.error());
+            if (!changed)
+                return Reject(changed.error());
             proposed = std::move(changed->display);
             caret = changed->caret;
             explicitProfile = changed->explicitProfile;
@@ -476,15 +489,18 @@ namespace LWSUI
         const float p = Style().textPadding;
         const bool focused = Host() && Host()->IsFocused(*this);
         if (background_ || !borderless_)
-            c.Fill(b.x, b.y, b.width, b.height, background_.value_or(focused ? Style().line : Style().surface));
+            c.FillRoundedRect(b.x, b.y, b.width, b.height, CornerRadius(),
+                              background_.value_or(focused ? Style().line : Style().surface));
         auto spans = textSpanProvider_ ? textSpanProvider_(text_) : std::vector<TextSpan>{};
         auto boundary = [&](size_t offset)
         { return offset == text_.size() || (static_cast<unsigned char>(text_[offset]) & 0xc0) != 0x80; };
-        std::erase_if(spans, [&](const TextSpan& span)
-        {
-            return !span.length || span.offset > text_.size() || span.length > text_.size() - span.offset ||
-                   !boundary(span.offset) || !boundary(span.offset + span.length);
-        });
+        std::erase_if(spans,
+                      [&](const TextSpan& span)
+                      {
+                          return !span.length || span.offset > text_.size() ||
+                                 span.length > text_.size() - span.offset || !boundary(span.offset) ||
+                                 !boundary(span.offset + span.length);
+                      });
         auto highlights = HighlightSpans(text_);
         spans.insert(spans.end(), highlights.begin(), highlights.end());
         if (focused && caret_ != anchor_)
@@ -519,10 +535,7 @@ namespace LWSUI
         if (focused && focusOutline_)
         {
             const float width = std::max(0.f, std::min({Style().focusWidth, b.width / 2, b.height / 2}));
-            c.Fill(b.x, b.y, b.width, width, Style().accent);
-            c.Fill(b.x, b.y + b.height - width, b.width, width, Style().accent);
-            c.Fill(b.x, b.y + width, width, b.height - 2 * width, Style().accent);
-            c.Fill(b.x + b.width - width, b.y + width, width, b.height - 2 * width, Style().accent);
+            c.StrokeRoundedRect(b.x, b.y, b.width, b.height, CornerRadius(), width, Style().accent);
         }
         if (!validation_.empty() || !inputError_.empty())
         {
@@ -534,11 +547,11 @@ namespace LWSUI
     {
         UpdateGeometry();
         using K = LWS::KeyCode;
-        if (readOnly_ &&
-            (e.kind == InputKind::Text ||
-             (e.kind == InputKind::KeyDown && (e.key == K::Backspace || e.key == K::Delete ||
-                                               (mode_ == TextBoxMode::Multiline && e.key == K::Enter && !e.control) ||
-                                               ((e.control && (e.key == K::X || e.key == K::V)) || (e.shift && e.key == K::Insert))))))
+        if (readOnly_ && (e.kind == InputKind::Text ||
+                          (e.kind == InputKind::KeyDown &&
+                           (e.key == K::Backspace || e.key == K::Delete ||
+                            (mode_ == TextBoxMode::Multiline && e.key == K::Enter && !e.control) ||
+                            ((e.control && (e.key == K::X || e.key == K::V)) || (e.shift && e.key == K::Insert))))))
             return true;
         if (e.kind == InputKind::Focus || e.kind == InputKind::Blur || e.kind == InputKind::Down ||
             (e.kind == InputKind::Move && selecting_))
@@ -549,7 +562,8 @@ namespace LWSUI
             {
                 StopSelecting();
                 const auto action = doubleClickAction_;
-                if (action()) return true;
+                if (action())
+                    return true;
             }
             preferredX_.reset();
             SetCaret(Position(e.x, e.y), e.shift);
@@ -569,7 +583,8 @@ namespace LWSUI
         }
         if (e.kind == InputKind::Wheel && mode_ == TextBoxMode::Multiline)
         {
-            if (sizeToContent) return false;
+            if (sizeToContent)
+                return false;
             SetScrollOffset(scrollY_ - e.wheel * Style().scrollStep);
             return true;
         }
@@ -593,12 +608,14 @@ namespace LWSUI
         }
         if (e.key == K::Escape)
         {
-            if (!HasActiveEdit()) return false;
+            if (!HasActiveEdit())
+                return false;
             return Finish(EditPhase::Cancel);
         }
         if (e.control && e.key == K::A)
             SelectAll();
-        else if ((e.control && (e.key == K::C || e.key == K::X)) || (e.control && !e.shift && !e.alt && e.key == K::Insert))
+        else if ((e.control && (e.key == K::C || e.key == K::X)) ||
+                 (e.control && !e.shift && !e.alt && e.key == K::Insert))
             Copy(e.key == K::X);
         else if ((e.control && e.key == K::V) || (e.shift && !e.control && !e.alt && e.key == K::Insert))
             Paste();
@@ -613,14 +630,18 @@ namespace LWSUI
                     const size_t prefix = profile ? profile->prefix.size() : 0;
                     if (e.key == K::Backspace)
                     {
-                        while (first > prefix && profile && text_[first - 1] == profile->separator) --first;
+                        while (first > prefix && profile && text_[first - 1] == profile->separator)
+                            --first;
                         last = first;
-                        if (first > prefix) --first;
-                        else if (first && text_.size() == prefix) --first;
+                        if (first > prefix)
+                            --first;
+                        else if (first && text_.size() == prefix)
+                            --first;
                     }
                     else
                     {
-                        while (first < text_.size() && profile && text_[first] == profile->separator) ++first;
+                        while (first < text_.size() && profile && text_[first] == profile->separator)
+                            ++first;
                         last = std::min(text_.size(), first + 1);
                     }
                 }
@@ -712,8 +733,9 @@ namespace LWSUI
         if (sizeToContent)
         {
             const float padding = Style().textPadding;
-            const float height = Host() ? Host()->MeasureText(Text(), std::max(1.f, available.width - 2 * padding), true, Font()).height
-                                        : Font().size * 1.4f;
+            const float height =
+                Host() ? Host()->MeasureText(Text(), std::max(1.f, available.width - 2 * padding), true, Font()).height
+                       : Font().size * 1.4f;
             return {available.width, height + 2 * padding};
         }
         const float line = Host() ? Host()->MeasureText("Mg", available.width, false, Font()).height
@@ -739,7 +761,8 @@ namespace LWSUI
                 const auto visible = scroll->Viewport();
                 const float top = viewport_.y + caretBounds_.y - scrollY_ - Style().textPadding;
                 const float bottom = top + caretBounds_.height + 2 * Style().textPadding;
-                if (top < visible.y) scroll->SetOffset(scroll->Offset() + top - visible.y);
+                if (top < visible.y)
+                    scroll->SetOffset(scroll->Offset() + top - visible.y);
                 else if (bottom > visible.y + visible.height)
                     scroll->SetOffset(scroll->Offset() + bottom - visible.y - visible.height);
             }
@@ -747,7 +770,8 @@ namespace LWSUI
     ScrollView* TextBox::OuterScrollView() const
     {
         for (auto* parent = Parent(); parent; parent = parent->Parent())
-            if (auto* scroll = dynamic_cast<ScrollView*>(parent)) return scroll;
+            if (auto* scroll = dynamic_cast<ScrollView*>(parent))
+                return scroll;
         return nullptr;
     }
     size_t TextBox::CaretLine() const
@@ -784,11 +808,14 @@ namespace LWSUI
         {
             auto* outer = sizeToContent ? OuterScrollView() : nullptr;
             const auto visible = outer ? outer->Viewport() : viewport_;
-            const float outside = y < visible.y ? y - visible.y
-                                  : y > visible.y + visible.height ? y - visible.y - visible.height : 0;
+            const float outside = y < visible.y                    ? y - visible.y
+                                  : y > visible.y + visible.height ? y - visible.y - visible.height
+                                                                   : 0;
             const float delta = std::clamp(outside, -Style().scrollStep, Style().scrollStep);
-            if (outer) outer->SetOffset(outer->Offset() + delta);
-            else SetScrollOffset(scrollY_ + delta);
+            if (outer)
+                outer->SetOffset(outer->Offset() + delta);
+            else
+                SetScrollOffset(scrollY_ + delta);
             if (outside && !selectionTimer_)
             {
                 selectionTimer_ = std::make_unique<LWS::HighPrecisionTimer>(Host()->Window().GetPlatformContext(),

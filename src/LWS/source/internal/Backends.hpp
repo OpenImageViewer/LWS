@@ -33,6 +33,7 @@ namespace LWS
             Size size;
         };
 
+        class IWindowBackend;
         struct NativeWindowConfig
         {
             Point position{100, 100};
@@ -52,6 +53,7 @@ namespace LWS
 
             // Only the typed Win32 creation extension supplies this. It never denotes a borrowed Window.
             Handle externalParent{};
+            IWindowBackend* owner{};
         };
 
         class ICursorBackend
@@ -77,6 +79,8 @@ namespace LWS
             [[nodiscard]] virtual bool isConfigured() const { return true; }
             virtual void show() = 0;
             virtual void hide() = 0;
+            // Backends with native owner disabling supplement the shared input gate.
+            virtual void setModalBlocked(bool) {}
             [[nodiscard]] virtual bool getVisible() const = 0;
             virtual void setDisplayState(WindowShowState state) = 0;
             virtual void maximize() = 0;
@@ -87,7 +91,9 @@ namespace LWS
             virtual void setPosition(Point position) = 0;
             [[nodiscard]] virtual Point getPosition() const = 0;
             [[nodiscard]] virtual std::expected<Rect, Result> getScreenBounds() const
-            { return std::unexpected(Result::NotSupported); }
+            {
+                return std::unexpected(Result::NotSupported);
+            }
             [[nodiscard]] virtual uintptr_t getCurrentMonitorHandle() const { return 0; }
             virtual void setSize(Size size) = 0;
             [[nodiscard]] virtual Size getClientSize() const = 0;

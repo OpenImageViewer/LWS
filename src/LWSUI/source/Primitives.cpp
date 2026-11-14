@@ -17,9 +17,9 @@ namespace LWSUI
         const std::string text = trimming == TextTrimming::Ellipsis && !wrap
                                      ? internal::EllipsizeText(c, text_, width, Font())
                                      : text_;
-        const auto textBounds = internal::AlignedTextBounds(
-            c, text, {b.x + p, b.y + p, width, std::max(0.f, b.height - 2 * p)}, Font(),
-            Alignment::Start, verticalAlignment, wrap);
+        const auto textBounds = internal::AlignedTextBounds(c, text,
+                                                            {b.x + p, b.y + p, width, std::max(0.f, b.height - 2 * p)},
+                                                            Font(), Alignment::Start, verticalAlignment, wrap);
         DrawText(c, text, textBounds.x, textBounds.y, textBounds.width, textBounds.height, Foreground(), wrap);
     }
     Size Label::OnMeasure(Size available)
@@ -78,11 +78,11 @@ namespace LWSUI
         auto b = Bounds();
         const bool enabled = Enabled();
         if (!flat || (enabled && (pressed_ || Hovered())))
-            c.Fill(b.x, b.y, b.width, b.height,
-                   !enabled    ? Style().surface
-                   : pressed_  ? Style().selectedRow
-                   : Hovered() ? Style().hoverSurface
-                               : Style().line);
+            c.FillRoundedRect(b.x, b.y, b.width, b.height, CornerRadius(),
+                              !enabled    ? Style().surface
+                              : pressed_  ? Style().selectedRow
+                              : Hovered() ? Style().hoverSurface
+                                          : Style().line);
     }
     void Button::OnRender(Canvas& c)
     {
@@ -93,7 +93,7 @@ namespace LWSUI
         c.CenteredText(text_, b.x + inset, b.y, b.width - 2 * inset, b.height, enabled ? Foreground() : Style().muted,
                        Font(), enabled ? HighlightSpans(text_) : std::vector<TextSpan>{});
         if (enabled && Host() && Host()->IsFocused(*this))
-            c.Fill(b.x, b.y + b.height - Style().focusWidth, b.width, Style().focusWidth, Style().accent);
+            c.StrokeRoundedRect(b.x, b.y, b.width, b.height, CornerRadius(), Style().focusWidth, Style().accent);
     }
     Size GlyphButton::OnMeasure(Size available)
     {
@@ -185,7 +185,8 @@ namespace LWSUI
     {
         auto b = Bounds();
         const float size = Style().checkboxSize, top = b.y + (b.height - size) / 2;
-        canvas.Fill(b.x, top, size, size, Value() ? Style().accent : Style().line);
+        canvas.FillRoundedRect(b.x, top, size, size, std::min(CornerRadius(), size * .15f),
+                               Value() ? Style().accent : Style().line);
         if (Value())
         {
             const float stroke = size * .10f;
@@ -196,9 +197,9 @@ namespace LWSUI
         }
         const float inset = size + Style().choiceGap;
         const auto text = text_.empty() ? (Value() ? "Enabled" : "Disabled") : text_;
-        const auto textBounds = internal::AlignedTextBounds(
-            canvas, text, {b.x + inset, b.y, b.width - inset, b.height}, Font(),
-            Alignment::Start, Alignment::Center, /*wrap=*/false, /*constrainHeight=*/false);
+        const auto textBounds = internal::AlignedTextBounds(canvas, text, {b.x + inset, b.y, b.width - inset, b.height},
+                                                            Font(), Alignment::Start, Alignment::Center, /*wrap=*/false,
+                                                            /*constrainHeight=*/false);
         DrawText(canvas, text, textBounds.x, textBounds.y, textBounds.width, textBounds.height, Foreground());
     }
     void RadioButton::OnRender(Canvas& canvas)
@@ -213,17 +214,20 @@ namespace LWSUI
         if (Value())
             canvas.FillCircle(centerX, centerY, size / 4, color);
         const float inset = Style().checkboxSize + Style().choiceGap / 2;
-        const auto textBounds = internal::AlignedTextBounds(
-            canvas, text_, {b.x + inset, b.y, b.width - inset, b.height}, Font(),
-            Alignment::Start, Alignment::Center, /*wrap=*/false, /*constrainHeight=*/false);
+        const auto textBounds = internal::AlignedTextBounds(canvas, text_,
+                                                            {b.x + inset, b.y, b.width - inset, b.height}, Font(),
+                                                            Alignment::Start, Alignment::Center, /*wrap=*/false,
+                                                            /*constrainHeight=*/false);
         DrawText(canvas, text_, textBounds.x, textBounds.y, textBounds.width, textBounds.height,
                  Enabled() ? Foreground() : Style().muted);
     }
     void ScrollBar::SetPage(double page)
     {
-        if (!std::isfinite(page)) throw std::invalid_argument("Scrollbar page must be finite");
+        if (!std::isfinite(page))
+            throw std::invalid_argument("Scrollbar page must be finite");
         page = std::clamp(page, 0., 1.);
-        if (page != page_ && resolutionDragging_) Finish(EditPhase::Cancel);
+        if (page != page_ && resolutionDragging_)
+            Finish(EditPhase::Cancel);
         page_ = page;
         Invalidate();
     }
@@ -231,7 +235,7 @@ namespace LWSUI
     {
         const auto b = Bounds();
         if (resolutionDragging_ && (b.x != arrangedBounds_.x || b.y != arrangedBounds_.y ||
-            b.width != arrangedBounds_.width || b.height != arrangedBounds_.height))
+                                    b.width != arrangedBounds_.width || b.height != arrangedBounds_.height))
             Finish(EditPhase::Cancel);
         arrangedBounds_ = b;
         Slider::OnArrange();
@@ -240,7 +244,8 @@ namespace LWSUI
     {
         if (!std::isfinite(fraction) || fraction <= 0 || fraction > 1)
             throw std::invalid_argument("Inward distance must be greater than zero and at most one");
-        if (fraction == inwardDistance_) return;
+        if (fraction == inwardDistance_)
+            return;
         Finish(EditPhase::Cancel);
         inwardDistance_ = fraction;
     }
@@ -248,13 +253,15 @@ namespace LWSUI
     {
         if (!std::isfinite(fraction) || fraction <= 0)
             throw std::invalid_argument("Resolution fraction must be finite and greater than zero");
-        if (fraction == resolutionFraction_) return;
+        if (fraction == resolutionFraction_)
+            return;
         Finish(EditPhase::Cancel);
         resolutionFraction_ = fraction;
     }
     void ScrollBar::SetOutwardAcceleration(bool enabled)
     {
-        if (enabled == outwardAcceleration_) return;
+        if (enabled == outwardAcceleration_)
+            return;
         Finish(EditPhase::Cancel);
         outwardAcceleration_ = enabled;
     }
@@ -262,7 +269,8 @@ namespace LWSUI
     {
         if (!std::isfinite(percent) || percent < 100)
             throw std::invalid_argument("Maximum scroll speed must be finite and at least 100 percent");
-        if (percent == maximumScrollSpeed_) return;
+        if (percent == maximumScrollSpeed_)
+            return;
         Finish(EditPhase::Cancel);
         maximumScrollSpeed_ = percent;
     }
@@ -270,21 +278,23 @@ namespace LWSUI
     {
         if (!std::isfinite(fraction) || fraction <= 0 || fraction > 1)
             throw std::invalid_argument("Outward distance must be greater than zero and at most one");
-        if (fraction == outwardDistance_) return;
+        if (fraction == outwardDistance_)
+            return;
         Finish(EditPhase::Cancel);
         outwardDistance_ = fraction;
     }
     void ScrollBar::SetDynamicResolution(bool enabled)
     {
-        if (dynamicResolution_ == enabled) return;
+        if (dynamicResolution_ == enabled)
+            return;
         Finish(EditPhase::Cancel);
         dynamicResolution_ = enabled;
     }
     void ScrollBar::ConfigureResolution(Rect bounds, double range, double line, ScrollResolution mode)
     {
-        if (!std::isfinite(range) || range < 0 || !std::isfinite(line) || line <= 0 ||
-            !std::isfinite(bounds.x) || !std::isfinite(bounds.y) || !std::isfinite(bounds.width) ||
-            !std::isfinite(bounds.height) || bounds.width < 0 || bounds.height < 0)
+        if (!std::isfinite(range) || range < 0 || !std::isfinite(line) || line <= 0 || !std::isfinite(bounds.x) ||
+            !std::isfinite(bounds.y) || !std::isfinite(bounds.width) || !std::isfinite(bounds.height) ||
+            bounds.width < 0 || bounds.height < 0)
             throw std::invalid_argument("Invalid scrollbar resolution");
         if (bounds.x != resolutionBounds_.x || bounds.y != resolutionBounds_.y ||
             bounds.width != resolutionBounds_.width || bounds.height != resolutionBounds_.height ||
@@ -303,7 +313,8 @@ namespace LWSUI
         const float barCenter = vertical ? b.x + b.width / 2 : b.y + b.height / 2;
         const float edge = vertical ? (barCenter >= center ? b.x : b.x + b.width)
                                     : (barCenter >= center ? b.y : b.y + b.height);
-        const float distance = float(inwardDistance_ * (vertical ? area.width : area.height)) * (barCenter >= center ? -1.f : 1.f);
+        const float distance = float(inwardDistance_ * (vertical ? area.width : area.height)) *
+                               (barCenter >= center ? -1.f : 1.f);
         inward_ = std::abs(distance) > 0 ? std::clamp(((vertical ? x : y) - edge) / distance, 0.f, 1.f) : 0;
         const double travel = std::max(1.f, vertical ? b.height - thumb.height : b.width - thumb.width);
         const double normal = contentRange_ / travel;
@@ -312,16 +323,19 @@ namespace LWSUI
         const double target = (resolutionMode_ == ScrollResolution::Row ? lineSize_ : 1.) * resolutionFraction_;
         const double fine = std::min(normal, target);
         sensitivity_ = normal > 0 ? normal * std::pow(fine / normal, inward_) : 0;
-        const double end = resolutionMode_ == ScrollResolution::Row ? resolutionFraction_ : resolutionFraction_ / lineSize_;
+        const double end = resolutionMode_ == ScrollResolution::Row ? resolutionFraction_
+                                                                    : resolutionFraction_ / lineSize_;
         speed_ = fine == normal ? 100 : 100 * std::pow(std::min(100., end) / 100, inward_);
         const double direction = barCenter >= center ? 1. : -1.;
         const double outerEdge = vertical ? (direction > 0 ? b.x + b.width : b.x)
                                           : (direction > 0 ? b.y + b.height : b.y);
         const double outwardExtent = outwardDistance_ * (vertical ? area.width : area.height);
         const double outward = outwardExtent > 0
-            ? std::clamp(((vertical ? x : y) - outerEdge) * direction / outwardExtent, 0., 1.) : 0;
+                                   ? std::clamp(((vertical ? x : y) - outerEdge) * direction / outwardExtent, 0., 1.)
+                                   : 0;
         outwardMultiplier_ = outwardAcceleration_ ? std::pow(maximumScrollSpeed_ / 100, outward) : 1;
-        if (outwardAcceleration_) speed_ = std::min(maximumScrollSpeed_, speed_ * outwardMultiplier_);
+        if (outwardAcceleration_)
+            speed_ = std::min(maximumScrollSpeed_, speed_ * outwardMultiplier_);
         OnScrollSpeed.Raise(speed_);
         Invalidate();
     }
@@ -333,7 +347,8 @@ namespace LWSUI
         inward_ = 0;
         outwardMultiplier_ = 1;
         speed_ = 100;
-        if (notify) OnScrollSpeed.Raise(speed_);
+        if (notify)
+            OnScrollSpeed.Raise(speed_);
         return result;
     }
     Rect ScrollBar::Thumb() const
@@ -341,7 +356,8 @@ namespace LWSUI
         const auto b = Bounds();
         const bool vertical = orientation_ == Orientation::Vertical;
         const float extent = vertical ? b.height : b.width;
-        const float length = std::min(extent, std::max(std::min(Style().scrollbarMinThumb, extent / 2), extent * float(page_)));
+        const float length = std::min(extent,
+                                      std::max(std::min(Style().scrollbarMinThumb, extent / 2), extent * float(page_)));
         const float position = float(value_) * (extent - length);
         const float inset = Style().scrollbarInset;
         return vertical ? Rect{b.x + inset, b.y + position, std::max(0.f, b.width - 2 * inset), length}
@@ -359,11 +375,13 @@ namespace LWSUI
     {
         if ((input.kind == InputKind::Down || input.kind == InputKind::Up) && input.button != LWS::MouseButton::Left)
             return false;
-        if (input.kind == InputKind::Down && dragging_) return true;
+        if (input.kind == InputKind::Down && dragging_)
+            return true;
         if ((input.kind == InputKind::Move || input.kind == InputKind::Up) && resolutionDragging_ && dragging_)
         {
             UpdateSpeed(input.x, input.y);
-            if (!resolutionDragging_ || !dragging_) return true;
+            if (!resolutionDragging_ || !dragging_)
+                return true;
             const float axis = orientation_ == Orientation::Vertical ? input.y : input.x;
             const double delta = axis - lastAxis_;
             lastAxis_ = axis;
@@ -372,7 +390,8 @@ namespace LWSUI
                 value_ = std::clamp(value_ + delta * (sensitivity_ / contentRange_) * outwardMultiplier_, 0., 1.);
                 OnEdit.Raise(value_, EditPhase::Preview);
             }
-            if (input.kind == InputKind::Up && dragging_) Finish(EditPhase::Commit);
+            if (input.kind == InputKind::Up && dragging_)
+                Finish(EditPhase::Commit);
             return true;
         }
         if (input.kind == InputKind::Down)
@@ -380,8 +399,9 @@ namespace LWSUI
             const auto thumb = Thumb();
             const bool onThumb = thumb.Contains(input.x, input.y);
             const bool vertical = orientation_ == Orientation::Vertical;
-            grab_ = onThumb
-                ? ((vertical ? input.y - thumb.y : input.x - thumb.x) / std::max(1.f, vertical ? thumb.height : thumb.width)) : .5f;
+            grab_ = onThumb ? ((vertical ? input.y - thumb.y : input.x - thumb.x) /
+                               std::max(1.f, vertical ? thumb.height : thumb.width))
+                            : .5f;
             resolutionDragging_ = dynamicResolution_ && contentRange_ > 0;
             lastAxis_ = orientation_ == Orientation::Vertical ? input.y : input.x;
             if (resolutionDragging_)
@@ -402,15 +422,18 @@ namespace LWSUI
         if (orientation_ == Orientation::Vertical && input.kind == InputKind::KeyDown)
         {
             auto translated = input;
-            if (input.key == LWS::KeyCode::Up) translated.key = LWS::KeyCode::Left;
-            if (input.key == LWS::KeyCode::Down) translated.key = LWS::KeyCode::Right;
+            if (input.key == LWS::KeyCode::Up)
+                translated.key = LWS::KeyCode::Left;
+            if (input.key == LWS::KeyCode::Down)
+                translated.key = LWS::KeyCode::Right;
             return Slider::OnInput(translated);
         }
         return Slider::OnInput(input);
     }
     void ScrollBar::RenderResolutionGuide(Canvas& canvas) const
     {
-        if (!resolutionDragging_) return;
+        if (!resolutionDragging_)
+            return;
         const auto area = resolutionBounds_, bar = Bounds();
         const auto& theme = Style();
         const bool vertical = orientation_ == Orientation::Vertical;
@@ -446,7 +469,8 @@ namespace LWSUI
         Rect box{std::clamp(x, area.x, area.x + area.width - width),
                  std::clamp(y, area.y, area.y + area.height - height), width, height};
         canvas.Fill(box.x, box.y, box.width, box.height, theme.popupSurface);
-        canvas.Text(text.str(), box.x + 4, box.y, std::max(0.f, box.width - 8), box.height, theme.foreground, theme.smallFont);
+        canvas.Text(text.str(), box.x + 4, box.y, std::max(0.f, box.width - 8), box.height, theme.foreground,
+                    theme.smallFont);
     }
     void ScrollBar::OnRender(Canvas& canvas)
     {

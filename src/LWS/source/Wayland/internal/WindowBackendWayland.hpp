@@ -115,6 +115,7 @@ namespace LWS
         internal::WaylandPlatformState& fPlatform;
         std::unique_ptr<NativeState> fNativeState;
         std::shared_ptr<internal::ICursorBackend> fCursor;
+        WindowBackendWayland* fOwnerBackend{};
         WindowBackendWayland* fParentBackend = nullptr;
         std::vector<WindowBackendWayland*> fChildBackends;
 

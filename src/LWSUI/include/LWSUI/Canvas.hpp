@@ -18,6 +18,10 @@ namespace LWSUI
         void Begin(int width, int height, LWS::ContentScale scale = {});
         LWS::ContentScale Scale() const { return scale_; }
         void Fill(float x, float y, float width, float height, LLUtils::Color color);
+        // Radius is clamped to the half-size. Stroke lies inside the supplied bounds.
+        void FillRoundedRect(float x, float y, float width, float height, float radius, LLUtils::Color color);
+        void StrokeRoundedRect(float x, float y, float width, float height, float radius, float thickness,
+                               LLUtils::Color color);
         void Text(std::string_view text, float x, float y, float width, float height, LLUtils::Color color,
                   const FontSpec& font = {}, bool wrap = false, std::span<const TextSpan> spans = {});
         void CenteredText(std::string_view text, float x, float y, float width, float height, LLUtils::Color color,

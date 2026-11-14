@@ -23,7 +23,12 @@ namespace LWSUI
         Vertical,
         Horizontal
     };
-    enum class InvalidEditPolicy { BlockOnLeave, DiscardOnLeave, KeepInvalid };
+    enum class InvalidEditPolicy
+    {
+        BlockOnLeave,
+        DiscardOnLeave,
+        KeepInvalid
+    };
     enum class EditPhase
     {
         Preview,
@@ -118,6 +123,10 @@ namespace LWSUI
         Control& operator=(const Control&) = delete;
         Size Measure(Size available);
         Size MeasureContent(Size available);
+        // Unset uses the theme radius; zero gives square corners. This affects painting,
+        // not child clipping or rectangular input targets.
+        void SetCornerRadius(std::optional<float> radius);
+        float CornerRadius() const { return cornerRadius_.value_or(Style().cornerRadius); }
         // Optional maximum dimensions in logical pixels; nullopt removes a limit.
         // Limits apply to measurement and arrangement, retaining the assigned origin.
         // Values must be finite and nonnegative. Changes invalidate layout.
@@ -245,6 +254,7 @@ namespace LWSUI
         std::optional<AllocationHint> allocationHint_;
         float measuredWidth_ = 0;
         bool measuredContent_ = false;
+        std::optional<float> cornerRadius_;
         std::optional<float> maxWidth_, maxHeight_;
         bool visible_ = true, enabled_ = true, hovered_ = false;
         std::optional<LLUtils::Color> foreground_;
