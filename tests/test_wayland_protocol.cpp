@@ -2274,6 +2274,10 @@ TEST_CASE("Menu popup hosts repaint keyboard selection and retain their focus ch
     size_t before{}, after{};
     server.Invoke([&] { before = server.surfaces.at(popupId)->submittedBuffers.size(); });
     REQUIRE(before > 0);
+    // Mouse-opened menus leave selection to the pointer until keyboard navigation starts.
+    REQUIRE_FALSE(session.Panel(0)->Active());
+    REQUIRE(host.Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Down}));
+    REQUIRE(session.Panel(0)->Active() == 0);
     REQUIRE(host.Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Down}));
     host.Update();
     server.Settle(context);
