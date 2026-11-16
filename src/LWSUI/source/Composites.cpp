@@ -234,6 +234,14 @@ namespace LWSUI
             });
         Refresh();
     }
+    void ColorPicker::SetTextVisible(bool visible)
+    {
+        if (text_->Visible() != visible)
+        {
+            text_->SetVisible(visible);
+            Invalidate(true);
+        }
+    }
     void ColorPicker::SetValue(LLUtils::Color value)
     {
         value_ = value;

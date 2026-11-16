@@ -166,8 +166,14 @@ namespace
         return systemDpi();
     }
 
-    void adjustWindowRectForDpi(RECT& rectangle, DWORD style, DWORD extendedStyle, UINT dpi)
+    bool hasClientTopBorder(DWORD style)
     {
+        return (style & (WS_CHILD | WS_CAPTION | WS_THICKFRAME)) == WS_THICKFRAME;
+    }
+
+    void adjustWindowRectForDpi(RECT& rectangle, DWORD style, DWORD extendedStyle, UINT dpi, bool borderVisible)
+    {
+        const RECT client = rectangle;
         using AdjustWindowRectExForDpiFn = BOOL(WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
         static const auto adjustWindowRectExForDpi = reinterpret_cast<AdjustWindowRectExForDpiFn>(
             GetProcAddress(GetModuleHandleW(L"user32.dll"), "AdjustWindowRectExForDpi"));
@@ -175,6 +181,14 @@ namespace
             std::ignore = adjustWindowRectExForDpi(&rectangle, style, FALSE, extendedStyle, dpi);
         else
             std::ignore = AdjustWindowRectEx(&rectangle, style, FALSE, extendedStyle);
+        // Match WM_NCCALCSIZE so requested client sizes and tracking limits use the painted frame.
+        if (hasClientTopBorder(style))
+        {
+            if (borderVisible)
+                rectangle.top = client.top;
+            else
+                rectangle = client;
+        }
     }
 
     int systemMetricForDpi(int index, UINT dpi)
@@ -183,6 +197,24 @@ namespace
         static const auto getSystemMetricsForDpi = reinterpret_cast<GetSystemMetricsForDpiFn>(
             GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetSystemMetricsForDpi"));
         return getSystemMetricsForDpi != nullptr ? getSystemMetricsForDpi(index, dpi) : GetSystemMetrics(index);
+    }
+
+    LRESULT resizeFrameHit(HWND window, LPARAM position, UINT dpi, bool allEdges)
+    {
+        RECT bounds{};
+        if (!GetWindowRect(window, &bounds))
+            return HTNOWHERE;
+        const int x = GET_X_LPARAM(position), y = GET_Y_LPARAM(position);
+        if (x < bounds.left || x >= bounds.right || y < bounds.top || y >= bounds.bottom)
+            return HTNOWHERE;
+        const int borderX = systemMetricForDpi(SM_CXSIZEFRAME, dpi) + systemMetricForDpi(SM_CXPADDEDBORDER, dpi);
+        const int borderY = systemMetricForDpi(SM_CYSIZEFRAME, dpi) + systemMetricForDpi(SM_CXPADDEDBORDER, dpi);
+        const int column = x < bounds.left + borderX ? 0 : x >= bounds.right - borderX ? 2 : 1;
+        const int row = y < bounds.top + borderY ? 0 : y >= bounds.bottom - borderY ? 2 : 1;
+        constexpr LRESULT hits[3][3]{{HTTOPLEFT, HTTOP, HTTOPRIGHT},
+                                     {HTLEFT, HTNOWHERE, HTRIGHT},
+                                     {HTBOTTOMLEFT, HTBOTTOM, HTBOTTOMRIGHT}};
+        return allEdges || row == 0 ? hits[row][column] : HTNOWHERE;
     }
 
     int32_t physicalFromLogical(int32_t value, UINT dpi)
@@ -205,10 +237,11 @@ namespace
         return {logicalFromPhysical(point.x, dpi), logicalFromPhysical(point.y, dpi)};
     }
 
-    LWS::Size outerSizeForLogicalClient(LWS::Size clientSize, DWORD style, DWORD extendedStyle, UINT dpi)
+    LWS::Size outerSizeForLogicalClient(LWS::Size clientSize, DWORD style, DWORD extendedStyle, UINT dpi,
+                                        bool borderVisible)
     {
         RECT rectangle{0, 0, physicalFromLogical(clientSize.x, dpi), physicalFromLogical(clientSize.y, dpi)};
-        adjustWindowRectForDpi(rectangle, style, extendedStyle, dpi);
+        adjustWindowRectForDpi(rectangle, style, extendedStyle, dpi, borderVisible);
         if ((style & WS_VSCROLL) != 0)
             rectangle.right += systemMetricForDpi(SM_CXVSCROLL, dpi);
         if ((style & WS_HSCROLL) != 0)
@@ -480,6 +513,7 @@ namespace LWS
         fMinSize = config.minSize;
         fMaxSize = config.maxSize;
         fWindowStyles = config.styles;
+        fResizeBorderVisible = true;
         fSnappingMode = config.snappingMode;
         fSnappingRole = config.snappingRole;
         fPublishedSnappingState = {fSnappingRole};
@@ -515,14 +549,14 @@ namespace LWS
         {
             // An owned WS_POPUP top-level tracks its owner's z-order without ever activating.
             style = static_cast<DWORD>(WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
-            outerSize = outerSizeForLogicalClient(config.size, style, ex_style, dpi);
+            outerSize = outerSizeForLogicalClient(config.size, style, ex_style, dpi, fResizeBorderVisible);
             position = resolvePopupPosition(outerSize);
         }
         else
         {
             style = static_cast<DWORD>(WS_CLIPCHILDREN | WS_CLIPSIBLINGS | composeWindowStyles());
             position = physicalFromLogical(config.position, dpi);
-            outerSize = outerSizeForLogicalClient(config.size, style, ex_style, dpi);
+            outerSize = outerSizeForLogicalClient(config.size, style, ex_style, dpi, fResizeBorderVisible);
         }
         HWND hwnd = CreateWindowEx(ex_style, g_windowClassName, config.title.c_str(), style, position.x, position.y,
                                    outerSize.x, outerSize.y,
@@ -539,6 +573,10 @@ namespace LWS
             return Result::Failure;
         }
 
+        // The first non-client calculation precedes WM_CREATE, which attaches this backend.
+        // Recalculate once so captionless client-top sizing also applies to newly created windows.
+        if (hasClientTopBorder(style))
+            internal::WindowPosHelper::updateFrame(fHwnd);
         // Creation can select another monitor DPI or add native frame styles; honor the requested client size.
         if (getClientSize() != config.size)
             setSize(config.size);
@@ -681,7 +719,8 @@ namespace LWS
             // Apply the normal placement and maximized state together, without visiting the old fullscreen monitor.
             const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE));
             const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
-            const Size outer = outerSizeForLogicalClient(fSavedWindowedClientSize, style, extendedStyle, fDpi);
+            const Size outer = outerSizeForLogicalClient(fSavedWindowedClientSize, style, extendedStyle, fDpi,
+                                                         fResizeBorderVisible);
             const int width = std::min<int>(outer.x, monitor.rcWork.right - monitor.rcWork.left);
             const int height = std::min<int>(outer.y, monitor.rcWork.bottom - monitor.rcWork.top);
             RECT bounds = monitor.rcWork;
@@ -876,7 +915,7 @@ namespace LWS
         {
             const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE));
             const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
-            const Size outerSize = outerSizeForLogicalClient(sz, style, extendedStyle, fDpi);
+            const Size outerSize = outerSizeForLogicalClient(sz, style, extendedStyle, fDpi, fResizeBorderVisible);
             internal::WindowPosHelper::setSize(fHwnd, outerSize.x, outerSize.y);
         }
     }
@@ -932,7 +971,8 @@ namespace LWS
         const Point position = physicalFromLogical(placement.position, fDpi);
         const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE));
         const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
-        const Size outerSize = outerSizeForLogicalClient(placement.size, style, extendedStyle, fDpi);
+        const Size outerSize = outerSizeForLogicalClient(placement.size, style, extendedStyle, fDpi,
+                                                         fResizeBorderVisible);
         internal::WindowPosHelper::setPlacement(fHwnd, position.x, position.y, outerSize.x, outerSize.y);
     }
 
@@ -989,7 +1029,7 @@ namespace LWS
         const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE));
         const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
         const Size outerSize = outerSizeForLogicalClient(Size{fPopupPlacement->size.x, fPopupPlacement->size.y}, style,
-                                                         extendedStyle, fDpi);
+                                                         extendedStyle, fDpi, fResizeBorderVisible);
         const Point position = resolvePopupPosition(outerSize);
         internal::WindowPosHelper::setPlacement(fHwnd, position.x, position.y, outerSize.x, outerSize.y);
     }
@@ -1051,6 +1091,15 @@ namespace LWS
         }
 
         return (GetWindowLong(fHwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    }
+
+    void WindowBackendWin32::setResizeBorderVisible(bool visible)
+    {
+        if (fResizeBorderVisible != visible)
+        {
+            fResizeBorderVisible = visible;
+            internal::WindowPosHelper::updateFrame(fHwnd);
+        }
     }
 
     void WindowBackendWin32::setTransparent(bool transparent)
@@ -1666,11 +1715,51 @@ namespace LWS
 
         switch (message)
         {
+            case WM_NCCALCSIZE:
+                if (hasClientTopBorder(static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_STYLE))) && !IsZoomed(hWnd))
+                {
+                    // Captionless windows paint the top band, or the entire frame when borders
+                    // are hidden. Keep maximized insets to protect the monitor work area.
+                    auto& rectangle = *reinterpret_cast<RECT*>(lParam);
+                    const RECT outer = rectangle;
+                    std::ignore = DefWindowProc(hWnd, message, wParam, lParam);
+                    if (fResizeBorderVisible)
+                        rectangle.top = outer.top;
+                    else
+                        rectangle = outer;
+                    use_default = false;
+                }
+                break;
+
             case WM_NCHITTEST:
                 if (fTransparent)
                 {
                     use_default = false;
                     return_value = HTTRANSPARENT;
+                }
+                else if (hasClientTopBorder(static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_STYLE))) && !IsZoomed(hWnd))
+                {
+                    const LRESULT hit = resizeFrameHit(hWnd, lParam, fDpi, !fResizeBorderVisible);
+                    if (hit != HTNOWHERE)
+                    {
+                        use_default = false;
+                        return_value = hit;
+                    }
+                }
+                else if (fParentWindow != nullptr)
+                {
+                    // Child canvases can cover the expanded frame. Pass resize hits through
+                    // so the top-level receives them without shrinking the child's content.
+                    const HWND root = GetAncestor(hWnd, GA_ROOT);
+                    if (hasClientTopBorder(static_cast<DWORD>(GetWindowLongPtrW(root, GWL_STYLE))))
+                    {
+                        const LRESULT hit = SendMessageW(root, WM_NCHITTEST, wParam, lParam);
+                        if (hit >= HTLEFT && hit <= HTBOTTOMRIGHT)
+                        {
+                            use_default = false;
+                            return_value = HTTRANSPARENT;
+                        }
+                    }
                 }
                 break;
 
@@ -1847,6 +1936,12 @@ namespace LWS
                     return_value = 0;
                 }
                 dispatchClientAreaSizeChanged(getFramebufferSize());
+                break;
+
+            case WM_DPICHANGED_BEFOREPARENT:
+                // Parent layout can resize this child before AFTERPARENT arrives. Adopt the
+                // native DPI now, but publish geometry only when resized or after parent layout.
+                fDpi = windowDpi(hWnd);
                 break;
 
             case WM_DPICHANGED_AFTERPARENT:
@@ -2116,8 +2211,10 @@ namespace LWS
                     MINMAXINFO* min_max_info = reinterpret_cast<MINMAXINFO*>(lParam);
                     const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_STYLE));
                     const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_EXSTYLE));
-                    const Size minimum = outerSizeForLogicalClient(fMinSize, style, extendedStyle, fDpi);
-                    const Size maximum = outerSizeForLogicalClient(fMaxSize, style, extendedStyle, fDpi);
+                    const Size minimum = outerSizeForLogicalClient(fMinSize, style, extendedStyle, fDpi,
+                                                                   fResizeBorderVisible);
+                    const Size maximum = outerSizeForLogicalClient(fMaxSize, style, extendedStyle, fDpi,
+                                                                   fResizeBorderVisible);
                     if (fMinSize.x > 0)
                         min_max_info->ptMinTrackSize.x = minimum.x;
                     if (fMinSize.y > 0)
@@ -2231,7 +2328,7 @@ namespace LWS
             GetWindowPlacement(fHwnd, &fSavedFullScreenPlacement);
             const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_STYLE)) & ~(WS_MAXIMIZE | WS_MINIMIZE);
             const DWORD extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(fHwnd, GWL_EXSTYLE));
-            const Size frame = outerSizeForLogicalClient({}, style, extendedStyle, fDpi);
+            const Size frame = outerSizeForLogicalClient({}, style, extendedStyle, fDpi, fResizeBorderVisible);
             const RECT& normal = fSavedFullScreenPlacement.rcNormalPosition;
             fSavedWindowedClientSize = logicalFromPhysical(
                 Size{normal.right - normal.left - frame.x, normal.bottom - normal.top - frame.y}, fDpi);

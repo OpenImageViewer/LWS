@@ -59,6 +59,21 @@ namespace LWS::Win32
             return Result::NotSupported;
         return internal::WindowBackendAccess::CreateChild(window, parent, config);
     }
+    Result SetResizeBorderVisible(Window& window, bool visible)
+    {
+        if (!window.IsCreated())
+            return Result::InvalidState;
+        const auto handle = GetHwnd(window);
+        if (!handle)
+            return handle.error();
+        if (window.IsChild() || window.IsPopup())
+            return Result::NotSupported;
+        const internal::WindowBackendAccess::DispatchScope ownerDispatch(window);
+        const internal::PlatformContextAccess::DispatchScope contextDispatch(window.GetPlatformContext());
+        static_cast<WindowBackendWin32*>(internal::WindowBackendAccess::Get(window))->setResizeBorderVisible(visible);
+        return window.IsCreated() ? Result::Success : Result::InvalidState;
+    }
+
     Result SetMenuChar(Window& window, bool suppress)
     {
         if (!internal::WindowBackendAccess::CanConfigure(window))

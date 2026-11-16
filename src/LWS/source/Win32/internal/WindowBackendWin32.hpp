@@ -85,6 +85,7 @@ namespace LWS
 
         UINT dpi() const { return fDpi; }
         void setMenuChar(bool suppress);
+        void setResizeBorderVisible(bool visible);
         static Result ValidateExternalParent(HWND parent);
         Result reparent(internal::IWindowBackend& parent) override;
 
@@ -161,6 +162,7 @@ namespace LWS
         // Coordinate conversion runs for every input event, so refresh this cache only when the window DPI changes.
         UINT fDpi = 96;
         bool fSuppressMenuChar = false;
+        bool fResizeBorderVisible = true;
         Size fMinSize = {0, 0};
         Size fMaxSize = {0, 0};
         bool fEraseBackground = true;

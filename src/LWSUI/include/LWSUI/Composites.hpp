@@ -308,6 +308,8 @@ namespace LWSUI
 
         ColorPicker();
         void SetValue(LLUtils::Color value);
+        // Hide the text editor for a compact, swatch-only picker. Text is visible by default.
+        void SetTextVisible(bool visible);
         LLUtils::Color Value() const { return value_; }
         LWSUI::Event<void(LLUtils::Color, EditPhase)> OnEdit;
 
@@ -315,8 +317,11 @@ namespace LWSUI
 
         Size OnMeasure(Size available) override
         {
-            columns = {-1, Style().swatchWidth};
-            spacing = Style().swatchGap;
+            const bool showText = text_->Visible();
+            columns = {showText ? -1.f : 0.f, showText ? Style().swatchWidth : -1.f};
+            spacing = showText ? Style().swatchGap : 0;
+            if (!showText)
+                available.width = std::min(available.width, Style().swatchWidth);
             return Grid::OnMeasure(available);
         }
 

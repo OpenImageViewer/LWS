@@ -22,7 +22,7 @@ namespace LWSUI::internal
         {
           public:
 
-            Row(const MenuItem& item, bool checks, bool arrows) : item_(item), checks_(checks), arrows_(arrows) {}
+            explicit Row(const MenuItem& item) : item_(item) {}
             bool active = false;
 
           protected:
@@ -36,7 +36,6 @@ namespace LWSUI::internal
             float ArrowWidth() const;
             float HintWidth(float width) const;
             const MenuItem& item_;
-            bool checks_, arrows_;
         };
 
       public:
@@ -69,7 +68,6 @@ namespace LWSUI::internal
         std::vector<MenuItem> items_;
         std::vector<Row*> rows_;
         std::optional<size_t> active_, pressed_;
-        bool checks_ = false, arrows_ = false;
     };
     /// Open menu state: bar highlight, the chain of popup dropdown windows and their presentation.
     /// One instance lives inside UIHost for the host's lifetime.
@@ -84,6 +82,7 @@ namespace LWSUI::internal
         /// Clear passive bar hover when the pointer leaves the owner window.
         void LeaveBar();
         void FocusLost();
+        void CaptureLost();
         /// Popup-window listener hook; true = handled.
         bool OnLevelEvent(LWS::Window* window, const LWS::AnyEvent& event);
         /// Updates popup hosts and reaps levels retired during input dispatch.
@@ -131,6 +130,7 @@ namespace LWSUI::internal
         void SetHot(int index);
         void ArmHover(size_t level, size_t row);
         void CancelHover();
+        void ClearPointerHighlights(size_t keep = NoLevel);
         std::optional<size_t> FindLevel(LWS::Window* window) const;
         size_t IndexOf(const Level* level) const;
         bool CanReuseWindows() const;
@@ -147,6 +147,8 @@ namespace LWSUI::internal
         std::optional<std::pair<size_t, size_t>> pendingSubmenu_;
         int hot_ = -1;
         bool active_ = false, menuUsed_ = false;
+        bool openingDrag_ = false;
+        bool pointerNavigation_ = false;
         Orientation orientationAtOpen_ = Orientation::Horizontal;
     };
     /// Test seam onto the session instance a host owns.

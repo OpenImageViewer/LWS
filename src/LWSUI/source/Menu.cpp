@@ -305,11 +305,11 @@ namespace LWSUI
         }
         float DropdownPanel::Row::CheckWidth() const
         {
-            return checks_ ? Font().size + Style().menuPadding : 0;
+            return Font().size + Style().menuPadding;
         }
         float DropdownPanel::Row::ArrowWidth() const
         {
-            return arrows_ ? Style().menuArrowWidth : 0;
+            return Style().menuArrowWidth;
         }
         float DropdownPanel::Row::HintWidth(float width) const
         {
@@ -366,10 +366,8 @@ namespace LWSUI
         {
             auto list = std::make_unique<StackPanel>();
             list->spacing = 0;
-            checks_ = std::ranges::any_of(items_, [](const auto& item) { return item.checked.has_value(); });
-            arrows_ = std::ranges::any_of(items_, [](const auto& item) { return !item.submenu.empty(); });
             for (const auto& item : items_)
-                rows_.push_back(&list->Emplace<Row>(item, checks_, arrows_));
+                rows_.push_back(&list->Emplace<Row>(item));
             SetContent(std::move(list));
         }
         float DropdownPanel::NaturalWidth(UIHost& host) const
@@ -381,8 +379,8 @@ namespace LWSUI
                 label = std::max(label, host.MeasureText(ParseMnemonic(item.label).label, 10000, false, Font()).width);
                 hint = std::max(hint, host.MeasureText(item.shortcut, 10000, false, Font()).width);
             }
-            return label + hint + 4 * style.menuPadding + (checks_ ? Font().size + style.menuPadding : 0) +
-                   (arrows_ ? style.menuArrowWidth : 0) + style.scrollbarWidth + style.scrollbarMargin;
+            // Keep the label and shortcut insets stable across menus, even without checks or submenus.
+            return label + hint + 4 * style.menuPadding + Font().size + style.menuPadding + style.menuArrowWidth;
         }
         bool DropdownPanel::Selectable(size_t index) const
         {
@@ -519,17 +517,42 @@ namespace LWSUI
             auto& surface = *level.host;
             auto& content = *level.panel;
             const auto& style = surface.Style();
-            const float width = std::min(std::ceil(content.NaturalWidth(surface)), std::floor(availableWidth));
-            const float rowHeight = std::max(
-                style.menuRowHeight, surface.MeasureText("Mg", width, false, style.font).height + 2 * style.menuPadding);
-            const float maxHeight = std::min(availableHeight,
-                                             std::max(1.f, style.menuMaxRows) * std::max(1.f, rowHeight));
-            const Size measured = content.Measure({width, maxHeight});
+            float width = std::min(std::ceil(content.NaturalWidth(surface)), std::floor(availableWidth));
+            const float rowHeight = std::max(style.menuRowHeight,
+                                             surface.MeasureText("Mg", width, false, style.font).height +
+                                                 2 * style.menuPadding);
+            const float maxHeight = std::floor(
+                std::min(availableHeight, std::max(1.f, style.menuMaxRows) * std::max(1.f, rowHeight)));
+            // A fitting menu uses the full row width. Scrolling menus reserve a separate gutter,
+            // so selection and row clicks never extend beneath the scrollbar.
+            content.overlayScrollBar = true;
+            Size measured = content.Measure({width, maxHeight});
+            if (content.Content()->DesiredSize().height > maxHeight)
+            {
+                content.overlayScrollBar = false;
+                width = std::min(std::ceil(width + style.scrollbarWidth + style.scrollbarMargin),
+                                 std::floor(availableWidth));
+                measured = content.Measure({width, maxHeight});
+            }
             if (measured.height <= 0)
                 return std::nullopt;
-            const Size size{width, std::min(std::ceil(measured.height), std::floor(availableHeight))};
+            double windowScale = 1;
+#ifdef LWS_HAS_WIN32_BACKEND
+            windowScale = double(LWS::Win32::GetDpi(host.Window()).value_or(96)) / 96;
+#endif
+            // Native popup sizes use whole logical units, then round to physical pixels.
+            // Request enough units to avoid rounding below the measured content at fractional DPI.
+            const auto windowExtent = [windowScale](float required, float available)
+            {
+                float logical = std::ceil(required);
+                const double pixels = std::ceil(required * windowScale);
+                if (std::round(logical * windowScale) < pixels)
+                    logical = float(std::ceil(pixels / windowScale));
+                return std::min(logical, std::floor(available));
+            };
+            const Size size{windowExtent(width, availableWidth), windowExtent(measured.height, availableHeight)};
             content.Arrange({0, 0, size.width, size.height});
-            content.Select(first ? content.First() : content.Last());
+            content.Select(pointerNavigation_ ? std::nullopt : (first ? content.First() : content.Last()));
             level.selection = content.OnSelect.Connect([this, raw = &level](std::optional<size_t> row)
                                                        { OnRowSelected(raw, row); });
             level.activation = content.OnActivate.Connect([this, raw = &level](size_t row)
@@ -633,7 +656,7 @@ namespace LWSUI
                 return false;
             auto level = std::make_unique<Level>();
             level->window = std::make_unique<LWS::Window>(host_.Window().GetPlatformContext());
-            // Coordinate keyboard/dismissal before the popup host handles its own window-local input.
+            // Coordinate tracking and dismissal before dispatching window-local input to the popup host.
             auto listener = level->window->Listen([this, window = level->window.get()](const LWS::AnyEvent& event)
             {
                 return OnLevelEvent(window, event) ? LWS::EventResponse::Handled : LWS::EventResponse::Unhandled;
@@ -867,8 +890,11 @@ namespace LWSUI
             if (auto* bar = host_.MainMenu())
                 bar->ClearWindowPress();
             CancelHover();
+            openingDrag_ = false;
             active_ = false;
             menuUsed_ = false;
+            if (auto* bar = host_.MainMenu())
+                bar->ReleaseCapture();
             CloseDeepLevels(0);
             SetHot(-1);
             host_.Invalidate();
@@ -885,6 +911,10 @@ namespace LWSUI
             MoveHot(1);
             if (hot_ < 0 && !bar->windowFocus_)
                 active_ = false;
+#ifdef LWS_HAS_WIN32_BACKEND
+            if (active_)
+                bar->Capture();
+#endif
             host_.Invalidate();
         }
         bool MenuSession::Mnemonic(char key)
@@ -1016,7 +1046,8 @@ namespace LWSUI
                 {
                     OpenTopMenu(hit, true);
                     menuUsed_ = true;
-                    host_.suppressPointerRelease_ = true;
+                    openingDrag_ = bar->dragToSelect;
+                    host_.suppressPointerRelease_ = !openingDrag_;
                     return true;
                 }
                 // Disabled items and unused bar space still cover the root. Letting a press
@@ -1036,9 +1067,12 @@ namespace LWSUI
                         else if (CanReuseWindows())
                             OpenTopMenu(hit, true);
                     }
+                    if (bar->hot != int(hit))
+                    {
+                        bar->hot = int(hit);
+                        bar->Invalidate();
+                    }
                 }
-                else if (levels_.empty())
-                    SetHot(-1);
                 return true;
             }
             if (input.kind == InputKind::Wheel)
@@ -1071,10 +1105,29 @@ namespace LWSUI
                 host_.suppressPointerRelease_ = true;
                 return true;
             }
+            if (input.kind == InputKind::Up && openingDrag_)
+            {
+                openingDrag_ = false;
+                if (!overBar)
+                    Close();
+            }
             return true;
+        }
+        void MenuSession::ClearPointerHighlights(size_t keep)
+        {
+            // Keep the open heading for navigation, but show only the pointer's current row.
+            if (auto* bar = host_.MainMenu(); bar && bar->hot != -1)
+            {
+                bar->hot = -1;
+                bar->Invalidate();
+            }
+            for (size_t level = 0; level < levels_.size(); ++level)
+                if (level != keep)
+                    levels_[level]->panel->Select(std::nullopt, false);
         }
         void MenuSession::LeaveBar()
         {
+            ClearPointerHighlights();
             if (auto* bar = host_.MainMenu(); bar && bar->windowHover_)
             {
                 bar->windowHover_.reset();
@@ -1097,6 +1150,7 @@ namespace LWSUI
                 Close();
             if (input.kind == InputKind::KeyDown)
             {
+                pointerNavigation_ = false;
                 if (input.key == LWS::KeyCode::Escape && bar->windowPressed_)
                 {
                     Close();
@@ -1115,6 +1169,7 @@ namespace LWSUI
             }
             if (input.kind == InputKind::Text)
             {
+                pointerNavigation_ = false;
                 if (!active_)
                     return false;
                 const auto character = !input.text.empty() ? std::optional<char>(input.text[0]) : std::nullopt;
@@ -1123,8 +1178,38 @@ namespace LWSUI
                 menuUsed_ = true;
                 return Mnemonic(*character);
             }
-            if (bar->ContentActive() && !bar->windowPressed_ &&
-                PointerKind(input.kind) && bar->HitContent(input.x, input.y))
+#ifdef LWS_HAS_WIN32_BACKEND
+            // Capture keeps clicks on native child windows in the menu session. Popup
+            // hosts still receive local coordinates, including their scrollbar gutter.
+            if (active_ && PointerKind(input.kind))
+            {
+                const auto scale = host_.Window().GetClientAreaMetrics().Scale().value_or(LWS::ContentScale{});
+                for (size_t level = levels_.size(); level-- > 0;)
+                {
+                    const auto hwnd = *LWS::Win32::GetHwnd(*levels_[level]->window);
+                    POINT point{Round(float(input.x * scale.x)), Round(float(input.y * scale.y))};
+                    MapWindowPoints(*LWS::Win32::GetHwnd(host_.Window()), hwnd, &point, 1);
+                    RECT bounds{};
+                    GetClientRect(hwnd, &bounds);
+                    if (PtInRect(&bounds, point))
+                    {
+                        auto local = input;
+                        const auto popupScale = levels_[level]->window->GetClientAreaMetrics().Scale().value_or(
+                            LWS::ContentScale{});
+                        local.x = float(point.x / popupScale.x);
+                        local.y = float(point.y / popupScale.y);
+                        return PanelInput(level, local);
+                    }
+                }
+            }
+#endif
+            if (input.kind == InputKind::Move || input.kind == InputKind::Down)
+            {
+                pointerNavigation_ = true;
+                ClearPointerHighlights();
+            }
+            if (bar->ContentActive() && !bar->windowPressed_ && PointerKind(input.kind) &&
+                bar->HitContent(input.x, input.y))
             {
                 if (input.kind == InputKind::Down)
                     Close();
@@ -1156,9 +1241,50 @@ namespace LWSUI
                     Close();
             });
         }
+        void MenuSession::CaptureLost()
+        {
+#ifdef LWS_HAS_WIN32_BACKEND
+            // A popup scrollbar may temporarily take capture from the owner.
+            const auto captured = GetCapture();
+            if (std::ranges::any_of(levels_, [captured](const auto& level)
+                                    { return LWS::Win32::GetHwnd(*level->window) == captured; }))
+                return;
+#endif
+            if (active_)
+                Close();
+        }
         bool MenuSession::PanelInput(size_t level, const Input& input)
         {
-            return level < levels_.size() && levels_[level]->host->Route(input);
+            if (level >= levels_.size())
+                return false;
+            if (input.kind == InputKind::Move || input.kind == InputKind::Down)
+            {
+                pointerNavigation_ = true;
+                ClearPointerHighlights(level);
+                if (!levels_[level]->panel->Viewport().Contains(input.x, input.y))
+                    levels_[level]->panel->Select(std::nullopt, false);
+            }
+            bool handled = true;
+            if (openingDrag_ && input.kind == InputKind::Up && input.button == LWS::MouseButton::Left)
+            {
+                openingDrag_ = false;
+                auto* panel = levels_[level]->panel;
+                for (size_t row = 0; row < panel->Count(); ++row)
+                    if (panel->Viewport().Contains(input.x, input.y) && panel->Selectable(row) &&
+                        panel->RowRect(row).Contains(input.x, input.y))
+                    {
+                        ActivateRow(level, row);
+                        break;
+                    }
+            }
+            else
+                handled = levels_[level]->host->Route(input);
+#ifdef LWS_HAS_WIN32_BACKEND
+            if (active_ && input.kind == InputKind::Up)
+                if (auto* bar = host_.MainMenu())
+                    bar->Capture();
+#endif
+            return handled;
         }
         bool MenuSession::OnLevelEvent(LWS::Window* window, const LWS::AnyEvent& event)
         {
@@ -1170,10 +1296,12 @@ namespace LWSUI
                 *index == 0 ? Close() : CloseDeepLevels(*index);
                 return true;
             }
+            if (std::holds_alternative<LWS::EventMouseLeave>(event))
+                levels_[*index]->panel->Select(std::nullopt, false);
             if (std::holds_alternative<LWS::EventFocusLost>(event))
                 FocusLost();
             const auto input = InputFromEvent(event, host_.Window().GetPlatformContext());
-            return input && !PointerKind(input->kind) && OnInput(*input);
+            return input && (PointerKind(input->kind) ? PanelInput(*index, *input) : OnInput(*input));
         }
         void MenuSession::Update()
         {

@@ -955,6 +955,186 @@ TEST_CASE("Menu pointer input opens, swallows releases, and closes on outside cl
     REQUIRE(clicks == 1);
 }
 
+TEST_CASE("Menu opening drags activate on release with an opt-out", "[ui][menu]")
+{
+    MenuEnvironment env;
+    MenuCounters counts;
+    env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts)));
+    env.host().Update();
+    auto* bar = env.host().MainMenu();
+    auto& session = LWSUI::internal::MenuSessionAccess::Get(env.host());
+    const auto heading = bar->ItemRect(0);
+    REQUIRE(bar->dragToSelect);
+    const auto open = [&]
+    {
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = heading.x + 3, .y = heading.y + 3}));
+        REQUIRE(session.HasLevels());
+        env.host().Update();
+    };
+    const auto releaseRow = [&](size_t row)
+    {
+        const auto rect = session.Panel(0)->RowRect(row);
+        REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Move, .x = rect.x + 4, .y = rect.y + 4}));
+        REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Up, .x = rect.x + 4, .y = rect.y + 4}));
+    };
+    SECTION("default opening drag activates a leaf exactly once")
+    {
+        open();
+        releaseRow(0);
+        REQUIRE_FALSE(session.Active());
+        REQUIRE(counts.Total() == 0);
+        env.host().Update();
+        REQUIRE(counts.fresh == 1);
+        REQUIRE(counts.Total() == 1);
+    }
+    SECTION("disabled entries and separators never activate")
+    {
+        for (const auto row : {1u, 2u})
+        {
+            open();
+            releaseRow(row);
+            REQUIRE(session.Active());
+            session.Close();
+        }
+        env.host().Update();
+        REQUIRE(counts.Total() == 0);
+    }
+    SECTION("release on a submenu opens it")
+    {
+        open();
+        releaseRow(3);
+        REQUIRE(session.LevelCount() == 2);
+        REQUIRE(counts.Total() == 0);
+    }
+    SECTION("legacy behavior requires a separate click")
+    {
+        bar->dragToSelect = false;
+        open();
+        releaseRow(0);
+        REQUIRE(session.Active());
+        REQUIRE(counts.Total() == 0);
+        const auto rect = session.Panel(0)->RowRect(0);
+        REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Down, .x = rect.x + 4, .y = rect.y + 4}));
+        releaseRow(0);
+        env.host().Update();
+        REQUIRE(counts.fresh == 1);
+    }
+    SECTION("release outside cancels the opening drag")
+    {
+        open();
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = 600, .y = 400}));
+        REQUIRE_FALSE(session.Active());
+        REQUIRE(counts.Total() == 0);
+    }
+    #ifdef LWS_HAS_WIN32_BACKEND
+    SECTION("captured owner input is mapped to the popup")
+    {
+        open();
+        REQUIRE(GetCapture() == Hwnd(env.window()));
+        const auto rect = session.Panel(0)->RowRect(0);
+        const auto scale = session.LevelWindow(0)->GetClientAreaMetrics().Scale().value();
+        POINT point{LONG((rect.x + 4) * scale.x), LONG((rect.y + 4) * scale.y)};
+        MapWindowPoints(Hwnd(*session.LevelWindow(0)), Hwnd(env.window()), &point, 1);
+        const auto ownerScale = env.window().GetClientAreaMetrics().Scale().value();
+        REQUIRE(env.host().Route(
+            {.kind = LWSUI::InputKind::Move, .x = float(point.x / ownerScale.x), .y = float(point.y / ownerScale.y)}));
+        REQUIRE(env.host().Route(
+            {.kind = LWSUI::InputKind::Up, .x = float(point.x / ownerScale.x), .y = float(point.y / ownerScale.y)}));
+        REQUIRE_FALSE(session.Active());
+        REQUIRE(GetCapture() == nullptr);
+        env.host().Update();
+        REQUIRE(counts.fresh == 1);
+    }
+    SECTION("capture keeps native child clicks in the menu session")
+    {
+        LWS::Window child(env.context);
+        REQUIRE(child.Create(
+                    {.parent = &env.window(), .position = LWS::Point{200, 200}, .clientSize = {100, 100}, .visible = true}) ==
+                LWS::Result::Success);
+        open();
+        REQUIRE(GetCapture() == Hwnd(env.window()));
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = heading.x + 3, .y = heading.y + 3}));
+        SendMessageW(GetCapture(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(220, 220));
+        REQUIRE_FALSE(session.Active());
+        REQUIRE(GetCapture() == nullptr);
+    }
+    SECTION("unexpected capture loss dismisses the menu")
+    {
+        open();
+        ReleaseCapture();
+        REQUIRE_FALSE(session.Active());
+    }
+    #endif
+}
+
+TEST_CASE("Menu pointer highlights follow the current row and clear on leave", "[ui][menu]")
+{
+    MenuEnvironment env;
+    MenuCounters counts;
+    env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>(BuildTestMenu(counts)));
+    env.host().Update();
+    auto* bar = env.host().MainMenu();
+    auto& session = LWSUI::internal::MenuSessionAccess::Get(env.host());
+    const auto heading = bar->ItemRect(0);
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = heading.x + 3, .y = heading.y + 3}));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Up, .x = heading.x + 3, .y = heading.y + 3}));
+    env.host().Update();
+    REQUIRE_FALSE(session.Panel(0)->Active());
+    const auto move = [&](size_t level, size_t row)
+    {
+        const auto rect = session.Panel(level)->RowRect(row);
+        REQUIRE(session.PanelInput(level, {.kind = LWSUI::InputKind::Move, .x = rect.x + 4, .y = rect.y + 4}));
+    };
+    move(0, 0);
+    REQUIRE(session.Panel(0)->Active() == 0);
+    REQUIRE(bar->hot == -1);
+    move(0, 4);
+    REQUIRE(session.Panel(0)->Active() == 4);
+    SECTION("moving onto window content clears the row")
+    {
+        env.host().Route({.kind = LWSUI::InputKind::Move, .x = 600, .y = 400});
+        REQUIRE_FALSE(session.Panel(0)->Active());
+        REQUIRE(session.HasLevels());
+    }
+    SECTION("returning to the open heading restores only its highlight")
+    {
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Move, .x = heading.x + 3, .y = heading.y + 3}));
+        REQUIRE(bar->hot == 0);
+        REQUIRE_FALSE(session.Panel(0)->Active());
+    }
+    SECTION("native popup leave clears the row")
+    {
+        session.OnLevelEvent(session.LevelWindow(0), LWS::EventMouseLeave{});
+        REQUIRE_FALSE(session.Panel(0)->Active());
+    }
+    SECTION("owner leave clears pointer highlights without closing menus")
+    {
+        session.LeaveBar();
+        REQUIRE_FALSE(session.Panel(0)->Active());
+        REQUIRE(bar->hot == -1);
+        REQUIRE(session.HasLevels());
+    }
+    SECTION("submenu entry clears the parent highlight")
+    {
+        const auto rect = session.Panel(0)->RowRect(3);
+        REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Down, .x = rect.x + 4, .y = rect.y + 4}));
+        REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Up, .x = rect.x + 4, .y = rect.y + 4}));
+        REQUIRE(session.LevelCount() == 2);
+        env.host().Update();
+        REQUIRE_FALSE(session.Panel(1)->Active());
+        move(1, 0);
+        REQUIRE_FALSE(session.Panel(0)->Active());
+        REQUIRE(session.Panel(1)->Active() == 0);
+        REQUIRE(bar->hot == -1);
+    }
+    SECTION("keyboard navigation resumes after mouse leave")
+    {
+        session.LeaveBar();
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Down}));
+        REQUIRE(session.Panel(0)->Active() == 0);
+    }
+}
+
 TEST_CASE("Menu keyboard path toggles, navigates, and activates rows", "[ui][menu]")
 {
     MenuEnvironment env;
@@ -1111,7 +1291,8 @@ TEST_CASE("Menu hover opens cascades on a delay", "[ui][menu]")
     openFile();
     REQUIRE(hoverRow(3));
     REQUIRE(session.LevelCount() == 2);
-    REQUIRE(session.Panel(1)->Active() == 0);
+    // A mouse-opened cascade has no highlighted row until the pointer enters it.
+    REQUIRE_FALSE(session.Panel(1)->Active());
     // Moving onto a row without a submenu collapses the cascade again.
     REQUIRE(hoverRow(4));
     REQUIRE(session.LevelCount() == 1);
@@ -1398,6 +1579,128 @@ TEST_CASE("Floating menu bounds preserve either orientation", "[ui][menu][layout
         REQUIRE(std::to_integer<uint8_t>(pixel[0]) == menu->Style().selection.B());
         REQUIRE(std::to_integer<uint8_t>(pixel[1]) == menu->Style().selection.G());
         REQUIRE(std::to_integer<uint8_t>(pixel[2]) == menu->Style().selection.R());
+    }
+}
+
+TEST_CASE("Dropdown selection fills rows and excludes a visible scrollbar gutter", "[ui][menu][layout][scroll]")
+{
+    MenuEnvironment env;
+    auto theme = env.host().Style();
+    theme.menuMaxRows = 4;
+    env.host().SetTheme(theme);
+    std::vector<LWSUI::MenuItem> items;
+    bool scrolling = false;
+    SECTION("fitting menu") {}
+    SECTION("scrolling menu")
+    {
+        scrolling = true;
+    }
+    for (int i = 0; i < (scrolling ? 20 : 2); ++i)
+        items.push_back({"Item", "", [] {}});
+    env.host().SetMainMenu(
+        std::make_unique<LWSUI::MenuBar>(std::vector<LWSUI::MenuBarItem>{{"File", std::move(items)}}));
+    env.host().Update();
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::F10}));
+    REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Down}));
+    auto& session = LWSUI::internal::MenuSessionAccess::Get(env.host());
+    REQUIRE(session.LevelCount() == 1);
+    for (int i = 0; i < 500 && !session.LevelWindow(0)->IsConfigured(); ++i)
+    {
+        REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    env.host().Update();
+    auto* panel = session.Panel(0);
+    const auto bounds = panel->Bounds();
+    const auto row = panel->RowRect(0);
+    const auto& style = panel->Style();
+    const float gutter = scrolling ? style.scrollbarWidth + style.scrollbarMargin : 0;
+    REQUIRE(row.width == bounds.width - gutter);
+    const float x = row.x + row.width - 1, y = row.y + row.height / 2;
+    REQUIRE(session.PanelInput(0, {.kind = LWSUI::InputKind::Move, .x = x, .y = y}));
+    REQUIRE(panel->Active() == 0);
+    LWSUI::Canvas canvas;
+    canvas.Begin(int(bounds.width), int(bounds.height));
+    panel->Render(canvas);
+    const auto bitmap = canvas.End();
+    const auto* pixel = bitmap.pixels.data() + int(y) * bitmap.rowPitch + int(x) * 4;
+    REQUIRE(std::to_integer<uint8_t>(pixel[0]) == style.selection.B());
+    REQUIRE(std::to_integer<uint8_t>(pixel[1]) == style.selection.G());
+    REQUIRE(std::to_integer<uint8_t>(pixel[2]) == style.selection.R());
+    if (scrolling)
+    {
+        pixel = bitmap.pixels.data() + int(y) * bitmap.rowPitch + (int(bounds.width) - 1) * 4;
+        REQUIRE((std::to_integer<uint8_t>(pixel[0]) != style.selection.B() ||
+                 std::to_integer<uint8_t>(pixel[1]) != style.selection.G() ||
+                 std::to_integer<uint8_t>(pixel[2]) != style.selection.R()));
+        const float barX = bounds.width - style.scrollbarMargin - style.scrollbarWidth / 2;
+        REQUIRE(dynamic_cast<LWSUI::ScrollBar*>(panel->HitTest(barX, y)));
+    }
+}
+
+TEST_CASE("Fitting dropdowns remain scroll-free after native DPI sizing", "[ui][menu][layout][dpi]")
+{
+    MenuEnvironment env;
+    auto theme = env.host().Style();
+    theme.font.size = 13;
+    theme.menuRowHeight = 24;
+    theme.menuPadding = 2;
+    theme.menuMaxRows = 32;
+    env.host().SetTheme(theme);
+    using LWSUI::MenuItem;
+    env.host().SetMainMenu(std::make_unique<LWSUI::MenuBar>(std::vector<LWSUI::MenuBarItem>{
+        {"File", {MenuItem{"Open", "", [] {}}}},
+        {"Help",
+         {MenuItem{"Keyboard Shortcuts", "", [] {}}, MenuItem{"System Information", "", [] {}}, MenuItem::Separator(),
+          MenuItem{"OIViewer Website", "", [] {}}, MenuItem{"About OIViewer...", "", [] {}}}}}));
+    env.host().Update();
+    auto* bar = env.host().MainMenu();
+    SECTION("initial popup")
+    {
+        const auto heading = bar->ItemRect(1);
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::Down, .x = heading.x + 3, .y = heading.y + 3}));
+    }
+    SECTION("reused popup")
+    {
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::F10}));
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Down}));
+        REQUIRE(env.host().Route({.kind = LWSUI::InputKind::KeyDown, .key = LWS::KeyCode::Right}));
+    }
+    auto& session = LWSUI::internal::MenuSessionAccess::Get(env.host());
+    REQUIRE(session.LevelCount() == 1);
+    for (int attempt = 0; attempt < 500 && !session.LevelWindow(0)->IsConfigured(); ++attempt)
+    {
+        REQUIRE(env.context.ProcessMessages() == LWS::LoopResult::Continue);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    env.host().Update();
+    auto* panel = session.Panel(0);
+    REQUIRE(panel->Count() == 5);
+    REQUIRE(panel->Viewport().height >= panel->Content()->DesiredSize().height);
+    const auto bounds = panel->Bounds();
+    REQUIRE_FALSE(dynamic_cast<LWSUI::ScrollBar*>(
+        panel->HitTest(bounds.width - theme.scrollbarMargin - theme.scrollbarWidth / 2, bounds.height / 2)));
+}
+
+TEST_CASE("Dropdowns reserve consistent check and arrow columns", "[ui][menu][layout]")
+{
+    MenuEnvironment env;
+    float width = 0;
+    for (int variant = 0; variant < 3; ++variant)
+    {
+        LWSUI::MenuItem item{"Same label", "Ctrl+O", [] {}};
+        if (variant == 1)
+            item.checked = false;
+        if (variant == 2)
+            item.submenu = {{"Child", "", [] {}}};
+        auto panel = std::make_unique<LWSUI::internal::DropdownPanel>(std::vector<LWSUI::MenuItem>{item});
+        auto* raw = panel.get();
+        env.host().SetRoot(std::move(panel));
+        const auto measured = raw->NaturalWidth(env.host());
+        if (variant == 0)
+            width = measured;
+        else
+            REQUIRE(measured == width);
     }
 }
 

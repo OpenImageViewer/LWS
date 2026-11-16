@@ -24,6 +24,10 @@ namespace LWS::Win32
     // dispatch messages normally, and all plugin resources must be released before the module unloads.
     [[nodiscard]] Result CreateChild(Window& window, HWND parent, const WindowConfig& config = {});
     [[nodiscard]] Result SetMenuChar(Window& window, bool suppress);
+    // Created top-level windows only. Hide native borders on captionless resizable windows while
+    // retaining edge/corner resizing. Native captions keep their frame; fullscreen is unchanged.
+    // Defaults to visible; the choice survives style and fullscreen transitions for this window.
+    [[nodiscard]] Result SetResizeBorderVisible(Window& window, bool visible);
     /// Context-thread only; requires a created window. False releases only this window's capture.
     /// Capture loss is reported through EventMouseCaptureLost. Native callbacks may run synchronously.
     [[nodiscard]] Result SetMouseCapture(Window& window, bool capture);

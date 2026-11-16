@@ -1039,7 +1039,7 @@ namespace LWSUI
             }
         }
         // A captured gesture and an active overlay own input until completed. The menu's own
-        // caption-button capture still belongs to its session; all other capture uses normal routing.
+        // tracking and caption-button capture belong to its session; other capture uses normal routing.
         if (!popup_ && !contextMenu_ && (!capture_ || capture_.Get() == menuBar_.get()) &&
             menuSession_ && menuSession_->OnInput(input))
             return true;
@@ -1199,6 +1199,8 @@ namespace LWSUI
             {
                 capture_ = {};
                 captured->Dispatch({InputKind::Cancel});
+                if (captured == menuBar_.get() && menuSession_)
+                    menuSession_->CaptureLost();
             }
             return false;
         }

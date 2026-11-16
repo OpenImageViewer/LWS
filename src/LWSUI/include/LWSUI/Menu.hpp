@@ -69,6 +69,8 @@ namespace LWSUI
         bool stretch = false;
         /// Draw a frame around the bar; set by the host for the floating dock.
         bool floating = false;
+        /// Allow the opening press to drag into a dropdown and activate a row on release.
+        bool dragToSelect = true;
         /// Explicit width when horizontal or height when vertical. 0 uses the natural span or docked fill.
         /// Min/max bounds apply afterward, and available space takes precedence.
         void SetSpan(float span)

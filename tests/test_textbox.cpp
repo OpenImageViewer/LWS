@@ -628,6 +628,27 @@ TEST_CASE("Color text parses prefixed hexadecimal and variable-width decimal RGB
     REQUIRE_FALSE(mask->Format("1.0,2,3,4"));
 
 }
+TEST_CASE("ColorPicker can display only its swatch", "[ui][color][text]")
+{
+    ColorPicker picker;
+    auto& text = *picker.Children().front();
+    auto& swatch = static_cast<ColorSwatch&>(*picker.Children().back());
+    REQUIRE(text.Visible());
+    picker.SetTextVisible(false);
+    CHECK_FALSE(text.Visible());
+    CHECK(swatch.Visible());
+    picker.SetValue(LLUtils::Color(30, 90, 180));
+    CHECK(swatch.Value() == picker.Value());
+    const auto size = picker.Measure({200, 100});
+    CHECK(size.width == picker.Style().swatchWidth);
+    picker.Arrange({0, 0, size.width, size.height});
+    CHECK(swatch.Bounds().x == 0);
+    CHECK(swatch.Bounds().width == size.width);
+    picker.SetTextVisible(true);
+    CHECK(text.Visible());
+    CHECK(picker.Measure({200, 100}).width == 200);
+    CHECK(picker.Value() == LLUtils::Color(30, 90, 180));
+}
 TEST_CASE("ColorPicker detects both formats without rewriting drafts", "[ui][color][text]")
 {
     ColorPicker picker;
