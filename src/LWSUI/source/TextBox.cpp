@@ -125,11 +125,51 @@ namespace LWSUI
         ++pasteGeneration_;
         if (value)
             Finish(EditPhase::Cancel);
+        UpdateClearButton();
         Invalidate();
     }
     bool TextBox::EditText(std::string value)
     {
         return Replace(std::move(value), TextEditOrigin::Typing, 0, text_.size());
+    }
+    void TextBox::SetClearButtonEnabled(bool enabled)
+    {
+        if (enabled && mode_ != TextBoxMode::SingleLine)
+            throw std::invalid_argument("The TextBox clear button is only available in single-line mode");
+        if (clearButtonEnabled_ == enabled)
+            return;
+        clearButtonEnabled_ = enabled;
+        if (enabled && !clearButton_)
+        {
+            clearButton_ = &Emplace<Button>("×");
+            clearButton_->sizeToContent = true;
+            clearButtonConnection_ = clearButton_->OnClick.Connect(
+                [this]
+                {
+                    const auto previous = Text();
+                    SetText({});
+                    if (Text() != previous)
+                    {
+                        OnEdit.Raise(Text(), EditPhase::Preview);
+                        if (Host())
+                            Host()->Focus(this);
+                    }
+                });
+        }
+        UpdateClearButton();
+    }
+    void TextBox::UpdateClearButton()
+    {
+        if (!clearButton_)
+            return;
+        const bool visible = clearButtonEnabled_ && !readOnly_ && !Text().empty();
+        if (!visible && clearButton_->Visible() && Host() && Host()->IsFocused(*clearButton_))
+            Host()->Focus(this);
+        clearButton_->SetVisible(visible);
+    }
+    float TextBox::ClearButtonWidth() const
+    {
+        return clearButton_ && clearButton_->Visible() ? clearButton_->Bounds().width : 0.f;
     }
     void TextBox::SetText(std::string value)
     {
@@ -162,6 +202,7 @@ namespace LWSUI
         validation_.clear();
         inputError_.clear();
         RefreshValue();
+        UpdateClearButton();
         geometryDirty_ = true;
         UpdateGeometry(true);
         Invalidate(sizeToContent);
@@ -229,12 +270,25 @@ namespace LWSUI
         if (Bounds().width <= 0)
             return;
         const float caret = caretX_;
-        const float visibleWidth = std::max(0.f, Bounds().width - 2 * Style().textPadding - Style().focusWidth);
+        const float visibleWidth =
+            std::max(0.f, Bounds().width - 2 * Style().textPadding - Style().focusWidth - ClearButtonWidth());
         scroll_ = std::clamp(scroll_, 0.f, std::max(0.f, textWidth_ - visibleWidth));
         if (caret > scroll_ + visibleWidth)
             scroll_ = caret - visibleWidth;
         if (caret < scroll_)
             scroll_ = caret;
+    }
+    void TextBox::OnArrange()
+    {
+        if (clearButton_ && clearButton_->Visible())
+        {
+            const auto bounds = Bounds();
+            const auto size   = clearButton_->Measure({bounds.width, bounds.height});
+            clearButton_->Arrange({bounds.x + bounds.width - size.width, bounds.y, size.width, bounds.height});
+        }
+        UpdateGeometry();
+        if (std::exchange(caretScrollPending_, false))
+            ScrollCaretIntoView();
     }
     const FontSpec& TextBox::Font() const
     {
@@ -425,6 +479,7 @@ namespace LWSUI
         text_ = std::move(proposed);
         dynamicExplicit_ = explicitProfile;
         RefreshValue();
+        UpdateClearButton();
         caretUpstream_ = false;
         preferredX_.reset();
         caret_ = anchor_ = caret;
@@ -444,6 +499,8 @@ namespace LWSUI
         StopSelecting();
         if (scrollbar_)
             scrollbar_->Finish(phase);
+        if (clearButton_)
+            clearButton_->Finish(phase);
         if (phase == EditPhase::Commit)
             if (const auto error = ValidationError(); !error.empty())
                 return validation_.empty() ? Reject(error) : false;
@@ -459,6 +516,7 @@ namespace LWSUI
             dynamicExplicit_ = committedDynamicExplicit_;
             geometryDirty_ = true;
             validation_.clear();
+            UpdateClearButton();
         }
         editing_ = false;
         inputError_.clear();
@@ -487,6 +545,7 @@ namespace LWSUI
     {
         auto b = Bounds();
         const float p = Style().textPadding;
+        const float textWidth = std::max(0.f, b.width - 2 * p - ClearButtonWidth());
         const bool focused = Host() && Host()->IsFocused(*this);
         if (background_ || !borderless_)
             c.FillRoundedRect(b.x, b.y, b.width, b.height, CornerRadius(),
@@ -525,13 +584,16 @@ namespace LWSUI
         }
         else
         {
+            Canvas::ClipScope clip(c, b.x + p, b.y + p, textWidth, b.height - 2 * p);
             if (text_.empty() && !focused)
-                c.Text(placeholder_, b.x + p, b.y + p, b.width - 2 * p, b.height - 2 * p, Style().muted, Font());
-            c.Text(text_, b.x + p - scroll_, b.y + p, b.width + scroll_ - 2 * p, b.height - 2 * p, Foreground(), Font(),
+                c.Text(placeholder_, b.x + p, b.y + p, textWidth, b.height - 2 * p, Style().muted, Font());
+            c.Text(text_, b.x + p - scroll_, b.y + p, textWidth + scroll_, b.height - 2 * p, Foreground(), Font(),
                    false, spans);
             if (focused)
                 c.Fill(b.x + p + caretX_ - scroll_, b.y + p, Style().borderWidth, b.height - 2 * p, Style().accent);
         }
+        if (clearButton_ && clearButton_->Visible())
+            clearButton_->Render(c);
         if (focused && focusOutline_)
         {
             const float width = std::max(0.f, std::min({Style().focusWidth, b.width / 2, b.height / 2}));

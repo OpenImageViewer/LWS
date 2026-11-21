@@ -463,6 +463,39 @@ TEST_CASE("Rejected TextBox input paints the error underline", "[ui][text][filte
     }
 }
 
+TEST_CASE("TextBox clear button is opt-in and keeps the editor focused", "[ui][text][clear]")
+{
+    TextEnvironment env("", {260, 40}, TextBoxMode::SingleLine);
+    REQUIRE(env.text->Children().empty());
+    TextBox multiline({}, TextBoxMode::Multiline);
+    CHECK_THROWS(multiline.SetClearButtonEnabled(true));
+    env.text->SetClearButtonEnabled(true);
+    REQUIRE(env.text->Children().size() == 1);
+    auto* clear = dynamic_cast<Button*>(env.text->Children().front().get());
+    REQUIRE(clear);
+    CHECK_FALSE(clear->Visible());
+
+    std::vector<std::string> edits;
+    auto editConnection = env.text->OnEdit.Connect([&](const auto& text, EditPhase) { edits.push_back(text); });
+    env.text->SetText("query");
+    env.host->Update();
+    REQUIRE(clear->Visible());
+    REQUIRE(env.host->Focus(clear));
+    REQUIRE(env.Key(K::Space));
+    CHECK(env.text->Text().empty());
+    REQUIRE_FALSE(clear->Visible());
+    REQUIRE(env.host->IsFocused(*env.text));
+    REQUIRE_FALSE(edits.empty());
+    CHECK(edits.back().empty());
+
+    env.text->SetText("query");
+    env.host->Update();
+    REQUIRE(env.host->Focus(clear));
+    env.text->SetText("");
+    CHECK_FALSE(clear->Visible());
+    CHECK(env.host->IsFocused(*env.text));
+}
+
     #ifdef LWS_HAS_WIN32_BACKEND
 TEST_CASE("Filtered mask clipboard edits are atomic and omit slot placeholders", "[ui][text][mask][clipboard]")
 {

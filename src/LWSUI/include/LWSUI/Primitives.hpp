@@ -207,6 +207,8 @@ namespace LWSUI
         void SetVisibleLines(unsigned lines);
         void SetText(std::string value);
         bool EditText(std::string value);
+        // Enables a trailing clear button for single-line fields; throws for multiline fields.
+        void SetClearButtonEnabled(bool enabled);
         void SetDoubleClickAction(std::function<bool()> action) { doubleClickAction_ = std::move(action); }
         // Read-only retains selection/copy; enabling it cancels the current draft.
         void SetReadOnly(bool value);
@@ -280,12 +282,7 @@ namespace LWSUI
       protected:
 
         Size OnMeasure(Size available) override;
-        void OnArrange() override
-        {
-            UpdateGeometry();
-            if (std::exchange(caretScrollPending_, false))
-                ScrollCaretIntoView();
-        }
+        void OnArrange() override;
         void OnDetach() override;
         void OnRender(Canvas&) override;
         bool OnInput(const Input&) override;
@@ -296,6 +293,8 @@ namespace LWSUI
         using Container::Clear;
         using Container::Emplace;
         using Container::Remove;
+        void UpdateClearButton();
+        float ClearButtonWidth() const;
         void SelectAll();
         void Copy(bool cut);
         void Paste();
@@ -338,10 +337,13 @@ namespace LWSUI
         bool dynamicExplicit_ = false, committedDynamicExplicit_ = false;
         std::optional<internal::InputMask> mask_;
         std::optional<internal::DynamicMask> dynamicMask_;
+        Button* clearButton_ = nullptr;
+        Event<void()>::Connection clearButtonConnection_;
         size_t caret_ = 0, anchor_ = 0;
         uint64_t pasteGeneration_ = 0, pendingPasteGeneration_ = 0;
         float scroll_ = 0;
-        bool editing_ = false, selecting_ = false, readOnly_ = false, borderless_ = false, focusOutline_ = false;
+        bool editing_ = false, selecting_ = false, readOnly_ = false, borderless_ = false, focusOutline_ = false,
+             clearButtonEnabled_ = false;
         // Host text metrics are refreshed on text/font changes, independently of paint.
         // Multiline geometry also depends on viewport dimensions and the scrollbar gutter.
         bool geometryDirty_ = true, caretScrollPending_ = false;
