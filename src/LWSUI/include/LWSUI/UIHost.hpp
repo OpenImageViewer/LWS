@@ -30,6 +30,8 @@ namespace LWSUI
         }
         void Invalidate(bool recalculateLayout = false);
         void Update();
+        /// Update and render a configured window while it remains hidden.
+        void RenderFrameWhileHidden();
         // Opt-in synchronous rendering on size notifications; never runs deferred application work.
         void SetRedrawOnResize(bool enabled) { redrawOnResize_ = enabled; }
         bool RedrawOnResize() const { return redrawOnResize_; }
@@ -115,8 +117,8 @@ namespace LWSUI
         void ReleaseCapture(Control* control);
         void Detached(Control& control);
         void ScheduleUpdate();
-        void UpdateCore(bool processDeferred);
-        bool RenderFrame();
+        void UpdateCore(bool processDeferred, bool allowHidden = false);
+        bool RenderFrame(bool allowHidden);
         bool Event(const LWS::AnyEvent&);
         bool InPopup(Control* control) const;
         Control* HitInput(float x, float y) const;

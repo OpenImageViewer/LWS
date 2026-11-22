@@ -215,9 +215,13 @@ namespace LWSUI
     {
         UpdateCore(true);
     }
-    void UIHost::UpdateCore(bool processDeferred)
+    void UIHost::RenderFrameWhileHidden()
     {
-        if (updating_ || !window_.IsCreated() || !window_.IsVisible())
+        UpdateCore(true, true);
+    }
+    void UIHost::UpdateCore(bool processDeferred, bool allowHidden)
+    {
+        if (updating_ || !window_.IsCreated() || (!allowHidden && !window_.IsVisible()))
             return;
         updating_ = true;
         // Corrections survive reconciliation passes, but expire on explicit layout changes
@@ -243,7 +247,7 @@ namespace LWSUI
             for (unsigned pass = 0; pass < 4; ++pass)
             {
                 resizePending_ = false;
-                if (!RenderFrame())
+                if (!RenderFrame(allowHidden))
                 {
                     updating_ = false;
                     return;
@@ -265,9 +269,9 @@ namespace LWSUI
         if (paintDirty_ || layoutDirty_ || !deferred_.empty())
             ScheduleUpdate();
     }
-    bool UIHost::RenderFrame()
+    bool UIHost::RenderFrame(bool allowHidden)
     {
-        if (!window_.IsCreated() || !window_.IsVisible())
+        if (!window_.IsCreated() || (!allowHidden && !window_.IsVisible()))
             return false;
         const auto metrics = window_.GetClientAreaMetrics();
         const auto scale = DrawingScale();
@@ -300,7 +304,7 @@ namespace LWSUI
         }
         const auto current = [&]
         {
-            if (!window_.IsCreated() || !window_.IsVisible())
+            if (!window_.IsCreated() || (!allowHidden && !window_.IsVisible()))
                 return false;
             if (window_.GetClientAreaMetrics() == metrics && DrawingScale() == scale && !layoutDirty_)
                 return true;
