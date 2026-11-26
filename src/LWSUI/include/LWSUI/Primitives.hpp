@@ -481,6 +481,7 @@ namespace LWSUI
       public:
 
         void SetDynamicResolution(bool);
+        void SetResolutionAxisLock(bool enabled) { resolutionAxisLock_ = enabled; }
         // Fraction of the full control width (vertical bar) or height (horizontal bar), in (0, 1].
         void SetInwardDistance(double fraction);
         double InwardDistance() const { return inwardDistance_; }
@@ -520,6 +521,8 @@ namespace LWSUI
         }
         Orientation GetOrientation() const { return orientation_; }
         void SetPage(double page);
+        // Layout may move the thumb while a live-content drag remains captured.
+        void SetValue(double value);
 
       protected:
 
@@ -536,11 +539,13 @@ namespace LWSUI
         Rect Thumb() const;
         Orientation orientation_ = Orientation::Vertical;
         void UpdateSpeed(float x, float y);
+        void RebaseDrag();
         bool dynamicResolution_ = false, resolutionDragging_ = false;
         Rect resolutionBounds_{}, arrangedBounds_{};
         double contentRange_ = 0, lineSize_ = 1, sensitivity_ = 0, speed_ = 100;
         ScrollResolution resolutionMode_ = ScrollResolution::Row;
-        float lastAxis_ = 0, inward_ = 0;
+        bool resolutionAxisLock_ = false;
+        float lastAxis_ = 0, lastCrossAxis_ = 0, inward_ = 0;
         double inwardDistance_ = .5, outwardDistance_ = .1, maximumScrollSpeed_ = 400, resolutionFraction_ = .2;
         double outwardMultiplier_ = 1;
         bool outwardAcceleration_ = false;

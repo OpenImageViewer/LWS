@@ -73,9 +73,13 @@ namespace LWSUI
         x = std::clamp(x, 0., double(impl_->layout.horizontalExtent));
         y = std::clamp(y, 0., impl_->layout.VerticalLimit());
         if (x == impl_->offset.width && y == impl_->offset.height)
+        {
+            impl_->restoreViewport = false;
             return;
+        }
         if (!FinishEdit(EditPhase::Commit))
             return;
+        impl_->restoreViewport = false;
         impl_->offset = {x, y};
         OnArrange();
         Invalidate();
@@ -151,8 +155,18 @@ namespace LWSUI
         }
         impl_->layout.Build(b, impl_->columns, impl_->options, impl_->model ? impl_->model->RowCount() : 0, bar,
                             impl_->offset.width, impl_->offset.height, numberWidth);
+        double anchoredY = impl_->offset.height;
+        if (impl_->restoreViewport)
+        {
+            if (impl_->viewportAtBottom)
+                anchoredY = impl_->layout.VerticalLimit();
+            else if (impl_->viewportAnchor && impl_->model)
+                if (const auto row = impl_->projection.Index(*impl_->model, *impl_->viewportAnchor))
+                    anchoredY = double(*row) * impl_->options.rowHeight + impl_->viewportInset;
+            impl_->restoreViewport = false;
+        }
         const GridScrollOffset adjusted{std::clamp(impl_->offset.width, 0., double(impl_->layout.horizontalExtent)),
-                            std::clamp(impl_->offset.height, 0., impl_->layout.VerticalLimit())};
+                            std::clamp(anchoredY, 0., impl_->layout.VerticalLimit())};
         if (adjusted.width != impl_->offset.width || adjusted.height != impl_->offset.height)
         {
             impl_->offset = adjusted;
@@ -202,6 +216,7 @@ namespace LWSUI
             else
                 FinishEdit(EditPhase::Cancel);
         }
+        impl_->RememberViewport();
     }
     static void AlignedText(Canvas& canvas, std::string_view text, Rect b, Alignment alignment, float padding,
                             LLUtils::Color color, const FontSpec& font, std::span<const TextSpan> spans = {})

@@ -226,19 +226,43 @@ namespace LWSUI
         if (!std::isfinite(page))
             throw std::invalid_argument("Scrollbar page must be finite");
         page = std::clamp(page, 0., 1.);
-        if (page != page_ && resolutionDragging_)
-            Finish(EditPhase::Cancel);
+        if (page == page_)
+            return;
         page_ = page;
+        RebaseDrag();
         Invalidate();
+    }
+    void ScrollBar::RebaseDrag()
+    {
+        if (!dragging_ || resolutionDragging_)
+            return;
+        const auto b = Bounds(), thumb = Thumb();
+        const bool vertical = orientation_ == Orientation::Vertical;
+        const float origin = vertical ? b.y : b.x, length = vertical ? thumb.height : thumb.width;
+        const float extent = vertical ? b.height : b.width;
+        grab_ = float((lastAxis_ - origin - value_ * std::max(1.f, extent - length)) / std::max(1.f, length));
+    }
+    void ScrollBar::SetValue(double value)
+    {
+        const double previous = value_;
+        Slider::SetValue(value);
+        if (dragging_)
+        {
+            start_ = std::clamp(start_ + value_ - previous, 0., 1.);
+            RebaseDrag();
+        }
     }
     void ScrollBar::OnArrange()
     {
         const auto b = Bounds();
-        if (resolutionDragging_ && (b.x != arrangedBounds_.x || b.y != arrangedBounds_.y ||
-                                    b.width != arrangedBounds_.width || b.height != arrangedBounds_.height))
+        const bool boundsChanged = b.x != arrangedBounds_.x || b.y != arrangedBounds_.y ||
+                                   b.width != arrangedBounds_.width || b.height != arrangedBounds_.height;
+        if (boundsChanged && resolutionDragging_)
             Finish(EditPhase::Cancel);
         arrangedBounds_ = b;
         Slider::OnArrange();
+        if (boundsChanged)
+            RebaseDrag();
     }
     void ScrollBar::SetInwardDistance(double fraction)
     {
@@ -298,10 +322,17 @@ namespace LWSUI
             throw std::invalid_argument("Invalid scrollbar resolution");
         if (bounds.x != resolutionBounds_.x || bounds.y != resolutionBounds_.y ||
             bounds.width != resolutionBounds_.width || bounds.height != resolutionBounds_.height ||
-            range != contentRange_ || line != lineSize_ || mode != resolutionMode_)
+            range <= 0 || line != lineSize_ || mode != resolutionMode_)
             Finish(EditPhase::Cancel);
+        if (dragging_ && range != contentRange_ && range > 0)
+        {
+            const double scale = contentRange_ / range;
+            value_ = std::clamp(value_ * scale, 0., 1.);
+            start_ = std::clamp(start_ * scale, 0., 1.);
+        }
         resolutionBounds_ = bounds;
         contentRange_ = range;
+        RebaseDrag();
         lineSize_ = line;
         resolutionMode_ = mode;
     }
@@ -382,10 +413,17 @@ namespace LWSUI
             UpdateSpeed(input.x, input.y);
             if (!resolutionDragging_ || !dragging_)
                 return true;
-            const float axis = orientation_ == Orientation::Vertical ? input.y : input.x;
+            const bool vertical = orientation_ == Orientation::Vertical;
+            const float axis = vertical ? input.y : input.x;
+            const float crossAxis = vertical ? input.x : input.y;
             const double delta = axis - lastAxis_;
+            const double crossDelta = crossAxis - lastCrossAxis_;
+            // Cross-axis motion still adjusts sensitivity. Consume both deltas
+            // so locked motion cannot accumulate into a jump when scrolling resumes.
             lastAxis_ = axis;
-            if (delta != 0 && contentRange_ > 0)
+            lastCrossAxis_ = crossAxis;
+            if (delta != 0 && contentRange_ > 0 &&
+                (!resolutionAxisLock_ || std::abs(delta) > std::abs(crossDelta)))
             {
                 value_ = std::clamp(value_ + delta * (sensitivity_ / contentRange_) * outwardMultiplier_, 0., 1.);
                 OnEdit.Raise(value_, EditPhase::Preview);
@@ -403,7 +441,8 @@ namespace LWSUI
                                std::max(1.f, vertical ? thumb.height : thumb.width))
                             : .5f;
             resolutionDragging_ = dynamicResolution_ && contentRange_ > 0;
-            lastAxis_ = orientation_ == Orientation::Vertical ? input.y : input.x;
+            lastAxis_ = vertical ? input.y : input.x;
+            lastCrossAxis_ = vertical ? input.x : input.y;
             if (resolutionDragging_)
             {
                 start_ = value_;
@@ -428,6 +467,8 @@ namespace LWSUI
                 translated.key = LWS::KeyCode::Right;
             return Slider::OnInput(translated);
         }
+        if (input.kind == InputKind::Move || input.kind == InputKind::Up)
+            lastAxis_ = orientation_ == Orientation::Vertical ? input.y : input.x;
         return Slider::OnInput(input);
     }
     void ScrollBar::RenderResolutionGuide(Canvas& canvas) const

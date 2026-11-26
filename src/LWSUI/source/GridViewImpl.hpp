@@ -15,6 +15,10 @@ namespace LWSUI
         GridColumnId sortColumn;
         GridSortDirection direction = GridSortDirection::None;
         GridScrollOffset offset;
+        // Model notifications arrive after mutation, so retain the last displayed row.
+        std::optional<GridRowId> viewportAnchor;
+        double viewportInset = 0;
+        bool viewportAtBottom = false, restoreViewport = false;
         ScrollBar *vertical = nullptr, *horizontal = nullptr;
         GridCellEditor* editor = nullptr;
         GridCell editCell;
@@ -36,9 +40,16 @@ namespace LWSUI
             Value
         };
         Drag drag = Drag::None;
-        GridColumnId dragColumn;
+        GridColumnId dragColumn, resizePeer;
+        float resizePairWidth{};
+        struct WidthState {
+            GridColumnId id;
+            float width, weight, displayed;
+            GridWidthMode mode;
+        };
+        std::vector<WidthState> resizeWidths;
+        std::optional<size_t> ResizePeer(size_t index) const;
         float dragStart = 0, originalWidth = 0, dragWidth = 0, pointerX = 0, pointerY = -1;
-        GridWidthMode originalMode = GridWidthMode::Fixed;
         Size arrangedSize;
         bool moved = false;
         std::optional<GridCell> pendingClick;
@@ -56,6 +67,7 @@ namespace LWSUI
         float ContentWidth(const GridColumn& column) const;
         void SizeContentColumns();
         void Rebuild();
+        void RememberViewport();
         void Publish(GridSelectionChange change);
         GridStatus RequestChange(GridValueChange& change, bool notify);
         GridStatus StoreChange(GridValueChange& change);

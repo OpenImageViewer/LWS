@@ -36,6 +36,20 @@ namespace LWSUI
         if (model)
             projection.Rebuild(*model, Column(sortColumn), direction);
     }
+    void GridView::Impl::RememberViewport()
+    {
+        viewportAnchor.reset();
+        viewportAtBottom = layout.VerticalLimit() > 0 && offset.height >= layout.VerticalLimit() - .01;
+        if (model && model->RowCount())
+        {
+            const auto first = owner.FirstVisibleRow();
+            if (first < model->RowCount())
+            {
+                viewportAnchor = projection.Row(*model, first);
+                viewportInset = offset.height - double(first) * options.rowHeight;
+            }
+        }
+    }
     void GridView::Impl::Publish(GridSelectionChange change)
     {
         if (!change.added.empty() || !change.removed.empty())
@@ -237,6 +251,7 @@ namespace LWSUI
             owner.FinishEdit(EditPhase::Cancel);
         if (change.kind == GridModelChange::Kind::Structure)
         {
+            restoreViewport = true;
             std::erase_if(columns, [&](const GridColumn& column) { return !Definition(column.id); });
             if (!Column(sortColumn))
             {
@@ -263,6 +278,22 @@ namespace LWSUI
             Rebuild();
         owner.Invalidate(change.kind == GridModelChange::Kind::Structure);
     }
+    std::optional<size_t> GridView::Impl::ResizePeer(size_t index) const
+    {
+        const auto edge = std::ranges::find(layout.columns, index, &internal::GridColumnGeometry::index);
+        if (edge == layout.columns.end() || std::next(edge) == layout.columns.end())
+            return {};
+        const auto peer = std::next(edge);
+        const auto& a = columns[index];
+        const auto& b = columns[peer->index];
+        if (!a.resizable || !b.resizable || a.pin != b.pin)
+            return {};
+        const float total = edge->bounds.width + peer->bounds.width;
+        if (std::max(a.minimumWidth, total - b.maximumWidth) >
+            std::min(a.maximumWidth, total - b.minimumWidth))
+            return {};
+        return peer->index;
+    }
     void GridView::Impl::CancelDrag()
     {
         std::optional<GridEditEvent> canceled;
@@ -272,8 +303,12 @@ namespace LWSUI
             if (auto* c = Column(dragColumn))
             {
                 const float old = c->width;
-                c->width = originalWidth;
-                c->widthMode = originalMode;
+                for (const auto& saved : resizeWidths)
+                    if (auto* column = Column(saved.id)) {
+                        column->width = saved.width;
+                        column->weight = saved.weight;
+                        column->widthMode = saved.mode;
+                    }
                 GridColumnEvent event;
                 event.column = c->id;
                 event.oldWidth = old;
@@ -284,6 +319,7 @@ namespace LWSUI
         drag = Drag::None;
         moved = false;
         dragColumn.clear();
+        resizeWidths.clear();
         pendingClick.reset();
         owner.ReleaseCapture();
         owner.cursor.reset();
@@ -295,6 +331,8 @@ namespace LWSUI
     {
         impl_->vertical = &Emplace<ScrollBar>();
         impl_->horizontal = &Emplace<ScrollBar>();
+        impl_->vertical->SetResolutionAxisLock(true);
+        impl_->horizontal->SetResolutionAxisLock(true);
         impl_->horizontal->SetOrientation(Orientation::Horizontal);
         impl_->verticalConnection = impl_->vertical->OnEdit.Connect(
             [this](double f, EditPhase)
@@ -344,6 +382,8 @@ namespace LWSUI
         ClearSelection();
         OnCurrentCellChanged.Raise(impl_->selection.current);
         impl_->offset = {};
+        impl_->viewportAnchor.reset();
+        impl_->viewportAtBottom = impl_->restoreViewport = false;
         impl_->columns.clear();
         if (impl_->model)
         {
@@ -553,14 +593,65 @@ namespace LWSUI
         GridColumnEvent event;
         event.column = id;
         event.oldWidth = c->width;
-        event.newWidth = std::clamp(width, c->minimumWidth, c->maximumWidth);
-        event.phase = impl_->drag == Impl::Drag::Resize ? EditPhase::Preview : EditPhase::Commit;
+        const bool preview = impl_->drag == Impl::Drag::Resize && id == impl_->dragColumn;
+        auto* peer = preview ? impl_->Column(impl_->resizePeer) : nullptr;
+        const float total = impl_->resizePairWidth;
+        const float low = peer ? std::max(c->minimumWidth, total - peer->maximumWidth) : c->minimumWidth;
+        const float high = peer ? std::min(c->maximumWidth, total - peer->minimumWidth) : c->maximumWidth;
+        if (low > high) return false;
+        event.newWidth = std::clamp(width, low, high);
+        event.phase = preview ? EditPhase::Preview : EditPhase::Commit;
         OnColumnResizing.Raise(event);
         if (event.cancel || !std::isfinite(event.newWidth))
             return false;
-        event.newWidth = std::clamp(event.newWidth, c->minimumWidth, c->maximumWidth);
-        c->width = event.newWidth;
-        c->widthMode = GridWidthMode::Fixed;
+        event.newWidth = std::clamp(event.newWidth, low, high);
+        const bool flexible = peer && (c->widthMode == GridWidthMode::Proportional ||
+                                        peer->widthMode == GridWidthMode::Proportional);
+        if (flexible) {
+            // Layout clamps proportional allocations independently. Preserve
+            // displayed widths by putting any unused (or excess) allocation
+            // into columns already at their maximum (or minimum).
+            struct Allocation { GridColumn* column; float width, weight; };
+            std::vector<Allocation> allocations;
+            float budget = impl_->layout.viewport.width;
+            float used = 0;
+            for (const auto& saved : impl_->resizeWidths) {
+                auto* column = impl_->Column(saved.id);
+                if (!column) continue;
+                const float displayed = column == c ? event.newWidth
+                    : column == peer ? total - event.newWidth : saved.displayed;
+                if (column == c || column == peer || saved.mode == GridWidthMode::Proportional) {
+                    allocations.push_back({column, displayed, displayed});
+                    used += displayed;
+                } else {
+                    budget -= displayed;
+                }
+            }
+            float remainder = budget - used;
+            for (auto& allocation : allocations) {
+                if (remainder > 0 && allocation.width == allocation.column->maximumWidth) {
+                    allocation.weight += remainder;
+                    remainder = 0;
+                } else if (remainder < 0 && allocation.width == allocation.column->minimumWidth) {
+                    const float reduction = std::min(-remainder, std::max(0.f, allocation.weight - .001f));
+                    allocation.weight -= reduction;
+                    remainder += reduction;
+                }
+            }
+            if (std::abs(remainder) > .01f) return false;
+            for (const auto& allocation : allocations) {
+                allocation.column->width = allocation.width;
+                allocation.column->weight = allocation.weight;
+                allocation.column->widthMode = GridWidthMode::Proportional;
+            }
+        } else {
+            c->width = event.newWidth;
+            c->widthMode = GridWidthMode::Fixed;
+            if (peer) {
+                peer->width = total - c->width;
+                peer->widthMode = GridWidthMode::Fixed;
+            }
+        }
         Invalidate(true);
         OnColumnResized.Raise(event);
         return true;

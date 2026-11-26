@@ -135,7 +135,7 @@ namespace LWSUI
             cursor.reset();
             if (impl_->layout.header.Contains(input.x, input.y) && impl_->options.resizing)
                 for (const auto& c : impl_->layout.columns)
-                    if (impl_->columns[c.index].resizable && input.x >= c.clip.x && input.x < c.clip.x + c.clip.width &&
+                    if (impl_->ResizePeer(c.index) && input.x >= c.clip.x && input.x < c.clip.x + c.clip.width &&
                         std::abs(input.x - c.bounds.x - c.bounds.width) <= 4)
                         cursor = LWS::CursorShape::SizeEW;
             return false;
@@ -157,7 +157,7 @@ namespace LWSUI
                 impl_->moved = false;
                 if (impl_->options.resizing)
                     for (const auto& edge : impl_->layout.columns)
-                        if (impl_->columns[edge.index].resizable && input.x >= edge.clip.x &&
+                        if (const auto peer = impl_->ResizePeer(edge.index); peer && input.x >= edge.clip.x &&
                             input.x < edge.clip.x + edge.clip.width &&
                             std::abs(input.x - edge.bounds.x - edge.bounds.width) <= 4)
                         {
@@ -168,7 +168,15 @@ namespace LWSUI
                                 return true;
                             }
                             impl_->originalWidth = impl_->columns[edge.index].width;
-                            impl_->originalMode = impl_->columns[edge.index].widthMode;
+                            impl_->resizePeer = impl_->columns[*peer].id;
+                            impl_->resizeWidths.clear();
+                            for (const auto& geometry : impl_->layout.columns) {
+                                const auto& column = impl_->columns[geometry.index];
+                                impl_->resizeWidths.push_back({column.id, column.width, column.weight,
+                                                               geometry.bounds.width, column.widthMode});
+                                if (geometry.index == *peer)
+                                    impl_->resizePairWidth = edge.bounds.width + geometry.bounds.width;
+                            }
                             impl_->dragWidth = edge.bounds.width;
                             impl_->drag = Impl::Drag::Resize;
                             Capture();
@@ -267,6 +275,7 @@ namespace LWSUI
                 }
             }
             impl_->dragColumn.clear();
+            impl_->resizeWidths.clear();
             impl_->moved = false;
             Invalidate();
             return true;
