@@ -328,7 +328,8 @@ namespace LWSUI
                 auto b = Bounds();
                 const float editorLeft = std::max(Style().editorMinLeft, b.width * Style().editorFraction);
                 const float indent = std::min(std::max(0, TreeDepth(*this) - 1) * Style().treeIndent,
-                                              std::max(0.f, editorLeft - Style().editorMinLeft));
+                                              std::max(0.f, editorLeft - Style().treeLabelInset - Style().checkboxSize -
+                                                                Style().padding));
                 const auto glyph = internal::AlignedTextBounds(
                     canvas, text_.substr(0, 1), {b.x + Style().treeLabelInset + indent, b.y, Style().checkboxSize, b.height},
                     Font(), Alignment::Start, Alignment::Center);
@@ -380,35 +381,46 @@ namespace LWSUI
         const float gap = ActionControl() ? std::clamp(s.padding, 0.f, actionLeft) : 0;
         const float editorRight = actionLeft - gap;
         const float editorLeft = std::min(std::max(s.editorMinLeft, width * s.editorFraction), editorRight);
-        const float nameLeft = s.treeLabelInset +
-                               std::min(TreeDepth(*this) * s.treeIndent, std::max(0.f, editorLeft - s.editorMinLeft));
+        const float nameLeft = s.treeLabelInset + std::min(TreeDepth(*this) * s.treeIndent,
+                                                           std::max(0.f, editorLeft - s.treeLabelInset - s.padding));
+        const float nameRight = stacked ? editorRight : editorLeft - s.padding;
+        const float valueLeft = stacked ? nameLeft : editorLeft;
         return {nameLeft - s.labelPadding,
-                std::max(0.f, editorLeft - nameLeft - s.padding),
-                editorLeft,
-                editorRight - editorLeft,
+                std::max(0.f, nameRight - nameLeft),
+                valueLeft,
+                std::max(0.f, editorRight - valueLeft),
                 actionLeft,
                 actionWidth};
     }
     Size TreeView::Row::OnMeasure(Size available)
     {
         const auto columns = ColumnLayout(available.width);
-        float height = std::max(NameControl().Measure({columns.nameWidth, available.height}).height,
-                                EditorControl().Measure({columns.editorWidth, available.height}).height);
+        float heading = NameControl().Measure({columns.nameWidth, available.height}).height;
         if (auto* action = ActionControl())
-            height = std::max(height, action->Measure({columns.actionWidth, available.height}).height);
+            heading = std::max(heading, action->Measure({columns.actionWidth, available.height}).height);
+        const float editor = EditorControl().Measure({columns.editorWidth, available.height}).height;
+        const float height = stacked ? heading + Style().spacing + editor : std::max(heading, editor);
         return {available.width, std::max(Style().treeRowHeight, height + 2 * Style().treeRowPadding)};
     }
     void TreeView::Row::OnArrange()
     {
         const auto b = Bounds();
         const auto columns = ColumnLayout(b.width);
-        auto arrange = [&](Control& c, float x, float width)
+        const float heading = stacked ? std::max(NameControl().DesiredSize().height,
+                                                 ActionControl() ? ActionControl()->DesiredSize().height : 0.f)
+                                      : b.height;
+        const float top = b.y + (stacked ? Style().treeRowPadding : 0);
+        auto arrange = [&](Control& control, float x, float width)
         {
-            const float height = std::min(c.DesiredSize().height, b.height);
-            c.Arrange({b.x + x, b.y + (b.height - height) / 2, width, height});
+            const float height = std::min(control.DesiredSize().height, heading);
+            control.Arrange({b.x + x, top + (heading - height) / 2, width, height});
         };
         arrange(NameControl(), columns.nameLeft, columns.nameWidth);
-        arrange(EditorControl(), columns.editorLeft, columns.editorWidth);
+        if (stacked)
+            EditorControl().Arrange({b.x + columns.editorLeft, top + heading + Style().spacing, columns.editorWidth,
+                                     EditorControl().DesiredSize().height});
+        else
+            arrange(EditorControl(), columns.editorLeft, columns.editorWidth);
         if (auto* action = ActionControl())
             arrange(*action, columns.actionLeft, columns.actionWidth);
     }

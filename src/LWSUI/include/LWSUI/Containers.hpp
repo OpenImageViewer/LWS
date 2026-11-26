@@ -259,6 +259,8 @@ namespace LWSUI
           public:
 
             Row(std::unique_ptr<Control> name, std::unique_ptr<Control> editor, std::unique_ptr<Control> action = {});
+            // Stacked rows place a full-width editor beneath the indented name.
+            bool stacked = false;
             Control& NameControl() const { return *Children()[0]; }
             Control& EditorControl() const { return *Children()[1]; }
             Control* ActionControl() const { return Children().size() == 3 ? Children()[2].get() : nullptr; }
